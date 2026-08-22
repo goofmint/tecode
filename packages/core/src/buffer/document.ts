@@ -83,6 +83,21 @@ export interface CoreDocument extends Document {
   /** The redo counterpart to {@link CoreDocument.undo}. Returns the
    * entry's `selectionsAfter`; `undefined` on an empty redo stack. */
   redo(): Selection[] | undefined;
+  /**
+   * The document's full current text, joined with `eol` (design.md §7.2:
+   * `DocumentManager.save` needs this to write the file). Internal to
+   * core — not part of the public `@tecode/api` `Document` — since
+   * extensions read text via `LineBuffer`-shaped accessors, not a bulk
+   * getter.
+   */
+  getText(): string;
+  /**
+   * Mark the document as saved: clears `dirty` without touching `version`
+   * and fires no `onDidChange` (Req 5.5, design.md §7.2 — `save` clears
+   * `dirty` once the write+rename succeeds). Internal to core; called by
+   * `DocumentManager.save`, never exposed to extensions.
+   */
+  markSaved(): void;
 }
 
 /**
@@ -316,6 +331,14 @@ export function createDocument(options: CreateDocumentOptions): CoreDocument {
     return popped.selectionsAfter;
   }
 
+  function getText(): string {
+    return buffer.getText();
+  }
+
+  function markSaved(): void {
+    dirty = false;
+  }
+
   function onDidChange(listener: Listener<DocumentChangeEvent>): Disposable {
     listeners.add(listener);
     let disposed = false;
@@ -346,6 +369,8 @@ export function createDocument(options: CreateDocumentOptions): CoreDocument {
     onDidChange,
     undo,
     redo,
+    getText,
+    markSaved,
   };
 
   return document;
