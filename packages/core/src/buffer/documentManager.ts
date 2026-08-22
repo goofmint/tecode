@@ -105,7 +105,15 @@ export interface DocumentManager {
   /** Save `uri`'s current text to disk atomically (write a temp file in
    * the same directory, then rename over the target). Returns `true` on
    * success, `false` on a no-op (unopened `uri`, readonly document) or a
-   * write/rename failure. A no-op reports through `sink` but is not
+   * write/rename failure.
+   *
+   * Durability trade-off (deliberate): the temp file is NOT fsync'd
+   * before the rename. The rename guarantees readers never observe a
+   * partial file, but a crash or power loss in the small window between
+   * write and the data reaching stable storage could leave the target
+   * empty or truncated. For an interactive editor save the added fsync
+   * latency on every Ctrl+S is not worth closing that window in the MVP;
+   * revisit if a durability contract is ever required. A no-op reports through `sink` but is not
    * logged as an error (it is not a filesystem failure); a write/rename
    * failure is reported through both `sink` and `log`, leaves `dirty`
    * true, fires no `onDidSave`, and best-effort removes the temp file.

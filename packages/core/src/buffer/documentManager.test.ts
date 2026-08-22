@@ -385,10 +385,15 @@ describe("DocumentManager — concurrency (review regressions)", () => {
     const writeGate = new Promise<void>((resolve) => {
       releaseWrite = resolve;
     });
+    let writeReached!: () => void;
+    const reachedWrite = new Promise<void>((resolve) => {
+      writeReached = resolve;
+    });
     const gatedFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
       writeFile: async (p, data, opts) => {
+        writeReached();
         await writeGate;
         await fsWriteFile(p, data, opts);
       },
@@ -407,11 +412,11 @@ describe("DocumentManager — concurrency (review regressions)", () => {
       },
     ]);
 
-    // The save snapshots "first" and stalls inside writeFile — wait for
-    // it to reach the gate (the queued save starts on a microtask), then
-    // land a second edit while the bytes are in flight.
+    // The save snapshots "first" and stalls inside writeFile — wait
+    // deterministically for it to reach the gate, then land a second edit
+    // while the bytes are in flight.
     const pendingSave = manager.save(uri);
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await reachedWrite;
     doc.applyEdits([
       {
         range: { start: { line: 0, character: 5 }, end: { line: 0, character: 5 } },
@@ -534,6 +539,10 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
     const writeGate = new Promise<void>((resolve) => {
       releaseWrite = resolve;
     });
+    let writeReached!: () => void;
+    const reachedWrite = new Promise<void>((resolve) => {
+      writeReached = resolve;
+    });
     let gateArmed = true;
     const gatedFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
@@ -541,6 +550,7 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
       writeFile: async (p, data, opts) => {
         if (gateArmed) {
           gateArmed = false;
+          writeReached();
           await writeGate;
         }
         await fsWriteFile(p, data, opts);
@@ -560,9 +570,11 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
         newText: "first",
       },
     ]);
-    // save #1 stalls inside writeFile with snapshot "first"; a newer edit
-    // and save #2 arrive while it is in flight.
+    // save #1 stalls inside writeFile with snapshot "first" — wait
+    // deterministically for it to reach the gate; a newer edit and save
+    // #2 arrive while it is in flight.
     const p1 = manager.save(uri);
+    await reachedWrite;
     doc.applyEdits([
       {
         range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
