@@ -4,12 +4,12 @@ import {
   mkdtemp,
   readdir as nodeReaddir,
   rm,
-  rmdir,
   stat as nodeStat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { Manifest } from "@tecode/api";
 import type { HostError, HostLogEntry } from "./errors";
 import { createHostLog } from "./errors";
@@ -48,9 +48,9 @@ afterEach(async () => {
  * `remap` lets one test substitute a real temp directory in place of one
  * blocked/real path (e.g. standing in for the user extensions dir with a
  * fixture the test controls), while every other path still hits the real
- * filesystem untouched — needed because manifest loading always performs
- * a real dynamic `import()` against whatever path `resolveManifestPath`
- * computes, so a fully in-memory fake `fs` cannot exercise a successful
+ * filesystem untouched — needed because manifest loading (by default, and
+ * genuinely even under an injected `importModule`) performs a real dynamic
+ * `import()`, so a fully in-memory fake `fs` cannot exercise a successful
  * load.
  */
 function createHermeticFs(remap: ReadonlyMap<string, string> = new Map()): DiscoveryFs {
@@ -81,9 +81,10 @@ function createHermeticFs(remap: ReadonlyMap<string, string> = new Map()): Disco
 }
 
 /** Write a real `<extensionsDir>/<name>/<filename>` fixture. Real files
- * are required because manifest loading always goes through a real
- * dynamic `import()` (Req 2.2, design.md §4.1), never the injectable
- * `DiscoveryFs` seam (which only covers directory scanning). */
+ * are required because manifest loading defaults to a real dynamic
+ * `import()` (Req 2.2, design.md §4.1) — the `DiscoveryFs` seam only
+ * covers directory scanning, and even a test that injects `importModule`
+ * still performs a genuine import of a real fixture file. */
 async function writeManifestFixture(
   extensionsDir: string,
   name: string,
@@ -328,70 +329,64 @@ describe("discover — duplicate IDs across sources", () => {
   test("workspace shadows user shadows builtin (later wins), and every shadow logs a warning", async () => {
     const workspace = await makeTempDir("tecode-discover-ws-");
 
-    // This one test needs a genuine "user" source manifest loaded via a
-    // genuine dynamic import (Req 2.2), which — unlike every other test in
-    // this file — cannot go through `createHermeticFs`'s remap: manifest
-    // loading always dynamic-imports the *unresolved* path
-    // `resolveManifestPath` computed (by design — see discovery.ts's
-    // module TSDoc: only directory scanning goes through the injectable
-    // `DiscoveryFs` seam), so a remapped `fs.stat`/`fs.readdir` cannot
-    // redirect where the import itself reads from. The only way to
-    // exercise a real "user" load is to place a real fixture at the real
-    // `getUserExtensionsDir()` and clean it up afterward — this repo's
-    // hermetic sandbox has no `~/.config/tecode/extensions` of its own
-    // (verified before writing this test), and this test creates only its
-    // own uniquely-named `dup` subdirectory there and removes exactly that
-    // subdirectory again, win or lose.
+    // The "user" layer needs a manifest that scanning finds at the real
+    // `getUserExtensionsDir()` path but that actually lives in a temp
+    // fixture, so the test never writes to (or deletes from) the real
+    // user configuration directory. Scanning is redirected with
+    // `createHermeticFs`'s remap; loading is redirected with the
+    // `importModule` seam, whose injected loader applies the same
+    // path translation and then performs a genuine dynamic `import()` of
+    // the temp fixture — so a real "user"-source module load is still
+    // exercised end to end.
     const realUserExtensionsDir = getUserExtensionsDir();
-    const realUserDupDir = join(realUserExtensionsDir, "dup");
+    const fakeUserExtensionsDir = await makeTempDir("tecode-discover-user-");
     await writeManifestFixture(
-      realUserExtensionsDir,
+      fakeUserExtensionsDir,
       "dup",
-      manifestLiteral("dup.ext", { version: "user-1.0.0" }),
+      manifestLiteral("dup.ext", { version: "2.0.0" }),
     );
 
-    try {
-      const workspaceExtensionsDir = join(workspace, ".tecode", "extensions");
-      await writeManifestFixture(
-        workspaceExtensionsDir,
-        "dup",
-        manifestLiteral("dup.ext", { version: "workspace-1.0.0" }),
-      );
+    const workspaceExtensionsDir = join(workspace, ".tecode", "extensions");
+    await writeManifestFixture(
+      workspaceExtensionsDir,
+      "dup",
+      manifestLiteral("dup.ext", { version: "3.0.0" }),
+    );
 
-      const builtin: Manifest = {
-        id: "dup.ext",
-        version: "builtin-1.0.0",
-        apiVersion: "1.0",
-        activationEvents: ["onStartup"],
-        contributes: {},
-      };
-      const log = createHostLog();
+    const builtin: Manifest = {
+      id: "dup.ext",
+      version: "1.0.0",
+      apiVersion: "1.0",
+      activationEvents: ["onStartup"],
+      contributes: {},
+    };
+    const log = createHostLog();
 
-      // No `fs` override here: this test deliberately exercises the real
-      // default filesystem seam end to end (real user dir included).
-      const result = await discover({ log, builtins: [builtin], workspaceRoot: workspace });
+    const remap = new Map([[realUserExtensionsDir, fakeUserExtensionsDir]]);
+    const realUserUrlPrefix = pathToFileURL(realUserExtensionsDir).href;
+    const fakeUserUrlPrefix = pathToFileURL(fakeUserExtensionsDir).href;
+    const result = await discover({
+      log,
+      builtins: [builtin],
+      workspaceRoot: workspace,
+      fs: createHermeticFs(remap),
+      importModule: (fileUrl) =>
+        import(
+          fileUrl.startsWith(realUserUrlPrefix)
+            ? fakeUserUrlPrefix + fileUrl.slice(realUserUrlPrefix.length)
+            : fileUrl
+        ),
+    });
 
-      expect(result).toHaveLength(1);
-      expect(result[0]?.source).toBe("workspace");
-      expect((result[0]?.manifest as Manifest).version).toBe("workspace-1.0.0");
+    expect(result).toHaveLength(1);
+    expect(result[0]?.source).toBe("workspace");
+    expect((result[0]?.manifest as Manifest).version).toBe("3.0.0");
 
-      const warned = warnings(log.entries());
-      const dupWarnings = warned.filter((e) => e.message.includes("dup.ext"));
-      expect(dupWarnings).toHaveLength(2);
-      expect(warned.some((e) => e.message.includes("shadows the version from builtin"))).toBe(
-        true,
-      );
-      expect(warned.some((e) => e.message.includes("shadows the version from user"))).toBe(true);
-    } finally {
-      await rm(realUserDupDir, { recursive: true, force: true });
-      // Best-effort: also remove the (now-empty, since this test created
-      // them) parent directories, so a run leaves no trace at all when the
-      // real user extensions dir didn't already exist. rmdir fails (and is
-      // ignored) if the directory still has other content — unrelated to
-      // this test, or pre-existing.
-      await rmdir(realUserExtensionsDir).catch(() => {});
-      await rmdir(join(realUserExtensionsDir, "..")).catch(() => {});
-    }
+    const warned = warnings(log.entries());
+    const dupWarnings = warned.filter((e) => e.message.includes("dup.ext"));
+    expect(dupWarnings).toHaveLength(2);
+    expect(warned.some((e) => e.message.includes("shadows the version from builtin"))).toBe(true);
+    expect(warned.some((e) => e.message.includes("shadows the version from user"))).toBe(true);
   });
 });
 

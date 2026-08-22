@@ -9,6 +9,19 @@
  * codebase — see {@link importManifestModule}'s TSDoc — required because an
  * extension's manifest path is only known once the filesystem has been
  * scanned at runtime.
+ *
+ * **Trust boundary**: importing a `manifest.ts`/`manifest.js` module
+ * evaluates that file's top-level code in the host process — for the
+ * `workspace` source that means code committed to whatever repository the
+ * user opened, before any validation has run. The manifest convention
+ * (pure declarative data, enforced by `validate.ts` only *after* the
+ * import) constrains what a well-behaved manifest contains, not what a
+ * malicious one can execute. A workspace-trust gate (prompting before the
+ * workspace layer is scanned at all) is the intended mitigation and is
+ * deliberately out of this task's scope — it belongs to the CLI assembly
+ * layer, which decides whether to pass `workspaceRoot` to {@link discover}
+ * at all: omitting it skips the workspace layer entirely, so callers that
+ * cannot yet establish trust already have the lever to withhold it.
  */
 
 import { readdir as nodeReaddir, stat as nodeStat } from "node:fs/promises";
@@ -32,9 +45,8 @@ export type ExtensionSource = "builtin" | "user" | "workspace";
  * `ConfigServiceFs`'s precedent. Not part of the public API surface.
  *
  * Note: this seam covers directory *scanning* only. Loading a manifest's
- * module contents always goes through the real filesystem via dynamic
- * `import()` — see {@link importManifestModule} — since that is the
- * sanctioned exception and cannot be routed through an injectable seam.
+ * module contents goes through {@link DiscoveryDeps.importModule} (by
+ * default the real dynamic `import()` — see {@link importManifestModule}).
  */
 export interface DiscoveryFs {
   readdir(path: string): Promise<string[]>;
@@ -87,6 +99,12 @@ export interface DiscoveryDeps {
   /** Filesystem seam — see {@link DiscoveryFs}. Defaults to
    * `node:fs/promises`. */
   fs?: DiscoveryFs;
+  /** Manifest-module loading seam. Defaults to the sanctioned real
+   * dynamic `import()` ({@link importManifestModule}); tests inject a
+   * loader so manifest loading can be exercised against fixture
+   * directories without ever writing to the real user extensions dir
+   * (`~/.config/tecode/extensions`). Production callers never pass this. */
+  importModule?: (fileUrl: string) => Promise<unknown>;
   /** Structured log for scan failures, missing manifests, load failures,
    * and duplicate-ID shadowing (design.md §14). */
   log: HostLog;
@@ -221,6 +239,7 @@ async function scanExtensionsDir(
   source: Exclude<ExtensionSource, "builtin">,
   fs: DiscoveryFs,
   log: HostLog,
+  importModule: (fileUrl: string) => Promise<unknown>,
 ): Promise<DiscoveredExtension[]> {
   let entries: string[];
   try {
@@ -261,7 +280,7 @@ async function scanExtensionsDir(
 
     let mod: unknown;
     try {
-      mod = await importManifestModule(pathToFileURL(manifestPath).href);
+      mod = await importModule(pathToFileURL(manifestPath).href);
     } catch (cause) {
       logSafely(log, "error", {
         message: `Failed to load manifest at ${manifestPath}: ${describeError(cause)}`,
@@ -307,6 +326,7 @@ async function scanExtensionsDir(
 export async function discover(deps: DiscoveryDeps): Promise<DiscoveredExtension[]> {
   const { log } = deps;
   const fs = deps.fs ?? createNodeDiscoveryFs();
+  const importModule = deps.importModule ?? importManifestModule;
   const byId = new Map<string, DiscoveredExtension>();
 
   function addAll(discovered: DiscoveredExtension[]): void {
@@ -338,11 +358,20 @@ export async function discover(deps: DiscoveryDeps): Promise<DiscoveredExtension
     }),
   );
 
-  addAll(await scanExtensionsDir(getUserExtensionsDir(), "user", fs, log));
+  addAll(await scanExtensionsDir(getUserExtensionsDir(), "user", fs, log, importModule));
 
   if (deps.workspaceRoot) {
+    // Trust boundary (see the module TSDoc): scanning the workspace layer
+    // imports manifest modules committed to the opened repository. Callers
+    // that cannot establish workspace trust must omit `workspaceRoot`.
     addAll(
-      await scanExtensionsDir(getWorkspaceExtensionsDir(deps.workspaceRoot), "workspace", fs, log),
+      await scanExtensionsDir(
+        getWorkspaceExtensionsDir(deps.workspaceRoot),
+        "workspace",
+        fs,
+        log,
+        importModule,
+      ),
     );
   }
 

@@ -59,6 +59,27 @@ describe("validateManifest — top-level shape", () => {
     if (!result.valid) expect(result.errors).toContain("id: required non-empty string");
   });
 
+  test('rejects a non-SemVer version ("not-semver")', () => {
+    const result = validateManifest(validManifest({ version: "not-semver" }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.errors.some((e) => e.startsWith("version: must be a SemVer"))).toBe(true);
+    }
+  });
+
+  test('rejects an incomplete version ("1.0" — SemVer needs all three parts)', () => {
+    const result = validateManifest(validManifest({ version: "1.0" }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.errors.some((e) => e.startsWith("version: must be a SemVer"))).toBe(true);
+    }
+  });
+
+  test("accepts SemVer versions with pre-release and build parts", () => {
+    expect(validateManifest(validManifest({ version: "1.2.3-beta.1" })).valid).toBe(true);
+    expect(validateManifest(validManifest({ version: "1.2.3+build.5" })).valid).toBe(true);
+  });
+
   test("rejects an empty-string id", () => {
     const result = validateManifest(validManifest({ id: "" }));
     expect(result.valid).toBe(false);

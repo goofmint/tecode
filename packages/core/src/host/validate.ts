@@ -63,6 +63,14 @@ function isActivationEvent(value: unknown): value is ActivationEvent {
 /** `"<major>"` or `"<major>.<minor>"` (design.md §4.3). */
 const VERSION_PATTERN = /^(\d+)(?:\.(\d+))?$/;
 
+/** The SemVer 2.0.0 grammar (semver.org's published pattern) for
+ * `Manifest.version`, which — unlike the two-part {@link VERSION_PATTERN}
+ * used for `apiVersion` — is a full `major.minor.patch` version with
+ * optional pre-release/build parts. `"1.0"` and `"not-semver"` are
+ * rejected. */
+const SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+
 function parseVersion(value: string): { major: number; minor: number } | undefined {
   const match = VERSION_PATTERN.exec(value);
   if (!match) return undefined;
@@ -95,6 +103,8 @@ export function validateManifest(raw: unknown): ManifestValidationResult {
   }
   if (!isNonEmptyString(raw.version)) {
     errors.push("version: required non-empty string");
+  } else if (!SEMVER_PATTERN.test(raw.version)) {
+    errors.push('version: must be a SemVer version ("<major>.<minor>.<patch>", e.g. "1.0.0")');
   }
   if (!isNonEmptyString(raw.apiVersion) || !VERSION_PATTERN.test(raw.apiVersion)) {
     errors.push(
