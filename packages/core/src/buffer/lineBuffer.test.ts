@@ -369,3 +369,41 @@ describe("createLineBuffer — CRLF edge cases (review regressions)", () => {
     expect(buffer.getText()).toBe(original);
   });
 });
+
+describe("createLineBuffer — same-start-position edits (review regression)", () => {
+  test("a zero-length insert at a replacement's start applies both, insert landing first, in either input order", () => {
+    const insert: TextEdit = {
+      range: { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } },
+      newText: "X",
+    };
+    const replace: TextEdit = {
+      range: { start: { line: 0, character: 1 }, end: { line: 0, character: 2 } },
+      newText: "Y",
+    };
+
+    for (const edits of [
+      [insert, replace],
+      [replace, insert],
+    ]) {
+      const buffer = createLineBuffer("abc", "\n");
+      const applied = buffer.applyEdits(edits);
+      expect(buffer.getText()).toBe("aXYc");
+
+      buffer.applyEdits(applied.map((a) => a.inverse));
+      expect(buffer.getText()).toBe("abc");
+    }
+  });
+
+  test("multiple zero-length inserts at the same position keep their input order and round-trip", () => {
+    const at = { line: 0, character: 1 };
+    const buffer = createLineBuffer("abc", "\n");
+    const applied = buffer.applyEdits([
+      { range: { start: at, end: at }, newText: "X" },
+      { range: { start: at, end: at }, newText: "Y" },
+    ]);
+    expect(buffer.getText()).toBe("aXYbc");
+
+    buffer.applyEdits(applied.map((a) => a.inverse));
+    expect(buffer.getText()).toBe("abc");
+  });
+});

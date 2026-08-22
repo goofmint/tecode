@@ -224,7 +224,17 @@ export function createLineBuffer(text: string, eol: Eol): LineBuffer {
       startOffset: offsetAtIn(lines, eol, edit.range.start),
       endOffset: offsetAtIn(lines, eol, edit.range.end),
     }));
-    items.sort((a, b) => a.startOffset - b.startOffset);
+    // Order ties deterministically: at the same start offset, zero-length
+    // inserts sort before longer edits (their text lands before the
+    // replaced span in the final buffer), and equal-length edits keep
+    // input order. Phase 4 mirrors this so application order matches the
+    // final-offset bookkeeping.
+    items.sort(
+      (a, b) =>
+        a.startOffset - b.startOffset ||
+        (a.endOffset - a.startOffset) - (b.endOffset - b.startOffset) ||
+        a.index - b.index,
+    );
 
     for (let i = 1; i < items.length; i++) {
       const prev = items[i - 1]!;
@@ -255,14 +265,25 @@ export function createLineBuffer(text: string, eol: Eol): LineBuffer {
       const finalStart = startOffset + cumulativeDelta;
       const finalEnd = finalStart + newLength;
       cumulativeDelta += newLength - (endOffset - startOffset);
-      return { edit, index, startOffset, replaced, finalStart, finalEnd };
+      return { edit, index, startOffset, endOffset, replaced, finalStart, finalEnd };
     });
 
     // Phase 4: mutate `lines` bottom-up (descending by start offset) using
     // each edit's original Position range — safe because not-yet-applied
     // edits are always positioned strictly above (or touching) the one
     // just applied, so their line numbers are unaffected by this splice.
-    const descending = [...withFinal].sort((a, b) => b.startOffset - a.startOffset);
+    // The exact reverse of Phase 2's order: at a shared start offset the
+    // longer (replacing) edit applies before a zero-length insert — the
+    // insert must land in front of the replacement's text, not be
+    // overwritten by a replacement still using pre-insert coordinates —
+    // and same-position inserts apply in reverse input order so the final
+    // text keeps them in input order.
+    const descending = [...withFinal].sort(
+      (a, b) =>
+        b.startOffset - a.startOffset ||
+        (b.endOffset - b.startOffset) - (a.endOffset - a.startOffset) ||
+        b.index - a.index,
+    );
     for (const { edit } of descending) spliceEdit(lines, edit);
 
     // Phase 5: `lines` now reflects the whole batch, so translate each
