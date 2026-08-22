@@ -8,10 +8,17 @@ export {
 } from "./commands/index";
 export {
   compileWhen,
+  createBindingTable,
   createContextService,
+  normalizeKey,
   WhenParseError,
+  type BindingLayer,
+  type BindingTable,
+  type BindingTableDeps,
   type CompiledWhen,
   type ContextService,
+  type KeymapLayers,
+  type ResolvedBinding,
   type WhenAndNode,
   type WhenContextGetter,
   type WhenEqNode,
