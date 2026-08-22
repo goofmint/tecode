@@ -369,3 +369,24 @@ test("non-string key or command entries are skipped with a warning, never thrown
     expect(entry.level).toBe("warning");
   }
 });
+
+test("a removal entry with a when clause is skipped with a warning, leaving lower bindings intact", () => {
+  const log = createHostLog();
+  const table = createBindingTable(
+    {
+      defaults: [{ key: "ctrl+p", command: "quickOpen.show" }],
+      fallback: [],
+      extension: [],
+      user: [
+        { key: "ctrl+p", command: "-quickOpen.show", when: "editorFocus" },
+      ],
+    },
+    { log },
+  );
+
+  // The conditional removal is unsupported: the defaults binding survives
+  // whether or not the clause would pass.
+  expect(table.lookup("ctrl+p", () => true)?.command).toBe("quickOpen.show");
+  expect(table.lookup("ctrl+p", () => false)?.command).toBe("quickOpen.show");
+  expect(log.entries().some((e) => e.error.message.includes("conditional removals"))).toBe(true);
+});

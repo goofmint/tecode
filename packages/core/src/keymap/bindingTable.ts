@@ -246,6 +246,19 @@ function compileEntry(
     return undefined;
   }
 
+  // Conditional removals are not supported in the MVP: masking is computed
+  // once at build time (Req 4.3 only requires unconditional `-command`
+  // removal), so a removal whose `when` might be false cannot be honored
+  // correctly — skip it loudly rather than mask default bindings forever.
+  if (isRemoval && contribution.when !== undefined) {
+    logSafely(
+      log,
+      "warning",
+      `Skipping ${layer} removal of "${command}" on "${key}": conditional removals (when clauses on -command entries) are not supported`,
+    );
+    return undefined;
+  }
+
   let compiledWhen: CompiledWhen | undefined;
   if (contribution.when !== undefined) {
     try {
