@@ -1,7 +1,8 @@
-// Documents and the text buffer (Req 5, design.md §7.1): `LineBuffer` is
-// the line-array store, `Document` wraps it with version/dirty/EOL
-// tracking, change notification, and undo/redo via `UndoStack`.
-// `DocumentManager` lands in a later task.
+// Documents and the text buffer (Req 5, design.md §7.1, §7.2): `LineBuffer`
+// is the line-array store, `Document` wraps it with version/dirty/EOL
+// tracking, change notification, and undo/redo via `UndoStack`;
+// `DocumentManager` owns the open/close/save lifecycle over a `Map<Uri,
+// CoreDocument>`.
 export {
   createLineBuffer,
   type AppliedEdit,
@@ -26,3 +27,11 @@ export {
   type CoreDocument,
   type CreateDocumentOptions,
 } from "./document";
+export {
+  createDocumentManager,
+  LARGE_FILE_THRESHOLD_BYTES,
+  type DocumentManager,
+  type DocumentManagerDeps,
+  type DocumentManagerFs,
+} from "./documentManager";
+export { pathToUri, uriToPath } from "./uri";
