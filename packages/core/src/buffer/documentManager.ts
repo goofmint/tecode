@@ -198,10 +198,25 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     }
   }
 
-  async function openDocument(uri: Uri): Promise<CoreDocument> {
-    const existing = documentsMap.get(uri);
-    if (existing) return existing;
+  /** In-flight opens keyed by uri: two concurrent `openDocument` calls for
+   * the same uri must share one promise, or both would miss the documents
+   * map (it is only populated after the awaited reads) and each build its
+   * own instance, double-firing `onDidOpen`. */
+  const pendingOpens = new Map<Uri, Promise<CoreDocument>>();
 
+  function openDocument(uri: Uri): Promise<CoreDocument> {
+    const existing = documentsMap.get(uri);
+    if (existing) return Promise.resolve(existing);
+    const pending = pendingOpens.get(uri);
+    if (pending) return pending;
+    const promise = openDocumentUncached(uri).finally(() => {
+      pendingOpens.delete(uri);
+    });
+    pendingOpens.set(uri, promise);
+    return promise;
+  }
+
+  async function openDocumentUncached(uri: Uri): Promise<CoreDocument> {
     const path = uriToPath(uri);
     let readonly = false;
     let text: string;
@@ -268,6 +283,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     const { dir, base } = splitPath(path);
     const tempPath = `${dir}/.${base}.tmp-${process.pid}-${tempCounter++}`;
     const text = document.getText();
+    const versionAtWrite = document.version;
 
     let wroteTemp = false;
     try {
@@ -292,7 +308,13 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
       return false;
     }
 
-    document.markSaved();
+    // An edit that landed while the write was in flight is not in the
+    // bytes just renamed into place: keep `dirty` so the document still
+    // reads as unsaved, instead of silently misreporting the newest edit
+    // as saved.
+    if (document.version === versionAtWrite) {
+      document.markSaved();
+    }
     fire(saveListeners, document, "onDidSave");
     return true;
   }

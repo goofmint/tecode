@@ -4,6 +4,7 @@ import {
   open,
   readdir,
   readFile,
+  rename as fsRename,
   rm,
   stat as fsStat,
   unlink as fsUnlink,
@@ -291,7 +292,6 @@ describe("DocumentManager.save (Req 5.5)", () => {
     expect(errorEntries.length).toBeGreaterThan(0);
 
     // No temp file left behind, and the original file is untouched.
-    const { readdir } = await import("node:fs/promises");
     const entries = await readdir(dir);
     expect(entries).toEqual(["willfail.txt"]);
     expect(await readFile(path, "utf8")).toBe("original");
@@ -348,5 +348,77 @@ describe("DocumentManager — open -> change -> save -> close event ordering", (
     manager.close(uri);
 
     expect(order).toEqual(["open", "save", "close"]);
+  });
+});
+
+describe("DocumentManager — concurrency (review regressions)", () => {
+  test("two concurrent opens of the same uri share one instance and fire onDidOpen once", async () => {
+    const path = join(dir, "concurrent.txt");
+    await writeFile(path, "text", "utf8");
+    const { log, sink } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    const opened: string[] = [];
+    manager.onDidOpen((d) => opened.push(d.uri));
+
+    const uri = pathToUri(path);
+    const [a, b] = await Promise.all([
+      manager.openDocument(uri),
+      manager.openDocument(uri),
+    ]);
+
+    expect(a).toBe(b);
+    expect(opened).toEqual([uri]);
+    expect(manager.documents).toHaveLength(1);
+  });
+
+  test("an edit landing during an in-flight save keeps the document dirty", async () => {
+    const path = join(dir, "race.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const gatedFs: DocumentManagerFs = {
+      stat: (p) => fsStat(p),
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: async (p, data, enc) => {
+        await writeGate;
+        await fsWriteFile(p, data, enc);
+      },
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({ log, sink, fs: gatedFs });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } },
+        newText: "first",
+      },
+    ]);
+
+    // The save snapshots "first" synchronously, then stalls inside
+    // writeFile — a second edit lands while the bytes are in flight.
+    const pendingSave = manager.save(uri);
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 5 }, end: { line: 0, character: 5 } },
+        newText: "!",
+      },
+    ]);
+    releaseWrite();
+    const ok = await pendingSave;
+
+    expect(ok).toBe(true);
+    // The newest edit is not in the saved bytes, so the document must
+    // still read as unsaved.
+    expect(doc.dirty).toBe(true);
+    expect(doc.getText()).toBe("first!");
+    expect(await readFile(path, "utf8")).toBe("first");
   });
 });
