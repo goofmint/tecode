@@ -45,7 +45,9 @@ function detectEol(text: string): Eol {
   return match ? (match[0] as Eol) : "\n";
 }
 
-/** The inclusive 0-based line range touched by an edit batch. */
+/** The inclusive 0-based line range touched by an edit batch, in
+ * pre-application coordinates. The caller adds `lineCountDelta` (measured
+ * around the actual buffer mutation) to complete the `DirtyRange`. */
 function dirtyRangeOf(edits: readonly TextEdit[]): { startLine: number; endLine: number } {
   let startLine = edits[0]!.range.start.line;
   let endLine = edits[0]!.range.end.line;
@@ -125,18 +127,23 @@ export function createDocument(options: CreateDocumentOptions): Document {
     // Validation/overlap/bounds errors from the buffer are programmer
     // errors (Req 5.2) — let them propagate uncaught, without bumping
     // version or firing an event.
+    const lineCountBefore = buffer.lineCount;
     const applied = buffer.applyEdits(edits);
 
     version += 1;
     dirty = true;
-    const dirtyRange = dirtyRangeOf(edits);
+    const { startLine, endLine } = dirtyRangeOf(edits);
     const inverseEdits = applied.map((a) => a.inverse);
 
     emit({
       document,
       edits: [...edits],
       version,
-      dirtyRange: { ...dirtyRange },
+      dirtyRange: {
+        startLine,
+        endLine,
+        lineCountDelta: buffer.lineCount - lineCountBefore,
+      },
       inverseEdits,
     });
   }

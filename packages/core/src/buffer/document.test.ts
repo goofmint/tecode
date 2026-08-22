@@ -94,7 +94,7 @@ describe("createDocument — applyEdits and onDidChange (Req 5.2, 5.3)", () => {
       },
     ]);
 
-    expect(events[0]!.dirtyRange).toEqual({ startLine: 1, endLine: 1 });
+    expect(events[0]!.dirtyRange).toEqual({ startLine: 1, endLine: 1, lineCountDelta: 0 });
   });
 
   test("dirtyRange spans the min start line to max end line across a multi-edit batch", () => {
@@ -121,7 +121,39 @@ describe("createDocument — applyEdits and onDidChange (Req 5.2, 5.3)", () => {
       },
     ]);
 
-    expect(events[0]!.dirtyRange).toEqual({ startLine: 1, endLine: 3 });
+    expect(events[0]!.dirtyRange).toEqual({ startLine: 1, endLine: 3, lineCountDelta: 0 });
+  });
+
+  test("dirtyRange reports the line-count delta for inserts and deletes that change line structure", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "one\ntwo\nthree",
+      sink,
+      log,
+    });
+
+    const events: DocumentChangeEvent[] = [];
+    doc.onDidChange((e) => events.push(e));
+
+    // Insert two extra lines inside line 0.
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 3 }, end: { line: 0, character: 3 } },
+        newText: "\nalpha\nbeta",
+      },
+    ]);
+    expect(events[0]!.dirtyRange).toEqual({ startLine: 0, endLine: 0, lineCountDelta: 2 });
+
+    // Delete a whole line span (now 5 lines: one, alpha, beta, two, three).
+    doc.applyEdits([
+      {
+        range: { start: { line: 1, character: 0 }, end: { line: 2, character: 4 } },
+        newText: "",
+      },
+    ]);
+    expect(events[1]!.dirtyRange).toEqual({ startLine: 1, endLine: 2, lineCountDelta: -1 });
   });
 
   test("carries inverse edits that undo the change when applied back", () => {

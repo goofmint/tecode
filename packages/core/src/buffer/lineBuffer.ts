@@ -146,6 +146,22 @@ function positionAtIn(lines: readonly string[], eol: Eol, offset: number): Posit
   return { line: lastLine, character: lines[lastLine]?.length ?? 0 };
 }
 
+/** The text `range` covers in `lines`, joined with `eol` — extracted
+ * range-locally so `applyEdits` never has to join the whole buffer just to
+ * record replaced text (documents can be 10 MB and edits arrive per
+ * keystroke). Equivalent to slicing `lines.join(eol)` between the range's
+ * offsets. */
+function sliceRange(lines: readonly string[], eol: Eol, range: Range): string {
+  const { start, end } = range;
+  if (start.line === end.line) {
+    return lines[start.line]!.slice(start.character, end.character);
+  }
+  const parts = [lines[start.line]!.slice(start.character)];
+  for (let i = start.line + 1; i < end.line; i++) parts.push(lines[i]!);
+  parts.push(lines[end.line]!.slice(0, end.character));
+  return parts.join(eol);
+}
+
 /** Splice `edit` into `lines` in place, using `edit.range` as coordinates
  * into the *current* state of `lines`. Safe to call repeatedly only when
  * processing edits bottom-up (descending by position), since a splice at
@@ -220,8 +236,6 @@ export function createLineBuffer(text: string, eol: Eol): LineBuffer {
       }
     }
 
-    const originalText = getText();
-
     // Phase 3: for each edit (ascending order), record the text it
     // replaces and the offset range its replacement will occupy in the
     // FINAL (post-batch) buffer — a simple running prefix-sum of length
@@ -236,7 +250,7 @@ export function createLineBuffer(text: string, eol: Eol): LineBuffer {
 
     let cumulativeDelta = 0;
     const withFinal = items.map(({ edit, index, startOffset, endOffset }) => {
-      const replaced = originalText.slice(startOffset, endOffset);
+      const replaced = sliceRange(lines, eol, edit.range);
       const newLength = insertedLength(edit.newText);
       const finalStart = startOffset + cumulativeDelta;
       const finalEnd = finalStart + newLength;

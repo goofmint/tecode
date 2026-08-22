@@ -18,6 +18,15 @@ export type Eol = "\n" | "\r\n";
 export interface DirtyRange {
   startLine: number;
   endLine: number;
+  /**
+   * Net change in the document's line count produced by the batch
+   * (post-edit count minus pre-edit count). When non-zero, every line
+   * below `endLine` has shifted by this amount, so a view that repaints
+   * only `startLine..endLine` must also invalidate everything below —
+   * without this a multi-line insert or delete would leave stale rows on
+   * screen (design.md §7.1's "rendering sync").
+   */
+  lineCountDelta: number;
 }
 
 /**
