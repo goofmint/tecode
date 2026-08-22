@@ -17,7 +17,7 @@ export type {
   Event,
 } from "./primitives";
 
-export type { Eol, Document, DocumentChangeEvent } from "./document";
+export type { Eol, Document, DocumentChangeEvent, DirtyRange } from "./document";
 
 export type {
   UiColorKey,
