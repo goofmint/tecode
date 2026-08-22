@@ -7,11 +7,13 @@
  * Lazy (manifest-declared, not-yet-activated) commands (design.md §4.1's
  * "lazy commands", §5's `CommandEntry = { handler?, meta, extensionId?,
  * lazy }`) are registered via {@link CommandRegistry.registerLazy} by the
- * extension host (`host/registration.ts`) with no `handler` yet — real
- * activation (calling the owning extension's `activate(ctx)` on first
- * execution) is Task 1.12; until then, executing a lazy command reports a
- * "not activated yet" `HostError` through `log`/`sink` rather than
- * throwing or silently no-op'ing.
+ * extension host (`host/registration.ts`) with no `handler` yet. Real
+ * activation (Task 1.12, `host/activation.ts`) is wired in via
+ * {@link CommandRegistryDeps.activateExtension}: `execute()` on an
+ * unresolved lazy command awaits that hook (activating the owning
+ * extension) and re-dispatches before falling back to the "not activated
+ * yet" `HostError` reported through `log`/`sink` — never throwing or
+ * silently no-op'ing either way.
  */
 
 import type {
@@ -49,6 +51,21 @@ export interface CommandRegistryDeps {
   log: HostLog;
   /** Where user-facing command errors are surfaced (Req 3.4, 3.5). */
   sink: StatusSink;
+  /**
+   * Activate the extension owning an unresolved lazy command before
+   * re-dispatching (Req 2.5, design.md §4.2's "executing a lazy command
+   * activates the extension first, then re-dispatches"). Supplied by
+   * `host/activation.ts`'s `createExtensionHost(...).activateExtension` at
+   * the assembly layer — see that module's TSDoc for the construction
+   * order. Optional so `registry.ts` has no hard dependency on the
+   * extension host: omitted (as in every registry.test.ts case with no
+   * host in the picture), `execute()` falls straight to the existing "not
+   * activated yet" error path, unchanged from Task 1.11's behavior.
+   * Documented to never throw/reject (matching `activateExtension`'s own
+   * contract); `execute()` guards the call anyway so a misbehaving
+   * implementation can't break its own never-throwing contract.
+   */
+  activateExtension?: (extensionId: string) => Promise<void>;
 }
 
 /** The public shape of the command registry — the implementation behind
@@ -99,7 +116,7 @@ export function isValidCommandId(id: string): boolean {
  * the registry owning them.
  */
 export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistry {
-  const { log, sink } = deps;
+  const { log, sink, activateExtension } = deps;
   const commands = new Map<string, CommandEntry>();
 
   /** Guarded `log.append` — an injected log must not be able to break the
@@ -177,15 +194,37 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
   }
 
   async function execute(id: string, ...args: unknown[]): Promise<unknown> {
-    const entry = commands.get(id);
+    let entry = commands.get(id);
+
+    if (entry && !entry.handler && entry.extensionId && activateExtension) {
+      // Lazy, not-yet-activated command (design.md §4.1, §4.2) — activate
+      // its owning extension, then re-look-up: activation is expected to
+      // replace this entry with a real handler via register() (Task 1.12).
+      try {
+        await activateExtension(entry.extensionId);
+      } catch (cause) {
+        // activateExtension is documented to never throw/reject; guard
+        // anyway so a misbehaving host implementation can't break
+        // execute()'s own never-throwing contract.
+        logSafely("error", {
+          extensionId: entry.extensionId,
+          message: `activateExtension("${entry.extensionId}") threw: ${describeError(cause)}`,
+        });
+      }
+      entry = commands.get(id);
+    }
+
     if (!entry) {
       const err: HostError = { message: `Command not found: ${id}` };
       notifySafely(err);
       return undefined;
     }
     if (!entry.handler) {
-      // Lazy, not-yet-activated command (design.md §4.1) — real activation
-      // is Task 1.12; for now report and stop, never throw.
+      // Still lazy after the activation attempt above (no hook wired, the
+      // entry carried no extensionId, or activation ran but the extension
+      // never registered a real handler for this ID — including a
+      // "failed" activation, design.md §4.2) — report and stop, never
+      // throw.
       const err: HostError = {
         message:
           `Command "${id}" belongs to extension "${entry.extensionId ?? "unknown"}", ` +
