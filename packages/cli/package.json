@@ -8,6 +8,7 @@
     "tecode": "src/main.ts"
   },
   "dependencies": {
+    "@tecode/api": "workspace:*",
     "@tecode/core": "workspace:*"
   }
 }
