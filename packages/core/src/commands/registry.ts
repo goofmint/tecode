@@ -4,9 +4,14 @@
  * bindings, the palette, UI callbacks, extension-to-extension calls — goes
  * through `execute` rather than a direct function call (Req 1.5).
  *
- * Lazy (manifest-declared, not-yet-activated) commands are out of scope
- * here — they arrive with the extension host task (design.md §4.1's
- * "lazy commands"); `CommandEntry` therefore carries no `lazy` flag.
+ * Lazy (manifest-declared, not-yet-activated) commands (design.md §4.1's
+ * "lazy commands", §5's `CommandEntry = { handler?, meta, extensionId?,
+ * lazy }`) are registered via {@link CommandRegistry.registerLazy} by the
+ * extension host (`host/registration.ts`) with no `handler` yet — real
+ * activation (calling the owning extension's `activate(ctx)` on first
+ * execution) is Task 1.12; until then, executing a lazy command reports a
+ * "not activated yet" `HostError` through `log`/`sink` rather than
+ * throwing or silently no-op'ing.
  */
 
 import type {
@@ -17,10 +22,23 @@ import type {
 } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 
-/** Internal registry state for one registered command. */
+/** Internal registry state for one registered command (design.md §5).
+ * `handler` is absent for a lazy (manifest-declared, not-yet-activated)
+ * command; `extensionId` is set only for lazy entries — a plain
+ * `register()` call has no extension attribution. */
 interface CommandEntry {
-  handler: CommandHandler;
+  handler?: CommandHandler;
   meta: CommandMeta;
+  extensionId?: string;
+  lazy: boolean;
+}
+
+/** Options for {@link CommandRegistry.registerLazy}. */
+export interface RegisterLazyOptions {
+  /** The extension whose `index.ts` owns this command, activated on first
+   * `execute()` once Task 1.12 wires real activation. */
+  extensionId: string;
+  meta?: CommandMeta;
 }
 
 /** Dependencies a {@link createCommandRegistry} instance reports through
@@ -34,9 +52,21 @@ export interface CommandRegistryDeps {
 }
 
 /** The public shape of the command registry — the implementation behind
- * `tecode.commands` (Req 10.1). */
+ * `tecode.commands` (Req 10.1), plus `registerLazy` (design.md §4.1),
+ * which is host-internal (extensions never call it directly; the `tecode`
+ * API surface handed to extensions exposes only `register`). */
 export interface CommandRegistry {
   register(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable;
+  /**
+   * Register a command declared in a manifest's `contributes.commands`
+   * without a handler yet (design.md §4.1, §5): the command appears in
+   * {@link list} and can be looked up by keybindings/the palette
+   * immediately, but `execute`-ing it before the owning extension has
+   * activated reports a "not activated yet" error rather than running
+   * anything. Same last-wins/duplicate-warning/`Disposable` semantics as
+   * {@link register}.
+   */
+  registerLazy(id: string, options: RegisterLazyOptions): Disposable;
   execute(id: string, ...args: unknown[]): Promise<unknown>;
   list(): CommandDescriptor[];
 }
@@ -91,22 +121,18 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
     }
   }
 
-  function register(
-    id: string,
-    handler: CommandHandler,
-    meta: CommandMeta = {},
-  ): Disposable {
-    if (!isValidCommandId(id)) {
-      throw new TypeError(
-        `Invalid command ID "${id}": expected namespace.verb form (Req 3.2)`,
-      );
-    }
+  /** Shared last-wins storage behind both {@link register} and
+   * {@link registerLazy}: warns on an existing entry under `id`, stores
+   * `entry`, and returns the identity-checked `Disposable` common to both
+   * (mirrors the entry-identity comparison design.md §5 relies on so a
+   * stale handle from a superseded registration never removes a newer
+   * one). */
+  function storeEntry(id: string, entry: CommandEntry): Disposable {
     if (commands.has(id)) {
       logSafely("warning", {
         message: `Command re-registered, replacing previous handler: ${id}`,
       });
     }
-    const entry: CommandEntry = { handler, meta };
     commands.set(id, entry);
 
     let disposed = false;
@@ -124,10 +150,49 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
     };
   }
 
+  function register(
+    id: string,
+    handler: CommandHandler,
+    meta: CommandMeta = {},
+  ): Disposable {
+    if (!isValidCommandId(id)) {
+      throw new TypeError(
+        `Invalid command ID "${id}": expected namespace.verb form (Req 3.2)`,
+      );
+    }
+    return storeEntry(id, { handler, meta, lazy: false });
+  }
+
+  function registerLazy(id: string, options: RegisterLazyOptions): Disposable {
+    if (!isValidCommandId(id)) {
+      throw new TypeError(
+        `Invalid command ID "${id}": expected namespace.verb form (Req 3.2)`,
+      );
+    }
+    return storeEntry(id, {
+      meta: options.meta ?? {},
+      extensionId: options.extensionId,
+      lazy: true,
+    });
+  }
+
   async function execute(id: string, ...args: unknown[]): Promise<unknown> {
     const entry = commands.get(id);
     if (!entry) {
       const err: HostError = { message: `Command not found: ${id}` };
+      notifySafely(err);
+      return undefined;
+    }
+    if (!entry.handler) {
+      // Lazy, not-yet-activated command (design.md §4.1) — real activation
+      // is Task 1.12; for now report and stop, never throw.
+      const err: HostError = {
+        message:
+          `Command "${id}" belongs to extension "${entry.extensionId ?? "unknown"}", ` +
+          `which has not activated yet`,
+        extensionId: entry.extensionId,
+      };
+      logSafely("warning", err);
       notifySafely(err);
       return undefined;
     }
@@ -152,5 +217,5 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
     }));
   }
 
-  return { register, execute, list };
+  return { register, registerLazy, execute, list };
 }

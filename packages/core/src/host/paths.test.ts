@@ -3,8 +3,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   getUserConfigDir,
+  getUserExtensionsDir,
   getUserKeybindingsPath,
   getUserSettingsPath,
+  getWorkspaceExtensionsDir,
   getWorkspaceSettingsPath,
 } from "./paths";
 
@@ -68,6 +70,16 @@ describe("derived file paths", () => {
   test("getWorkspaceSettingsPath appends .tecode/settings.json to the workspace root", () => {
     expect(getWorkspaceSettingsPath("/home/user/project")).toBe(
       join("/home/user/project", ".tecode", "settings.json"),
+    );
+  });
+
+  test("getUserExtensionsDir appends extensions to the config dir", () => {
+    expect(getUserExtensionsDir()).toBe(join(getUserConfigDir(), "extensions"));
+  });
+
+  test("getWorkspaceExtensionsDir appends .tecode/extensions to the workspace root", () => {
+    expect(getWorkspaceExtensionsDir("/home/user/project")).toBe(
+      join("/home/user/project", ".tecode", "extensions"),
     );
   });
 });

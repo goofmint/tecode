@@ -4,4 +4,5 @@ export {
   isValidCommandId,
   type CommandRegistry,
   type CommandRegistryDeps,
+  type RegisterLazyOptions,
 } from "./registry";

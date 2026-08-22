@@ -297,3 +297,88 @@ test("HostLog.append clones the incoming error, isolating later caller mutations
 
   expect(log.entries()[0]?.error.message).toBe("original");
 });
+
+// --- registerLazy / lazy commands (design.md §4.1, §5) ---------------------
+
+test("registerLazy adds the command to list() with its meta, but no handler runs it yet", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerLazy("demo.run", {
+    extensionId: "demo.ext",
+    meta: { title: "Run Demo", category: "Demo" },
+  });
+
+  expect(registry.list()).toEqual([
+    { id: "demo.run", title: "Run Demo", category: "Demo", when: undefined },
+  ]);
+});
+
+test("executing a lazy, not-yet-activated command reports a HostError and does not throw", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerLazy("demo.run", { extensionId: "demo.ext" });
+
+  const result = await registry.execute("demo.run", "arg");
+
+  expect(result).toBeUndefined();
+  expect(errors).toHaveLength(1);
+  expect(errors[0]?.message).toContain("demo.ext");
+  expect(errors[0]?.message.toLowerCase()).toContain("not activated yet");
+  expect(errors[0]?.extensionId).toBe("demo.ext");
+
+  const logged = log.entries();
+  expect(logged).toHaveLength(1);
+  expect(logged[0]?.level).toBe("warning");
+});
+
+test("register() over a lazy entry replaces it with a real handler that execute() then runs", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerLazy("demo.run", { extensionId: "demo.ext" });
+  registry.register("demo.run", () => "activated!");
+
+  expect(await registry.execute("demo.run")).toBe("activated!");
+});
+
+test("registerLazy rejects command IDs that are not namespace.verb form", () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  expect(() => registry.registerLazy("save", { extensionId: "demo.ext" })).toThrow(TypeError);
+});
+
+test("registerLazy's Disposable removes the command, matching register()'s dispose semantics", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  const registration = registry.registerLazy("demo.run", { extensionId: "demo.ext" });
+  registration.dispose();
+
+  const result = await registry.execute("demo.run");
+  expect(result).toBeUndefined();
+  expect(errors.at(-1)?.message).toBe("Command not found: demo.run");
+});
+
+test("registerLazy twice for the same ID logs a re-registration warning (last-wins)", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerLazy("demo.run", { extensionId: "first.ext" });
+  registry.registerLazy("demo.run", { extensionId: "second.ext" });
+
+  const result = await registry.execute("demo.run");
+  expect(result).toBeUndefined();
+
+  const warnings = log.entries().filter((e) => e.level === "warning");
+  // One for the re-registration, one for the not-activated-yet report.
+  expect(warnings.some((w) => w.error.message.includes("re-registered"))).toBe(true);
+});

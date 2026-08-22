@@ -41,3 +41,27 @@ export function getUserKeybindingsPath(): string {
 export function getWorkspaceSettingsPath(workspaceRoot: string): string {
   return join(workspaceRoot, ".tecode", "settings.json");
 }
+
+/**
+ * The user-level extensions directory, scanned second (after built-ins)
+ * during discovery (Req 2.1, design.md §4.1): `~/.config/tecode/extensions`
+ * (or the Windows equivalent under {@link getUserConfigDir}). Each
+ * immediate subdirectory is one extension.
+ *
+ * **Deviation from the original plan**: the plan mentioned `XDG_CONFIG_HOME`
+ * for this path, but `paths.ts` deliberately does not branch on that env
+ * var anywhere else (see the module TSDoc) — this helper stays consistent
+ * with the existing homedir-based resolution rather than introducing new
+ * OS-conventions handling for extensions alone.
+ */
+export function getUserExtensionsDir(): string {
+  return join(getUserConfigDir(), "extensions");
+}
+
+/** The workspace-level extensions directory, scanned last (highest
+ * precedence) during discovery (Req 2.1, design.md §4.1):
+ * `<workspaceRoot>/.tecode/extensions`. `workspaceRoot` is the workspace's
+ * root directory (an absolute path). */
+export function getWorkspaceExtensionsDir(workspaceRoot: string): string {
+  return join(workspaceRoot, ".tecode", "extensions");
+}
