@@ -185,7 +185,7 @@ function describeError(err: unknown): string {
  * trade-off, design.md §11).
  */
 function extractOffset(message: string): number | undefined {
-  const match = /position\s+(\d+)/i.exec(message);
+  const match = /\bat position\s+(\d+)/i.exec(message);
   if (!match) return undefined;
   const offset = Number(match[1]);
   return Number.isFinite(offset) ? offset : undefined;

@@ -445,6 +445,10 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
   // Per-file reload chains: two watch events for the same file firing in
   // quick succession must not run overlapping reads, or a slower-to-finish
   // older read could land after — and clobber — a newer one's result.
+  // No debounce is applied (deliberate MVP trade-off): a burst of
+  // coalesced fs.watch events just runs a few serialized reloads, and a
+  // mid-write parse error is reported once and self-heals on the burst's
+  // final event since the last-good layer is kept meanwhile.
   let userReloadChain: Promise<void> = Promise.resolve();
   let workspaceReloadChain: Promise<void> = Promise.resolve();
   let keybindingsReloadChain: Promise<void> = Promise.resolve();
@@ -552,6 +556,12 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     };
   }
 
+  /** MVP policy for duplicate keys (deliberate, documented trade-off): key
+   * registration is last-write-wins, and disposing ANY registration that
+   * touched a key removes that key's schema and default outright — an
+   * earlier contribution's schema is not restored. Extensions do not share
+   * configuration keys in practice; revisit with a per-key registration
+   * stack if that assumption ever breaks. */
   function registerConfiguration(contribution: ConfigurationContribution): Disposable {
     const keys: string[] = [];
     for (const [key, schema] of Object.entries(contribution.properties)) {
@@ -561,6 +571,11 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
         defaultsLayer[key] = schema.default;
       }
     }
+    // A registration can land after the initial load finished: revalidate
+    // the already-loaded layers so type-mismatch warnings do not depend on
+    // registration/ready ordering.
+    validateLayerTypes(userLayer, "user settings");
+    validateLayerTypes(workspaceLayer, "workspace settings");
     rebuildMerged();
 
     let regDisposed = false;

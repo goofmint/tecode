@@ -544,10 +544,22 @@ describe("ConfigService — real filesystem integration (design.md §16)", () =>
     const log = createHostLog();
     const { sink } = createRecordingSink();
     // No fs override: exercises the real node:fs/promises + node:fs.watch
-    // default. The user-level paths (~/.config/tecode/...) point at real
-    // OS paths too; a missing user config is the expected, harmless case
-    // (ENOENT -> empty layer).
-    const service = createConfigService({ log, sink, workspaceRoot: dir });
+    // default. Redirect the user-level config directory into this test's
+    // temp dir (os.homedir()/%APPDATA% both follow these env vars) so the
+    // test never reads or watches the real user's ~/.config/tecode files.
+    const savedHome = process.env["HOME"];
+    const savedAppData = process.env["APPDATA"];
+    process.env["HOME"] = dir;
+    process.env["APPDATA"] = dir;
+    let service: ReturnType<typeof createConfigService>;
+    try {
+      service = createConfigService({ log, sink, workspaceRoot: dir });
+    } finally {
+      if (savedHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = savedHome;
+      if (savedAppData === undefined) delete process.env["APPDATA"];
+      else process.env["APPDATA"] = savedAppData;
+    }
     await service.ready;
 
     expect(service.get<number>("editor.tabSize")).toBe(2);
