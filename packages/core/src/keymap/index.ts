@@ -14,3 +14,12 @@ export {
   type WhenOrNode,
 } from "./when";
 export { createContextService, type ContextService } from "./context";
+export { normalizeKey } from "./normalize";
+export {
+  createBindingTable,
+  type BindingLayer,
+  type BindingTable,
+  type BindingTableDeps,
+  type KeymapLayers,
+  type ResolvedBinding,
+} from "./bindingTable";
