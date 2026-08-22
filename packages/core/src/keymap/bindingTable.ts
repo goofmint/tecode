@@ -13,16 +13,21 @@
  * owns compilation and only ever evaluates already-known-valid ASTs on
  * lookup.
  *
- * Chord sequences (Req 4.4, `ctrl+k ctrl+s`) are out of scope here (Task
- * 1.6); this table resolves single strokes. The table key is nonetheless a
- * plain string so a future 2-stroke canonical sequence (e.g.
- * `"ctrl+k ctrl+s"`, strokes joined by a space after each is normalized)
- * can become a key without changing this table's shape.
+ * Chord sequences (Req 4.4, `ctrl+k ctrl+s`, design.md §6.3) are table
+ * keys, not a separate concept: a multi-stroke binding's `key` normalizes
+ * to its canonical strokes joined by a single space (e.g.
+ * `"ctrl+k ctrl+s"`), so {@link BindingTable.lookup} already resolves a
+ * *complete* sequence — the caller (Task 1.6's chord state machine) just
+ * needs to hand it the space-joined canonical strokes typed so far.
+ * {@link BindingTable.hasSequencePrefix} is the other half: it answers
+ * whether a *partial* sequence should keep listening for another stroke
+ * (a chord "prefix wins" transition), without the chord machine needing to
+ * know anything about how bindings are compiled or stored.
  */
 
 import type { KeybindingContribution } from "@tecode/api";
 import type { HostLog } from "../host/errors";
-import { normalizeKey } from "./normalize";
+import { normalizeKeySequence } from "./normalize";
 import { compileWhen, WhenParseError, type CompiledWhen, type WhenContextGetter } from "./when";
 
 /** The four binding layers, in ascending precedence order (design.md §6.2,
@@ -99,6 +104,20 @@ export interface BindingTable {
    * expected to normalize the live key event the same way).
    */
   lookup(canonicalStroke: string, get: WhenContextGetter): ResolvedBinding | undefined;
+  /**
+   * Whether `sequence` (a space-joined run of canonical strokes typed so
+   * far, e.g. `"ctrl+k"`) is a genuine *prefix* of some longer binding —
+   * i.e. some registered key starts with `sequence + " "` — and that
+   * longer binding is currently visible and when-passing (design.md §6.3:
+   * the chord machine only enters *pending* state for a prefix that could
+   * actually resolve to something right now).
+   *
+   * A prefix whose only continuation's `when` clause fails against `get`
+   * returns `false` here, exactly as `lookup` would refuse to resolve that
+   * continuation — a chord that can never fire under the current context
+   * should not make the machine wait for it.
+   */
+  hasSequencePrefix(sequence: string, get: WhenContextGetter): boolean;
   /** Enumerate every visible (non-removal, non-masked) binding, grouped by
    * canonical key, in ascending precedence order per key. Feeds
    * `keybindings.showResolved` (Req 11.7) — no `when` filtering here,
@@ -170,6 +189,29 @@ export function createBindingTable(
     visibleByKey.set(key, visibleEntries(bucket));
   }
 
+  // A prefix index for hasSequencePrefix (design.md §6.3): for every
+  // multi-token key (a chord sequence), map each of its proper prefixes —
+  // "ctrl+k" and, for a 3+ stroke key, "ctrl+k ctrl+s" too — to the set of
+  // full keys that extend it. This is a static fact of the table's key
+  // set, so it is computed once here rather than re-scanning every key on
+  // every keystroke (hasSequencePrefix runs on the same hot path as
+  // lookup). Correctness comes first — this is just a cache of "which full
+  // keys start with this prefix", not a decision about `when`, which is
+  // still evaluated per call against live context.
+  const sequencePrefixIndex = new Map<string, Set<string>>();
+  for (const key of byKey.keys()) {
+    const tokens = key.split(" ");
+    for (let i = 1; i < tokens.length; i++) {
+      const prefix = tokens.slice(0, i).join(" ");
+      let extensions = sequencePrefixIndex.get(prefix);
+      if (!extensions) {
+        extensions = new Set();
+        sequencePrefixIndex.set(prefix, extensions);
+      }
+      extensions.add(key);
+    }
+  }
+
   function lookup(canonicalStroke: string, get: WhenContextGetter): ResolvedBinding | undefined {
     const visible = visibleByKey.get(canonicalStroke);
     if (!visible) return undefined;
@@ -185,6 +227,20 @@ export function createBindingTable(
     return undefined;
   }
 
+  function hasSequencePrefix(sequence: string, get: WhenContextGetter): boolean {
+    const extensions = sequencePrefixIndex.get(sequence);
+    if (!extensions) return false;
+
+    for (const key of extensions) {
+      const visible = visibleByKey.get(key);
+      if (!visible) continue;
+      for (const entry of visible) {
+        if (passesWhen(entry, get)) return true;
+      }
+    }
+    return false;
+  }
+
   function entries(): ReadonlyMap<string, ResolvedBinding[]> {
     const result = new Map<string, ResolvedBinding[]>();
     for (const [key, visible] of visibleByKey) {
@@ -193,7 +249,7 @@ export function createBindingTable(
     return result;
   }
 
-  return { lookup, entries };
+  return { lookup, hasSequencePrefix, entries };
 }
 
 /** Compile one manifest/keybindings.json entry into a {@link CompiledEntry},
@@ -224,7 +280,10 @@ function compileEntry(
     return undefined;
   }
 
-  const key = normalizeKey(contribution.key);
+  // A key may be a single stroke or a space-joined chord sequence (Req 4.4,
+  // design.md §6.3) — normalizeKeySequence handles both, normalizing each
+  // stroke independently rather than misparsing the whole string as one.
+  const key = normalizeKeySequence(contribution.key);
   if (key.length === 0) {
     logSafely(
       log,

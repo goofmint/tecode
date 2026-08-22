@@ -370,6 +370,116 @@ test("non-string key or command entries are skipped with a warning, never thrown
   }
 });
 
+describe("createBindingTable — chord sequence keys (Req 4.4, design.md §6.3)", () => {
+  test("lookup resolves a 2-stroke sequence key exactly like any other key", () => {
+    const layers = layersOf({
+      user: [{ key: "ctrl+k ctrl+s", command: "keybindings.open" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.lookup("ctrl+k ctrl+s", contextOf())?.command).toBe("keybindings.open");
+    // The bare prefix is not itself a bound key.
+    expect(table.lookup("ctrl+k", contextOf())).toBeUndefined();
+  });
+
+  test("hasSequencePrefix is true for a real prefix of a bound sequence", () => {
+    const layers = layersOf({
+      user: [{ key: "ctrl+k ctrl+s", command: "keybindings.open" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.hasSequencePrefix("ctrl+k", contextOf())).toBe(true);
+  });
+
+  test("hasSequencePrefix is false for a stroke that is not a prefix of anything", () => {
+    const layers = layersOf({
+      user: [{ key: "ctrl+k ctrl+s", command: "keybindings.open" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.hasSequencePrefix("ctrl+z", contextOf())).toBe(false);
+    // The full sequence itself is not a "prefix of something longer".
+    expect(table.hasSequencePrefix("ctrl+k ctrl+s", contextOf())).toBe(false);
+  });
+
+  test("a prefix whose only continuation's when clause fails is not reported as a prefix", () => {
+    const layers = layersOf({
+      user: [
+        {
+          key: "ctrl+k ctrl+s",
+          command: "keybindings.open",
+          when: "editorTextFocus",
+        },
+      ],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.hasSequencePrefix("ctrl+k", contextOf({ editorTextFocus: false }))).toBe(
+      false,
+    );
+    expect(table.hasSequencePrefix("ctrl+k", contextOf({ editorTextFocus: true }))).toBe(
+      true,
+    );
+  });
+
+  test("hasSequencePrefix is true if ANY continuation of the prefix passes when, even if others don't", () => {
+    const layers = layersOf({
+      user: [
+        {
+          key: "ctrl+k ctrl+s",
+          command: "editor.action.save",
+          when: "false",
+        },
+        { key: "ctrl+k ctrl+d", command: "editor.action.deleteLine" },
+      ],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.hasSequencePrefix("ctrl+k", contextOf())).toBe(true);
+  });
+
+  test("masked (removed) continuations do not count as a live prefix", () => {
+    const layers = layersOf({
+      defaults: [{ key: "ctrl+k ctrl+s", command: "keybindings.open" }],
+      user: [{ key: "ctrl+k ctrl+s", command: "-keybindings.open" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.hasSequencePrefix("ctrl+k", contextOf())).toBe(false);
+  });
+
+  test("a 3-stroke binding reports both intermediate prefixes, and neither prefix nor full key leaks into lookup early", () => {
+    const layers = layersOf({
+      user: [{ key: "ctrl+k ctrl+s ctrl+x", command: "chained.command" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.hasSequencePrefix("ctrl+k", contextOf())).toBe(true);
+    expect(table.hasSequencePrefix("ctrl+k ctrl+s", contextOf())).toBe(true);
+    // The full sequence is a complete key, not a prefix of anything longer.
+    expect(table.hasSequencePrefix("ctrl+k ctrl+s ctrl+x", contextOf())).toBe(false);
+
+    // Intermediate sequences are not bound keys themselves.
+    expect(table.lookup("ctrl+k ctrl+s", contextOf())).toBeUndefined();
+    expect(table.lookup("ctrl+k ctrl+s ctrl+x", contextOf())?.command).toBe("chained.command");
+  });
+
+  test("normalization applies before sequence matching (mixed-case, unsorted modifiers)", () => {
+    const layers = layersOf({
+      user: [{ key: "Ctrl+K Shift+Ctrl+S", command: "keybindings.open" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    // normalizeKey operates per-stroke; each space-separated token is
+    // normalized independently before joining, matching normalize.ts's
+    // documented contract for chord splitting.
+    expect(table.hasSequencePrefix("ctrl+k", contextOf())).toBe(true);
+    expect(table.lookup("ctrl+k ctrl+shift+s", contextOf())?.command).toBe(
+      "keybindings.open",
+    );
+  });
+});
+
 test("a removal entry with a when clause is skipped with a warning, leaving lower bindings intact", () => {
   const log = createHostLog();
   const table = createBindingTable(

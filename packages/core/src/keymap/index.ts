@@ -1,6 +1,9 @@
-// The keymap service (design.md §6): the when-clause evaluator (§6.4) and
-// context service land here first; the input pipeline, resolution model
-// (§6.2), and chord state machine (§6.3) are later tasks.
+// The keymap service (design.md §6): the when-clause evaluator (§6.4),
+// context service, layered binding table (§6.2), and chord state machine
+// (§6.3, Req 4.4) are wired up here. The full input pipeline (§6.1) —
+// subscribing to real OpenTUI key events and driving this state machine
+// from them — lands with the UI shell task.
+
 export {
   compileWhen,
   WhenParseError,
@@ -14,7 +17,7 @@ export {
   type WhenOrNode,
 } from "./when";
 export { createContextService, type ContextService } from "./context";
-export { normalizeKey } from "./normalize";
+export { normalizeKey, normalizeKeySequence } from "./normalize";
 export {
   createBindingTable,
   type BindingLayer,
@@ -23,3 +26,10 @@ export {
   type KeymapLayers,
   type ResolvedBinding,
 } from "./bindingTable";
+export {
+  createChordStateMachine,
+  CHORD_TIMEOUT_MS,
+  type ChordStateMachine,
+  type ChordStateMachineDeps,
+  type ChordScheduler,
+} from "./chords";

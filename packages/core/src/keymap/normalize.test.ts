@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeKey } from "./normalize";
+import { normalizeKey, normalizeKeySequence } from "./normalize";
 
 describe("normalizeKey — modifier order independence", () => {
   test("shift+ctrl+p and ctrl+shift+p normalize identically", () => {
@@ -106,4 +106,10 @@ test("whitespace around separators and ends is tolerated", () => {
   expect(normalizeKey("ctrl + p")).toBe(normalizeKey("ctrl+p"));
   expect(normalizeKey(" Ctrl+ Shift+P ")).toBe(normalizeKey("ctrl+shift+p"));
   expect(normalizeKey("ctrl + +")).toBe(normalizeKey("ctrl++"));
+});
+
+test("normalizeKeySequence keeps sloppy '+'-adjacent whitespace as one stroke", () => {
+  expect(normalizeKeySequence("ctrl + p")).toBe("ctrl+p");
+  expect(normalizeKeySequence("ctrl+k ctrl + s")).toBe("ctrl+k ctrl+s");
+  expect(normalizeKeySequence("Ctrl+K  Shift+Ctrl+S")).toBe("ctrl+k ctrl+shift+s");
 });
