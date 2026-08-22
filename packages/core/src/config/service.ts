@@ -51,16 +51,34 @@ import { parseJsonc } from "./jsonc";
 export interface ConfigServiceFs {
   readFile(path: string): Promise<string>;
   /** Start watching `path`; `onChange` is called (with no arguments) on
-   * every change the underlying watcher reports. Returns a handle whose
-   * `close()` stops watching. */
-  watch(path: string, onChange: () => void): { close(): void };
+   * every change the underlying watcher reports, and `onError` (when
+   * given) receives asynchronous watcher failures — an implementation
+   * must never let one escape as an unhandled `"error"` event. Returns a
+   * handle whose `close()` stops watching. */
+  watch(
+    path: string,
+    onChange: () => void,
+    onError?: (cause: unknown) => void,
+  ): { close(): void };
 }
 
 function createNodeConfigFs(): ConfigServiceFs {
   return {
     readFile: (path) => nodeReadFile(path, "utf8"),
-    watch: (path, onChange) => {
+    watch: (path, onChange, onError) => {
       const watcher = nodeWatch(path, () => onChange());
+      // An FSWatcher is an EventEmitter: an "error" event with no
+      // listener is rethrown as an uncaught exception and kills the whole
+      // process. Absorb it, close the now-dead watcher, and hand the
+      // failure to the caller to report instead.
+      watcher.on("error", (cause) => {
+        try {
+          watcher.close();
+        } catch {
+          // Already closed/broken — nothing more to release.
+        }
+        onError?.(cause);
+      });
       return {
         close() {
           watcher.close();
@@ -221,7 +239,7 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
   const defaultsLayer: Record<string, unknown> = {};
   let userLayer: Record<string, unknown> = {};
   let workspaceLayer: Record<string, unknown> = {};
-  let merged: Record<string, unknown> = {};
+  let merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   let keybindingEntries: unknown[] = [];
 
   const changeListeners = new Set<Listener<ConfigChangeEvent>>();
@@ -247,7 +265,15 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
   }
 
   function computeMerged(): Record<string, unknown> {
-    return { ...defaultsLayer, ...userLayer, ...workspaceLayer };
+    // Null prototype: config keys are arbitrary strings, so a plain
+    // literal would leak Object.prototype members — get("toString") must
+    // be undefined unless actually configured.
+    return Object.assign(
+      Object.create(null) as Record<string, unknown>,
+      defaultsLayer,
+      userLayer,
+      workspaceLayer,
+    );
   }
 
   function diffChangedKeys(
@@ -447,7 +473,17 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
    * for the MVP). */
   function watchFile(path: string, onChange: () => void, label: string): void {
     try {
-      const handle = fs.watch(path, onChange);
+      const handle = fs.watch(path, onChange, (cause) => {
+        // Asynchronous watcher failure (file deleted, OS watch limit,
+        // stale handle, ...): the watcher is closed by the fs seam; live
+        // reload for this file stops until restart. Report, don't crash.
+        logSafely("warning", {
+          message:
+            `Watcher for ${label} (${path}) failed: ${describeError(cause)}. ` +
+            `Live reload for this file is disabled until restart (MVP limitation).`,
+          path,
+        });
+      });
       if (disposed) {
         // A dispose() landed while this synchronous call was in flight
         // (impossible in practice given JS's single-threaded execution,

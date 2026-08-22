@@ -565,3 +565,52 @@ describe("ConfigService — real filesystem integration (design.md §16)", () =>
     service.dispose();
   }, 15_000);
 });
+
+describe("createConfigService — review regressions", () => {
+  test("get() does not leak Object.prototype members for unconfigured keys", async () => {
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const fake = createFakeFs();
+    const service = createConfigService({ log, sink, fs: fake.fs });
+    await service.ready;
+
+    expect(service.get("toString")).toBeUndefined();
+    expect(service.get("constructor")).toBeUndefined();
+    expect(service.get("hasOwnProperty")).toBeUndefined();
+    service.dispose();
+  });
+
+  test("an asynchronous watcher failure is reported as a warning, not thrown", async () => {
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const errorCallbacks: ((cause: unknown) => void)[] = [];
+    const failingFs: ConfigServiceFs = {
+      async readFile(path) {
+        throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+      },
+      watch(path, onChange, onError) {
+        void path;
+        void onChange;
+        if (onError) errorCallbacks.push(onError);
+        return {
+          close() {
+            // Nothing to release in this stub.
+          },
+        };
+      },
+    };
+    const service = createConfigService({ log, sink, fs: failingFs });
+    await service.ready;
+
+    // Every watcher's async failure path funnels through the onError
+    // callback — firing it must only record a warning.
+    expect(errorCallbacks.length).toBeGreaterThan(0);
+    for (const cb of errorCallbacks) cb(new Error("watch limit reached"));
+
+    const warnings = log.entries().filter((e) => e.level === "warning");
+    expect(
+      warnings.some((e) => e.error.message.includes("watch limit reached")),
+    ).toBe(true);
+    service.dispose();
+  });
+});
