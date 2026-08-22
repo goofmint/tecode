@@ -135,6 +135,12 @@ function positionAtIn(lines: readonly string[], eol: Eol, offset: number): Posit
       return { line, character: remaining };
     }
     remaining -= lineText.length + eol.length;
+    if (remaining < 0) {
+      // The offset points inside the EOL sequence itself (the second code
+      // unit of a CRLF): round forward to the start of the next line
+      // rather than returning a negative character.
+      return { line: line + 1, character: 0 };
+    }
   }
   const lastLine = lines.length - 1;
   return { line: lastLine, character: lines[lastLine]?.length ?? 0 };
@@ -220,12 +226,21 @@ export function createLineBuffer(text: string, eol: Eol): LineBuffer {
     // replaces and the offset range its replacement will occupy in the
     // FINAL (post-batch) buffer — a simple running prefix-sum of length
     // deltas, since edits are non-overlapping and sorted by position.
+    // `newText` as it will actually sit in the buffer: split on any line
+    // break and rejoined with this buffer's eol, so its length matches the
+    // final offset space even when the edit's line breaks differ from
+    // `eol` (e.g. a "\n" insert into a "\r\n" buffer occupies one extra
+    // code unit per line break).
+    const insertedLength = (newText: string): number =>
+      splitIntoLines(newText).join(eol).length;
+
     let cumulativeDelta = 0;
     const withFinal = items.map(({ edit, index, startOffset, endOffset }) => {
       const replaced = originalText.slice(startOffset, endOffset);
+      const newLength = insertedLength(edit.newText);
       const finalStart = startOffset + cumulativeDelta;
-      const finalEnd = finalStart + edit.newText.length;
-      cumulativeDelta += edit.newText.length - (endOffset - startOffset);
+      const finalEnd = finalStart + newLength;
+      cumulativeDelta += newLength - (endOffset - startOffset);
       return { edit, index, startOffset, replaced, finalStart, finalEnd };
     });
 

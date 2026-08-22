@@ -319,3 +319,53 @@ describe("createLineBuffer — eol handling", () => {
     expect(buffer.positionAt(4)).toEqual({ line: 1, character: 0 });
   });
 });
+
+describe("createLineBuffer — CRLF edge cases (review regressions)", () => {
+  test("positionAt never returns a negative character for an offset inside a CRLF pair", () => {
+    const buffer = createLineBuffer("ab\ncd", "\r\n");
+    // Offsets: a=0 b=1 \r=2 \n=3 c=4 d=5. Offset 3 sits inside the EOL
+    // sequence and must round forward to the start of the next line.
+    expect(buffer.positionAt(2)).toEqual({ line: 0, character: 2 });
+    expect(buffer.positionAt(3)).toEqual({ line: 1, character: 0 });
+    expect(buffer.positionAt(4)).toEqual({ line: 1, character: 0 });
+    expect(buffer.positionAt(5)).toEqual({ line: 1, character: 1 });
+  });
+
+  test("inverse edits stay correct when newText's line breaks differ from the buffer eol", () => {
+    // "\n" inside newText occupies TWO code units ("\r\n") once spliced
+    // into a CRLF buffer — the inverse range must use the normalized
+    // length, or undo corrupts the document.
+    const buffer = createLineBuffer("ab\r\ncd", "\r\n");
+    const original = buffer.getText();
+
+    const applied = buffer.applyEdits([
+      {
+        range: { start: { line: 0, character: 1 }, end: { line: 0, character: 1 } },
+        newText: "x\ny",
+      },
+    ]);
+    expect(buffer.getText()).toBe("ax\r\nyb\r\ncd");
+
+    buffer.applyEdits(applied.map(({ inverse }) => inverse));
+    expect(buffer.getText()).toBe(original);
+  });
+
+  test("a batch with mixed-newline inserts round-trips through its inverses on a CRLF buffer", () => {
+    const buffer = createLineBuffer("one\r\ntwo\r\nthree", "\r\n");
+    const original = buffer.getText();
+
+    const applied = buffer.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
+        newText: "1\n1",
+      },
+      {
+        range: { start: { line: 2, character: 5 }, end: { line: 2, character: 5 } },
+        newText: "\r\nfour\nfive",
+      },
+    ]);
+
+    buffer.applyEdits(applied.map(({ inverse }) => inverse));
+    expect(buffer.getText()).toBe(original);
+  });
+});
