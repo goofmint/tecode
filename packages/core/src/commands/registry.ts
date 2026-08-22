@@ -64,6 +64,14 @@ export interface CommandRegistryDeps {
    * Documented to never throw/reject (matching `activateExtension`'s own
    * contract); `execute()` guards the call anyway so a misbehaving
    * implementation can't break its own never-throwing contract.
+   *
+   * Re-entrancy contract: the implementation must resolve immediately for
+   * a call re-entering an activation already in progress on the current
+   * async path — an extension executing its own still-lazy command from
+   * inside `activate(ctx)`, or a mutual activation cycle. `execute()`
+   * keeps no re-entrancy state of its own, so an implementation that
+   * hands back its own in-flight activation promise here deadlocks
+   * (`createExtensionHost` satisfies this via its activation context).
    */
   activateExtension?: (extensionId: string) => Promise<void>;
 }

@@ -247,13 +247,15 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
    * extension into one activation (see {@link ExtensionHost.activateExtension}'s
    * TSDoc). */
   const inFlight = new Map<string, Promise<void>>();
-  // The extension ID whose activate(ctx) is executing on the current async
-  // path. Lets activateExtension tell SELF-re-entrancy (an extension
-  // triggering its own activation from inside activate — awaiting the
-  // shared in-flight promise there would deadlock, since that promise
-  // cannot settle until activate returns) apart from an unrelated
-  // concurrent caller, who safely awaits the shared promise.
-  const activatingContext = new AsyncLocalStorage<string>();
+  // The SET of extension IDs whose activate(ctx) calls are executing on the
+  // current async path (a set, not a single ID: nested activations — A's
+  // activate triggering B's — must keep A visible, or an A→B→A cycle would
+  // evade detection and deadlock). Lets activateExtension tell re-entrancy
+  // into an activation already on this path (awaiting its shared in-flight
+  // promise would deadlock, since that promise cannot settle until the
+  // activate above us returns) apart from an unrelated concurrent caller,
+  // who safely awaits the shared promise.
+  const activatingContext = new AsyncLocalStorage<ReadonlySet<string>>();
   // One-way shutdown latch (see disposeAll): once disposal has begun, new
   // activations must not start, or they would finish after shutdown and
   // leave an "active" extension with never-disposed subscriptions.
@@ -348,7 +350,12 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
         // extension executing its own still-lazy command — resolves
         // immediately instead of deadlocking on its own in-flight promise.
         const activate = extensionModule.activate;
-        await activatingContext.run(id, () => Promise.resolve(activate(ctx)));
+        // Union with any outer activation chain so a nested activation
+        // (A's activate triggering B's) keeps every in-progress ID visible
+        // for cycle detection above.
+        const chain = new Set(activatingContext.getStore() ?? []);
+        chain.add(id);
+        await activatingContext.run(chain, () => Promise.resolve(activate(ctx)));
       }
       runtime.state = "active";
       runtime.module = extensionModule;
@@ -361,12 +368,14 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
     // After shutdown has begun, starting (or joining) an activation would
     // let it complete on a disposed host — refuse quietly.
     if (shutDown) return Promise.resolve();
-    // Self-re-entrancy: this call originates from inside this very
-    // extension's activate(ctx). Returning the shared in-flight promise
-    // would deadlock (it can't settle until activate returns), so resolve
+    // Re-entrancy into an activation already running on this async path —
+    // directly (an extension executing its own lazy command from inside
+    // activate) or through a cycle (A's activate triggers B, whose activate
+    // triggers A). Returning the shared in-flight promise would deadlock
+    // (it can't settle until the activate above us returns), so resolve
     // immediately — the caller (e.g. a lazy command execute) then proceeds
     // down its documented not-yet-activated path.
-    if (activatingContext.getStore() === id) return Promise.resolve();
+    if (activatingContext.getStore()?.has(id)) return Promise.resolve();
     const record = records.get(id);
     const runtime = runtimes.get(id);
     if (!record || !runtime || runtime.state !== "registered") {

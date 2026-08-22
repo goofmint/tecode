@@ -400,6 +400,45 @@ test("a concurrent external execute() of the same lazy command awaits the shared
   expect(activations).toBe(1);
 });
 
+test("a mutual activation cycle (A's activate runs B's command, B's activate runs A's) does not deadlock", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const commands = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: (extensionId) => host.activateExtension(extensionId),
+  });
+  const extA = fixtureRecord("cycle.a", { activationEvents: ["onCommand:a.run"] }, {
+    async activate(ctx: ExtensionContext) {
+      // Triggers B's activation mid-way through A's own.
+      await ctx.api.commands.execute("b.run");
+      ctx.api.commands.register("a.run", () => "a-ready");
+    },
+  });
+  const extB = fixtureRecord("cycle.b", { activationEvents: ["onCommand:b.run"] }, {
+    async activate(ctx: ExtensionContext) {
+      // Closes the cycle back to A, whose activation is still in flight
+      // above us — must short-circuit, not await it.
+      await ctx.api.commands.execute("a.run");
+      ctx.api.commands.register("b.run", () => "b-ready");
+    },
+  });
+  const host = createExtensionHost({
+    extensions: [extA, extB],
+    api: fixtureApi(commands),
+    log,
+    sink,
+  });
+  commands.registerLazy("a.run", { extensionId: "cycle.a" });
+  commands.registerLazy("b.run", { extensionId: "cycle.b" });
+
+  const result = await commands.execute("a.run");
+
+  expect(result).toBe("a-ready");
+  expect(host.getState("cycle.a")).toBe("active");
+  expect(host.getState("cycle.b")).toBe("active");
+});
+
 test("an extension executing its own lazy command during activate() does not deadlock", async () => {
   const log = createHostLog();
   const { errors, sink } = createRecordingSink();
