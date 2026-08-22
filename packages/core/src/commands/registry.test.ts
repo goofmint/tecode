@@ -367,6 +367,138 @@ test("registerLazy's Disposable removes the command, matching register()'s dispo
   expect(errors.at(-1)?.message).toBe("Command not found: demo.run");
 });
 
+// --- activateExtension hook (design.md §4.2, Task 1.12) --------------------
+
+test("execute() awaits the activateExtension hook and re-dispatches once it resolves the handler", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const activateCalls: string[] = [];
+  const registry = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: async (extensionId) => {
+      activateCalls.push(extensionId);
+      // Simulate the extension host's activate(ctx) replacing the lazy
+      // entry with a real handler via ctx.api.commands.register.
+      registry.register("demo.run", () => "activated!");
+    },
+  });
+  registry.registerLazy("demo.run", { extensionId: "demo.ext" });
+
+  const result = await registry.execute("demo.run");
+
+  expect(result).toBe("activated!");
+  expect(activateCalls).toEqual(["demo.ext"]);
+});
+
+test("execute() calls activateExtension only once across repeated executes once the handler resolves", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const activateCalls: string[] = [];
+  const registry = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: async (extensionId) => {
+      activateCalls.push(extensionId);
+      registry.register("demo.run", () => "activated!");
+    },
+  });
+  registry.registerLazy("demo.run", { extensionId: "demo.ext" });
+
+  await registry.execute("demo.run");
+  await registry.execute("demo.run");
+
+  expect(activateCalls).toEqual(["demo.ext"]);
+});
+
+test("execute() falls back to the not-activated-yet error when activateExtension does not resolve a handler", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const activateCalls: string[] = [];
+  const registry = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: async (extensionId) => {
+      // The extension "activates" but never registers a real handler for
+      // this command (e.g. it failed, or the manifest was wrong).
+      activateCalls.push(extensionId);
+    },
+  });
+  registry.registerLazy("demo.run", { extensionId: "demo.ext" });
+
+  const result = await registry.execute("demo.run");
+
+  expect(result).toBeUndefined();
+  expect(activateCalls).toEqual(["demo.ext"]);
+  expect(errors.at(-1)?.message.toLowerCase()).toContain("not activated yet");
+  expect(errors.at(-1)?.extensionId).toBe("demo.ext");
+});
+
+test("execute() never calls activateExtension for a command with no extensionId (plain register)", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  let activateCalls = 0;
+  const registry = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: async () => {
+      activateCalls += 1;
+    },
+  });
+  registry.register("editor.action.foo", () => "ok");
+
+  expect(await registry.execute("editor.action.foo")).toBe("ok");
+  expect(activateCalls).toBe(0);
+});
+
+test("execute() never calls activateExtension for an unknown command ID", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  let activateCalls = 0;
+  const registry = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: async () => {
+      activateCalls += 1;
+    },
+  });
+
+  expect(await registry.execute("no.such.command")).toBeUndefined();
+  expect(activateCalls).toBe(0);
+});
+
+test("without an activateExtension hook, execute() keeps Task 1.11's not-activated-yet behavior unchanged", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+  registry.registerLazy("demo.run", { extensionId: "demo.ext" });
+
+  const result = await registry.execute("demo.run");
+
+  expect(result).toBeUndefined();
+  expect(errors.at(-1)?.message.toLowerCase()).toContain("not activated yet");
+});
+
+test("execute() keeps its never-throwing contract when activateExtension itself throws", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: async () => {
+      throw new Error("activation exploded");
+    },
+  });
+  registry.registerLazy("demo.run", { extensionId: "demo.ext" });
+
+  const result = await registry.execute("demo.run");
+
+  expect(result).toBeUndefined();
+  expect(errors.at(-1)?.extensionId).toBe("demo.ext");
+  const logged = log.entries().filter((e) => e.level === "error");
+  expect(logged.some((e) => e.error.message.includes("activation exploded"))).toBe(true);
+});
+
 test("registerLazy twice for the same ID logs a re-registration warning (last-wins)", async () => {
   const log = createHostLog();
   const { sink } = createRecordingSink();
