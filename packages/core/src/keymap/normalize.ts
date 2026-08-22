@@ -146,6 +146,8 @@ export function normalizeKeySequence(sequence: string): string {
     // ("ctrl + p") stays one stroke rather than becoming a 3-stroke
     // sequence — whitespace only separates strokes where it isn't hugging
     // a "+" separator ("ctrl+k ctrl + s" is still two strokes).
+    // Trade-off: a bare "+" key cannot be a standalone later stroke —
+    // "ctrl+k +" collapses to the single stroke "ctrl+k++".
     .replace(/\s*\+\s*/g, "+")
     .split(/\s+/)
     .filter((stroke) => stroke.length > 0)
