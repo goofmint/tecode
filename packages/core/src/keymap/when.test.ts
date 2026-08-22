@@ -203,3 +203,11 @@ describe("compileWhen — AST-cache guarantee", () => {
     parseSpy.mockRestore();
   });
 });
+
+test("eq against a Symbol context value is false rather than throwing", () => {
+  const compiled = compileWhen("editorLangId == 'ts'");
+  const get = (key: string) =>
+    key === "editorLangId" ? Symbol("ts") : undefined;
+
+  expect(compiled.evaluate(get)).toBe(false);
+});

@@ -294,6 +294,10 @@ function evaluateNode(node: WhenNode, get: WhenContextGetter): boolean {
       // §6.4) — checked explicitly so a clause like `x == 'undefined'`
       // can't accidentally match an unset key.
       if (actual === undefined) return false;
+      // Symbols can't be stringified (String() throws TypeError) and can
+      // never equal a string literal — treat as not-equal to keep
+      // evaluate's never-throwing contract.
+      if (typeof actual === "symbol") return false;
       return String(actual) === node.value;
     }
     case "not":
