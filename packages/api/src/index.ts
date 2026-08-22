@@ -26,6 +26,7 @@ export type {
   RGB,
   Style,
   ResolvedTheme,
+  ThemeContribution,
 } from "./theme";
 
 export type {
@@ -71,7 +72,6 @@ export type {
   ConfigNamespace,
   ContextNamespace,
   LanguagesNamespace,
-  ThemeContribution,
   ThemesNamespace,
   Tecode,
 } from "./namespaces";

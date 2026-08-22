@@ -14,7 +14,7 @@ import type {
   Uri,
 } from "./primitives";
 import type { Document } from "./document";
-import type { ResolvedTheme } from "./theme";
+import type { ResolvedTheme, ThemeContribution } from "./theme";
 import type { CommandMeta, LanguageContribution } from "./manifest";
 
 /* ------------------------------------------------------------------ */
@@ -27,11 +27,8 @@ export type CommandHandler = (...args: unknown[]) => unknown;
 
 /** One entry of `commands.list()` — the palette's view of a registered
  * command (design.md §5). */
-export interface CommandDescriptor {
+export interface CommandDescriptor extends CommandMeta {
   id: string;
-  title?: string;
-  category?: string;
-  when?: string;
 }
 
 /**
@@ -295,15 +292,6 @@ export interface LanguagesNamespace {
 /* ------------------------------------------------------------------ */
 /* tecode.themes                                                       */
 /* ------------------------------------------------------------------ */
-
-/** A theme registered at runtime (a runtime-equivalent of one
- * `contributes.themes` entry). */
-export interface ThemeContribution {
-  id: string;
-  label: string;
-  /** Path to the theme's VS Code-subset color theme JSON. */
-  path: string;
-}
 
 /**
  * Theme registration and the active theme (Req 7, 10.1).

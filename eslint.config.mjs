@@ -41,6 +41,23 @@ export default tseslint.config(
           ],
         },
       ],
+      // no-restricted-imports only sees static imports; also block dynamic
+      // import() and require() of @tecode/core by string literal.
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "ImportExpression > Literal[value=/^@tecode\\u002Fcore(\\u002F.*)?$/]",
+          message:
+            "Dynamic import of @tecode/core crosses the extension/core boundary; go through the command registry (tecode.commands) instead.",
+        },
+        {
+          selector:
+            "CallExpression[callee.name='require'] > Literal[value=/^@tecode\\u002Fcore(\\u002F.*)?$/]",
+          message:
+            "require() of @tecode/core crosses the extension/core boundary; go through the command registry (tecode.commands) instead.",
+        },
+      ],
     },
   },
 );

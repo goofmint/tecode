@@ -124,3 +124,16 @@ export interface ResolvedTheme {
   colors: Record<UiColorKey, RGB>;
   tokens: Partial<Record<CaptureName, Style>>;
 }
+
+/**
+ * One theme a manifest's `contributes.themes` declares — and the same
+ * shape `tecode.themes.register` accepts at runtime, so both paths
+ * normalize to a single internal representation (Req 7.1).
+ */
+export interface ThemeContribution {
+  id: string;
+  /** Display name shown in the theme picker. */
+  label: string;
+  /** Path to the theme's VS Code-subset color theme JSON. */
+  path: string;
+}

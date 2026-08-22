@@ -8,6 +8,7 @@
 
 import type { Disposable, Uri } from "./primitives";
 import type { Tecode } from "./namespaces";
+import type { ThemeContribution } from "./theme";
 
 /**
  * When an extension activates (Req 2.5). The MVP supports:
@@ -42,12 +43,10 @@ export interface CommandMeta {
  * activation happens on first execution via the `onCommand:<id>`
  * activation event.
  */
-export interface CommandContribution {
+export interface CommandContribution extends CommandMeta {
   id: string;
-  /** Palette display name. */
+  /** Palette display name (required for contributed commands). */
   title: string;
-  category?: string;
-  when?: string;
 }
 
 /** A keybinding declared in a manifest's `contributes.keybindings`, in the
@@ -131,9 +130,9 @@ export interface Contributes {
   keybindings?: KeybindingContribution[];
   views?: ViewContribution[];
   languages?: LanguageContribution[];
-  /** Theme display name → path to its VS Code-subset color theme JSON
-   * (design.md §9). */
-  themes?: Record<string, string>;
+  /** Themes this extension ships, in the same shape
+   * `tecode.themes.register` accepts (design.md §9). */
+  themes?: ThemeContribution[];
   configuration?: ConfigurationContribution;
 }
 
