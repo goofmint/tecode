@@ -169,6 +169,7 @@ export function createChordStateMachine(deps: ChordStateMachineDeps): ChordState
   const log = deps.log;
 
   let state: InternalState = { kind: "idle" };
+  let machineDisposed = false;
   const listeners = new Set<Listener<string | undefined>>();
 
   function logSafely(level: "error" | "warning", message: string): void {
@@ -240,13 +241,25 @@ export function createChordStateMachine(deps: ChordStateMachineDeps): ChordState
    * clearing any previously armed timeout and arming a fresh one. */
   function goPending(prefix: string): void {
     clearArmedTimeout();
-    const timeoutHandle = scheduler.set(() => {
-      // The timeout firing IS the transition back to idle — no further
-      // guard needed here since clearArmedTimeout on any other exit path
-      // already cancelled this callback via the injected scheduler.
-      logSafely("warning", `Chord sequence timed out: ${prefix}`);
-      goIdle();
-    }, CHORD_TIMEOUT_MS);
+    let timeoutHandle: unknown;
+    try {
+      timeoutHandle = scheduler.set(() => {
+        // The timeout firing IS the transition back to idle — no further
+        // guard needed here since clearArmedTimeout on any other exit path
+        // already cancelled this callback via the injected scheduler.
+        logSafely("warning", `Chord sequence timed out: ${prefix}`);
+        goIdle();
+      }, CHORD_TIMEOUT_MS);
+    } catch (cause) {
+      // A throwing injected scheduler must not break stroke handling —
+      // pending still works, it just won't auto-expire (Escape and the
+      // next stroke still resolve it).
+      logSafely(
+        "warning",
+        `Chord timeout could not be armed: ${describeError(cause)}`,
+      );
+      timeoutHandle = undefined;
+    }
     state = { kind: "pending", prefix, timeoutHandle };
     fireChange(prefix);
   }
@@ -302,6 +315,10 @@ export function createChordStateMachine(deps: ChordStateMachineDeps): ChordState
   }
 
   function handleStroke(rawStroke: string): "consumed" | "passthrough" {
+    // A disposed machine handles nothing: strokes pass through to the
+    // focused component instead of executing commands from beyond the
+    // grave.
+    if (machineDisposed) return "passthrough";
     const stroke = normalizeKey(rawStroke);
     if (state.kind === "pending") {
       return handlePendingStroke(stroke, state.prefix);
@@ -322,11 +339,13 @@ export function createChordStateMachine(deps: ChordStateMachineDeps): ChordState
   }
 
   function reset(): void {
+    if (machineDisposed) return;
     if (state.kind === "idle") return;
     goIdle();
   }
 
   function dispose(): void {
+    machineDisposed = true;
     clearArmedTimeout();
     state = { kind: "idle" };
     listeners.clear();

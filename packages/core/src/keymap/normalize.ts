@@ -141,6 +141,12 @@ export function normalizeKey(key: string): string {
 export function normalizeKeySequence(sequence: string): string {
   return (sequence ?? "")
     .trim()
+    // Collapse whitespace around "+" separators BEFORE splitting on
+    // whitespace, so the sloppy single-stroke form normalizeKey documents
+    // ("ctrl + p") stays one stroke rather than becoming a 3-stroke
+    // sequence — whitespace only separates strokes where it isn't hugging
+    // a "+" separator ("ctrl+k ctrl + s" is still two strokes).
+    .replace(/\s*\+\s*/g, "+")
     .split(/\s+/)
     .filter((stroke) => stroke.length > 0)
     .map(normalizeKey)

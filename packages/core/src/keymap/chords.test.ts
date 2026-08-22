@@ -391,3 +391,60 @@ describe("createChordStateMachine — defensive normalization of incoming stroke
 test("CHORD_TIMEOUT_MS matches the 3-second requirement (design.md §6.3)", () => {
   expect(CHORD_TIMEOUT_MS).toBe(3000);
 });
+
+test("a disposed machine passes strokes through and executes nothing", () => {
+  const executed: string[] = [];
+  const table = createBindingTable(
+    {
+      defaults: [{ key: "ctrl+p", command: "quickOpen.show" }],
+      fallback: [],
+      extension: [],
+      user: [],
+    },
+    { log: createHostLog() },
+  );
+  const machine = createChordStateMachine({
+    table,
+    execute: (id) => {
+      executed.push(id);
+    },
+    getContext: () => undefined,
+  });
+
+  machine.dispose();
+
+  expect(machine.handleStroke("ctrl+p")).toBe("passthrough");
+  expect(executed).toEqual([]);
+});
+
+test("a scheduler whose set() throws does not break pending entry", () => {
+  const executed: string[] = [];
+  const table = createBindingTable(
+    {
+      defaults: [{ key: "ctrl+k ctrl+s", command: "keybindings.open" }],
+      fallback: [],
+      extension: [],
+      user: [],
+    },
+    { log: createHostLog() },
+  );
+  const machine = createChordStateMachine({
+    table,
+    execute: (id) => {
+      executed.push(id);
+    },
+    getContext: () => undefined,
+    scheduler: {
+      set() {
+        throw new Error("scheduler broken");
+      },
+      clear() {
+        throw new Error("scheduler broken");
+      },
+    },
+  });
+
+  expect(machine.handleStroke("ctrl+k")).toBe("consumed");
+  expect(machine.handleStroke("ctrl+s")).toBe("consumed");
+  expect(executed).toEqual(["keybindings.open"]);
+});
