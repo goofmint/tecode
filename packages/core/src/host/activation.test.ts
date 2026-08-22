@@ -323,6 +323,83 @@ test("disposeAll settles an in-flight activation first, so its subscriptions are
   expect(host.getState("lang.slow")).toBe("registered");
 });
 
+test("activateExtension after disposeAll started is a no-op, so nothing activates on a shut-down host", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const commands = createCommandRegistry({ log, sink });
+  let releaseActivate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseActivate = resolve;
+  });
+  let lateActivations = 0;
+  const slow = fixtureRecord(
+    "lang.slow",
+    { activationEvents: ["onLanguage:slow"] },
+    {
+      async activate() {
+        await gate;
+      },
+    },
+  );
+  const late = fixtureRecord("lang.late", { activationEvents: ["onLanguage:late"] }, {
+    activate() {
+      lateActivations += 1;
+    },
+  });
+  const host = createExtensionHost({
+    extensions: [slow, late],
+    api: fixtureApi(commands),
+    log,
+    sink,
+  });
+
+  host.onLanguage("slow");
+  const disposal = host.disposeAll();
+  // Fired AFTER shutdown began: must not start a fresh activation that
+  // would finish on the disposed host.
+  host.onLanguage("late");
+  releaseActivate();
+  await disposal;
+  await host.activateExtension("lang.late");
+
+  expect(lateActivations).toBe(0);
+  expect(host.getState("lang.late")).toBe("registered");
+});
+
+test("a concurrent external execute() of the same lazy command awaits the shared activation and succeeds", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const commands = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: (extensionId) => host.activateExtension(extensionId),
+  });
+  let releaseActivate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseActivate = resolve;
+  });
+  let activations = 0;
+  const slowExt = fixtureRecord("slow.ext", { activationEvents: ["onCommand:slow.run"] }, {
+    async activate(ctx: ExtensionContext) {
+      activations += 1;
+      await gate;
+      ctx.api.commands.register("slow.run", () => "ready");
+    },
+  });
+  const host = createExtensionHost({ extensions: [slowExt], api: fixtureApi(commands), log, sink });
+  commands.registerLazy("slow.run", { extensionId: "slow.ext" });
+
+  // Two independent callers race the same lazy command while its extension
+  // is still activating — both must join the one activation and succeed.
+  const first = commands.execute("slow.run");
+  const second = commands.execute("slow.run");
+  releaseActivate();
+
+  expect(await first).toBe("ready");
+  expect(await second).toBe("ready");
+  expect(activations).toBe(1);
+});
+
 test("an extension executing its own lazy command during activate() does not deadlock", async () => {
   const log = createHostLog();
   const { errors, sink } = createRecordingSink();

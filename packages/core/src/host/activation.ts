@@ -33,6 +33,7 @@
  * `core` exactly as small as `discovery.ts` already documents.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Disposable, ExtensionContext, Manifest, Tecode } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "./errors";
 
@@ -246,6 +247,17 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
    * extension into one activation (see {@link ExtensionHost.activateExtension}'s
    * TSDoc). */
   const inFlight = new Map<string, Promise<void>>();
+  // The extension ID whose activate(ctx) is executing on the current async
+  // path. Lets activateExtension tell SELF-re-entrancy (an extension
+  // triggering its own activation from inside activate — awaiting the
+  // shared in-flight promise there would deadlock, since that promise
+  // cannot settle until activate returns) apart from an unrelated
+  // concurrent caller, who safely awaits the shared promise.
+  const activatingContext = new AsyncLocalStorage<string>();
+  // One-way shutdown latch (see disposeAll): once disposal has begun, new
+  // activations must not start, or they would finish after shutdown and
+  // leave an "active" extension with never-disposed subscriptions.
+  let shutDown = false;
 
   function logSafely(level: "error" | "warning", err: HostError): void {
     try {
@@ -331,7 +343,12 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
       // "active" with nothing to run, which also makes its (possibly
       // exported) `deactivate()` reachable on shutdown.
       if (extensionModule.activate) {
-        await extensionModule.activate(ctx);
+        // Run inside this extension's activation context so a re-entrant
+        // activateExtension(id) call from within activate(ctx) — e.g. the
+        // extension executing its own still-lazy command — resolves
+        // immediately instead of deadlocking on its own in-flight promise.
+        const activate = extensionModule.activate;
+        await activatingContext.run(id, () => Promise.resolve(activate(ctx)));
       }
       runtime.state = "active";
       runtime.module = extensionModule;
@@ -341,6 +358,15 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
   }
 
   function activateExtension(id: string): Promise<void> {
+    // After shutdown has begun, starting (or joining) an activation would
+    // let it complete on a disposed host — refuse quietly.
+    if (shutDown) return Promise.resolve();
+    // Self-re-entrancy: this call originates from inside this very
+    // extension's activate(ctx). Returning the shared in-flight promise
+    // would deadlock (it can't settle until activate returns), so resolve
+    // immediately — the caller (e.g. a lazy command execute) then proceeds
+    // down its documented not-yet-activated path.
+    if (activatingContext.getStore() === id) return Promise.resolve();
     const record = records.get(id);
     const runtime = runtimes.get(id);
     if (!record || !runtime || runtime.state !== "registered") {
@@ -379,11 +405,13 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
   }
 
   async function disposeAll(): Promise<void> {
-    // Settle in-flight activations first: a fire-and-forget trigger (e.g.
+    // One-way shutdown: block NEW activations first (see activateExtension),
+    // then settle the in-flight ones — a fire-and-forget trigger (e.g.
     // onLanguage) may still be mid-activation, and deactivateExtension
-    // skips anything not yet "active" — without this, such an extension
-    // would finish activating after shutdown with its subscriptions never
+    // skips anything not yet "active". Without both steps, an extension
+    // could finish activating after shutdown with its subscriptions never
     // disposed.
+    shutDown = true;
     await Promise.all(Array.from(inFlight.values()));
     for (const id of records.keys()) {
       await deactivateExtension(id);
