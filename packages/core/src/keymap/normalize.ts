@@ -7,9 +7,10 @@
  * `ctrl+shift+p`, `control+shift+p`) collapse onto the same
  * {@link createBindingTable} entry.
  *
- * `normalizeKey` operates on a single stroke; chord sequences
- * (`ctrl+k ctrl+s`, Req 4.4) are Task 1.6's concern — a caller normalizing a
- * sequence splits on whitespace and normalizes each stroke independently.
+ * `normalizeKey` operates on a single stroke; {@link normalizeKeySequence}
+ * (Req 4.4, Task 1.6) is the multi-stroke chord counterpart — it splits on
+ * whitespace and normalizes each stroke independently, exactly as this
+ * comment always said a sequence-aware caller must.
  */
 
 /** Fixed modifier ordering for the canonical form (design.md §6.2). Known
@@ -118,4 +119,30 @@ export function normalizeKey(key: string): string {
     .filter((token) => token.length > 0)
     .map(canonicalizeModifier);
   return join(sortModifiers(modifiers), keyToken);
+}
+
+/**
+ * Normalize a (possibly multi-stroke) chord sequence into its canonical
+ * table-key form (Req 4.4, design.md §6.3): split `sequence` on whitespace,
+ * {@link normalizeKey} each stroke independently, and rejoin with a single
+ * space — `"Ctrl+K  Shift+Ctrl+S"` becomes `"ctrl+k ctrl+shift+s"`.
+ *
+ * `normalizeKey` alone cannot do this: it treats its whole input as one
+ * stroke, so feeding it a raw multi-stroke string (splitting on `"+"`
+ * without first splitting on whitespace) misparses the space-containing
+ * modifier run between strokes. A single-stroke input passes through
+ * exactly as {@link normalizeKey} would produce it, so every existing
+ * single-stroke binding is unaffected — this is a superset, not a
+ * replacement.
+ *
+ * Never throws: empty/whitespace-only input normalizes to `""`, matching
+ * `normalizeKey("")`.
+ */
+export function normalizeKeySequence(sequence: string): string {
+  return (sequence ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter((stroke) => stroke.length > 0)
+    .map(normalizeKey)
+    .join(" ");
 }
