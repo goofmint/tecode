@@ -33,7 +33,13 @@ export {
   type WhenNotNode,
   type WhenOrNode,
 } from "./keymap/index";
-export { BUFFER_PLACEHOLDER } from "./buffer/index";
+export {
+  createDocument,
+  createLineBuffer,
+  type AppliedEdit,
+  type CreateDocumentOptions,
+  type LineBuffer,
+} from "./buffer/index";
 export { UI_PLACEHOLDER } from "./ui/index";
 export { CONFIG_PLACEHOLDER } from "./config/index";
 export { API_BUILDER_PLACEHOLDER } from "./api/index";
