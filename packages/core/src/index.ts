@@ -1,10 +1,36 @@
 // Placeholder entry point for @tecode/core. Real wiring lands in later tasks.
-export { HOST_PLACEHOLDER } from "./host/index";
+export {
+  checkApiVersionCompatibility,
+  discover,
+  getUserExtensionsDir,
+  getWorkspaceExtensionsDir,
+  HOST_PLACEHOLDER,
+  loadExtensions,
+  registerExtension,
+  validateManifest,
+  type ApiVersionCompatibility,
+  type ConfigRegistrar,
+  type DiscoveredExtension,
+  type DiscoveryDeps,
+  type DiscoveryFs,
+  type ExtensionSource,
+  type LoadedExtension,
+  type LoadExtensionsDeps,
+  type LoadExtensionsResult,
+  type ManifestValidationResult,
+  type PendingLanguageContribution,
+  type PendingThemeContribution,
+  type PendingViewContribution,
+  type RegisterExtensionDeps,
+  type RegisterExtensionResult,
+  type SkippedExtension,
+} from "./host/index";
 export {
   createCommandRegistry,
   isValidCommandId,
   type CommandRegistry,
   type CommandRegistryDeps,
+  type RegisterLazyOptions,
 } from "./commands/index";
 export {
   CHORD_TIMEOUT_MS,
