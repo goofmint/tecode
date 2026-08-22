@@ -12,6 +12,7 @@
  */
 
 import * as nodeFs from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { Event, Listener, Uri } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import type { Clock } from "./clock";
@@ -31,9 +32,10 @@ export const LARGE_FILE_THRESHOLD_BYTES = 10 * 1024 * 1024;
  * the public API surface; a documented, deliberately minimal escape hatch.
  */
 export interface DocumentManagerFs {
-  stat(path: string): Promise<{ size: number }>;
+  stat(path: string): Promise<{ size: number; mode: number }>;
   readFile(path: string, encoding: "utf8"): Promise<string>;
   writeFile(path: string, data: string, encoding: "utf8"): Promise<void>;
+  chmod(path: string, mode: number): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   unlink(path: string): Promise<void>;
 }
@@ -44,6 +46,7 @@ function createNodeFs(): DocumentManagerFs {
     stat: (path) => nodeFs.stat(path),
     readFile: (path, encoding) => nodeFs.readFile(path, encoding),
     writeFile: (path, data, encoding) => nodeFs.writeFile(path, data, encoding),
+    chmod: (path, mode) => nodeFs.chmod(path, mode),
     rename: (oldPath, newPath) => nodeFs.rename(oldPath, newPath),
     unlink: (path) => nodeFs.unlink(path),
   };
@@ -123,16 +126,6 @@ function describeError(err: unknown): string {
   } catch {
     return "Unknown error";
   }
-}
-
-/** Split `path` into its directory and basename, POSIX- or
- * Windows-separator agnostic (avoids a `node:path` dependency for one
- * small helper; `node:path` itself would also be fine per house
- * convention, but this keeps the module dependency-free). */
-function splitPath(path: string): { dir: string; base: string } {
-  const idx = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  if (idx < 0) return { dir: ".", base: path };
-  return { dir: path.slice(0, idx) || "/", base: path.slice(idx + 1) };
 }
 
 /**
@@ -280,15 +273,30 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     }
 
     const path = uriToPath(uri);
-    const { dir, base } = splitPath(path);
-    const tempPath = `${dir}/.${base}.tmp-${process.pid}-${tempCounter++}`;
+    const tempPath = join(
+      dirname(path),
+      `.${basename(path)}.tmp-${process.pid}-${tempCounter++}`,
+    );
     const text = document.getText();
     const versionAtWrite = document.version;
+
+    // Capture the target's current mode (when it exists) so the rename
+    // does not silently reset an executable or restricted file to the
+    // temp file's default umask mode.
+    let targetMode: number | undefined;
+    try {
+      targetMode = (await fs.stat(path)).mode;
+    } catch {
+      // First save of a not-yet-existing file: keep the default mode.
+    }
 
     let wroteTemp = false;
     try {
       await fs.writeFile(tempPath, text, "utf8");
       wroteTemp = true;
+      if (targetMode !== undefined) {
+        await fs.chmod(tempPath, targetMode);
+      }
       await fs.rename(tempPath, path);
     } catch (cause) {
       const err: HostError = {

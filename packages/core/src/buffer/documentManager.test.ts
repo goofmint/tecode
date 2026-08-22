@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  chmod as fsChmod,
   mkdtemp,
   open,
   readdir,
@@ -263,6 +264,7 @@ describe("DocumentManager.save (Req 5.5)", () => {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
       writeFile: (p, data, enc) => fsWriteFile(p, data, enc),
+      chmod: (p, mode) => fsChmod(p, mode),
       rename: async () => {
         throw new Error("simulated rename failure");
       },
@@ -338,6 +340,7 @@ describe("DocumentManager — open -> change -> save -> close event ordering", (
 
     const uri = pathToUri(path);
     const doc = await manager.openDocument(uri);
+    doc.onDidChange(() => order.push("change"));
     doc.applyEdits([
       {
         range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
@@ -347,7 +350,7 @@ describe("DocumentManager — open -> change -> save -> close event ordering", (
     await manager.save(uri);
     manager.close(uri);
 
-    expect(order).toEqual(["open", "save", "close"]);
+    expect(order).toEqual(["open", "change", "save", "close"]);
   });
 });
 
@@ -388,6 +391,7 @@ describe("DocumentManager — concurrency (review regressions)", () => {
         await writeGate;
         await fsWriteFile(p, data, enc);
       },
+      chmod: (p, mode) => fsChmod(p, mode),
       rename: (from, to) => fsRename(from, to),
       unlink: (p) => fsUnlink(p),
     };
@@ -420,5 +424,29 @@ describe("DocumentManager — concurrency (review regressions)", () => {
     expect(doc.dirty).toBe(true);
     expect(doc.getText()).toBe("first!");
     expect(await readFile(path, "utf8")).toBe("first");
+  });
+});
+
+describe("DocumentManager.save — permission preservation (review nitpick)", () => {
+  test("save preserves the target file's mode across the atomic rename", async () => {
+    const path = join(dir, "script.sh");
+    await writeFile(path, "echo hi", "utf8");
+    await fsChmod(path, 0o755);
+
+    const { log, sink } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 7 } },
+        newText: "echo bye",
+      },
+    ]);
+
+    expect(await manager.save(uri)).toBe(true);
+    expect(await readFile(path, "utf8")).toBe("echo bye");
+    // The executable bit survives the temp-file rename.
+    expect((await fsStat(path)).mode & 0o777).toBe(0o755);
   });
 });
