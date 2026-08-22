@@ -12,6 +12,13 @@ export {
   type StatusSink,
 } from "./errors";
 
+export {
+  getUserConfigDir,
+  getUserKeybindingsPath,
+  getUserSettingsPath,
+  getWorkspaceSettingsPath,
+} from "./paths";
+
 /** Placeholder for the remaining extension-host behavior (discovery,
  * manifest validation, activation) — see design.md §4. */
 export const HOST_PLACEHOLDER = true;

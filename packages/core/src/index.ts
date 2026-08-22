@@ -59,5 +59,14 @@ export {
   type UndoStackDeps,
 } from "./buffer/index";
 export { UI_PLACEHOLDER } from "./ui/index";
-export { CONFIG_PLACEHOLDER } from "./config/index";
+export {
+  createConfigService,
+  parseJsonc,
+  type ConfigService,
+  type ConfigServiceDeps,
+  type ConfigServiceFs,
+  type JsoncFailure,
+  type JsoncParseResult,
+  type JsoncSuccess,
+} from "./config/index";
 export { API_BUILDER_PLACEHOLDER } from "./api/index";
