@@ -54,6 +54,18 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+/** Render an invalid manifest value for an error message without ever
+ * throwing — `JSON.stringify` raises `TypeError` on `BigInt` (and returns
+ * `undefined` for some inputs), which would break {@link validateManifest}'s
+ * never-throw contract mid-report. */
+function describeValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 const ACTIVATION_EVENT_PATTERN = /^(?:onStartup|onCommand:.+|onLanguage:.+)$/;
 
 function isActivationEvent(value: unknown): value is ActivationEvent {
@@ -116,14 +128,19 @@ export function validateManifest(raw: unknown): ManifestValidationResult {
   if (!Array.isArray(raw.activationEvents)) {
     errors.push("activationEvents: required array");
   } else {
-    raw.activationEvents.forEach((event: unknown, i: number) => {
+    // Indexed loop, not forEach: forEach skips sparse-array holes, which
+    // would let a hole (an `undefined` element) through unvalidated and
+    // into the returned manifest. Visiting every index reports holes as
+    // the invalid entries they are.
+    for (let i = 0; i < raw.activationEvents.length; i++) {
+      const event: unknown = raw.activationEvents[i];
       if (!isActivationEvent(event)) {
         errors.push(
           `activationEvents[${i}]: must be "onStartup", "onCommand:<id>", or ` +
-            `"onLanguage:<id>" (got ${JSON.stringify(event)})`,
+            `"onLanguage:<id>" (got ${describeValue(event)})`,
         );
       }
-    });
+    }
     activationEvents = raw.activationEvents as ActivationEvent[];
   }
 
@@ -217,10 +234,12 @@ function validateArray<T>(
     return [];
   }
   const result: T[] = [];
-  raw.forEach((entry: unknown, i: number) => {
-    const validated = check(entry, `${path}[${i}]`, errors);
+  // Indexed loop, not forEach: forEach skips sparse-array holes, which
+  // would silently drop an entry instead of reporting it as invalid.
+  for (let i = 0; i < raw.length; i++) {
+    const validated = check(raw[i], `${path}[${i}]`, errors);
     if (validated !== undefined) result.push(validated);
-  });
+  }
   return result;
 }
 
@@ -379,14 +398,19 @@ function validateLanguageContribution(
     errors.push(`${path}.id: required non-empty string`);
   }
   let extensions: string[] = [];
+  // Array.from before every: every skips sparse-array holes, which would
+  // let an array with holes validate and then carry the holes into the
+  // manifest. Array.from materializes holes as `undefined`, so they fail
+  // the element check like any other bad value.
+  const extensionList = Array.isArray(entry.extensions) ? Array.from(entry.extensions) : undefined;
   if (
-    !Array.isArray(entry.extensions) ||
-    entry.extensions.length === 0 ||
-    !entry.extensions.every((ext: unknown) => typeof ext === "string" && ext.startsWith("."))
+    extensionList === undefined ||
+    extensionList.length === 0 ||
+    !extensionList.every((ext: unknown) => typeof ext === "string" && ext.startsWith("."))
   ) {
     errors.push(`${path}.extensions: required non-empty array of dot-prefixed extensions (e.g. ".ts")`);
   } else {
-    extensions = entry.extensions as string[];
+    extensions = extensionList as string[];
   }
   if (!isNonEmptyString(entry.grammar)) {
     errors.push(`${path}.grammar: required non-empty string`);
@@ -486,7 +510,14 @@ function validateConfigurationContribution(
     errors.push(`${path}.properties: required object`);
   } else {
     for (const [key, value] of Object.entries(entry.properties)) {
-      const schema = validateConfigurationPropertySchema(value, `${path}.properties.${key}`, errors);
+      // Bracket notation: configuration keys routinely contain dots
+      // ("editor.fontSize"), which a plain `.${key}` path would make
+      // ambiguous with genuine nesting.
+      const schema = validateConfigurationPropertySchema(
+        value,
+        `${path}.properties[${describeValue(key)}]`,
+        errors,
+      );
       if (schema) properties[key] = schema;
     }
   }

@@ -80,6 +80,63 @@ describe("validateManifest — top-level shape", () => {
     expect(validateManifest(validManifest({ version: "1.2.3+build.5" })).valid).toBe(true);
   });
 
+  test("rejects a sparse activationEvents array (holes are invalid entries, not skipped)", () => {
+    const sparse: unknown[] = ["onStartup"];
+    sparse.length = 3;
+    sparse[2] = "onCommand:demo.run";
+    const result = validateManifest(validManifest({ activationEvents: sparse }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.errors.some((e) => e.startsWith("activationEvents[1]:"))).toBe(true);
+    }
+  });
+
+  test("rejects a sparse contributes.commands array (holes reported by index)", () => {
+    const sparse: unknown[] = [];
+    sparse.length = 1;
+    const result = validateManifest(validManifest({ contributes: { commands: sparse } }));
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.errors.some((e) => e.startsWith("contributes.commands[0]:"))).toBe(true);
+    }
+  });
+
+  test("a BigInt activation event is reported as an error, never thrown", () => {
+    let result: ReturnType<typeof validateManifest> | undefined;
+    expect(() => {
+      result = validateManifest(validManifest({ activationEvents: [1n] }));
+    }).not.toThrow();
+    expect(result?.valid).toBe(false);
+    if (result && !result.valid) {
+      expect(result.errors.some((e) => e.startsWith("activationEvents[0]:"))).toBe(true);
+    }
+  });
+
+  test("rejects a sparse languages[].extensions array instead of passing holes through", () => {
+    const sparseExtensions: unknown[] = [".ts"];
+    sparseExtensions.length = 2;
+    const result = validateManifest(
+      validManifest({
+        contributes: {
+          languages: [
+            {
+              id: "demo",
+              extensions: sparseExtensions,
+              grammar: "g",
+              highlights: "h",
+            },
+          ],
+        },
+      }),
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(
+        result.errors.some((e) => e.startsWith("contributes.languages[0].extensions:")),
+      ).toBe(true);
+    }
+  });
+
   test("rejects an empty-string id", () => {
     const result = validateManifest(validManifest({ id: "" }));
     expect(result.valid).toBe(false);
@@ -331,7 +388,7 @@ describe("validateManifest — contributes.configuration", () => {
     if (!result.valid) {
       expect(
         result.errors.some((e) =>
-          e.startsWith("contributes.configuration.properties.editor.tabSize.type:"),
+          e.startsWith('contributes.configuration.properties["editor.tabSize"].type:'),
         ),
       ).toBe(true);
     }
