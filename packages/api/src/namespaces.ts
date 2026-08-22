@@ -165,7 +165,7 @@ export interface StatusBarItem {
 /** The active editor's document and cursor/selection state. */
 export interface Editor {
   document: Document;
-  selections: Selection[];
+  readonly selections: readonly Selection[];
 }
 
 /**
@@ -196,7 +196,7 @@ export interface WindowNamespace {
 export interface EditorNamespace {
   /** The active editor's selections/cursors (first-class array — Req
    * 6.6, 11.1). */
-  readonly selections: Selection[];
+  readonly selections: readonly Selection[];
   /** The primary cursor position (the active end of `selections[0]`). */
   readonly cursor: Position;
   /** Scroll so `line` is visible, driven by the primary cursor. */

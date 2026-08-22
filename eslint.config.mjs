@@ -9,6 +9,11 @@ export default tseslint.config(
       "**/dist/**",
       "**/build/**",
       "**/*.d.ts",
+      // Temp fixtures written by layering.test.ts. Ignored here so a
+      // concurrent `eslint .` never lints them; the test itself passes
+      // --no-ignore to lint them deliberately.
+      "**/__lint-fixture__*/**",
+      "**/__lint-fixture__*",
     ],
   },
   eslint.configs.recommended,

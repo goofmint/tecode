@@ -11,9 +11,13 @@
  * failed assertion never leaves a permanently-lint-breaking file behind.
  */
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+// Each test spawns a full `bunx eslint` run, which can exceed bun's 5 s
+// default test timeout on a cold cache.
+setDefaultTimeout(60_000);
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 const BAD_DIR = path.join(REPO_ROOT, "packages/builtin/__lint-fixture__");
@@ -46,11 +50,23 @@ async function runEslint(
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, exitCode] = await Promise.all([
+  // Consume both pipes: an unread stderr pipe can fill up and stall the
+  // child process.
+  const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  const results = stdout.trim().length > 0 ? (JSON.parse(stdout) as EslintFileResult[]) : [];
+  if (stdout.trim().length === 0) {
+    // ESLint always emits a JSON array on a successful run (even with no
+    // findings), so an empty stdout means the process itself failed —
+    // e.g. a broken config (exit code 2). Fail loudly instead of letting
+    // callers mistake it for "no lint errors".
+    throw new Error(
+      `eslint produced no output for ${relFile} (exit ${exitCode}): ${stderr.trim()}`,
+    );
+  }
+  const results = JSON.parse(stdout) as EslintFileResult[];
   return { exitCode, results };
 }
 
@@ -75,11 +91,17 @@ test("blocks @tecode/core imports from packages/builtin", async () => {
 test("allows @tecode/core imports from packages/cli", async () => {
   await cleanupFixtures();
   try {
+    await mkdir(path.dirname(OK_FILE), { recursive: true });
     await writeFile(OK_FILE, 'import "@tecode/core";\n');
 
-    const { results } = await runEslint("packages/cli/src/__lint-fixture__.ts");
+    const { exitCode, results } = await runEslint(
+      "packages/cli/src/__lint-fixture__.ts",
+    );
 
     const ruleIds = results.flatMap((r) => r.messages.map((m) => m.ruleId));
+    // Exit 0 also guards against a broken ESLint config (exit 2) being
+    // mistaken for "no findings".
+    expect(exitCode).toBe(0);
     expect(ruleIds).not.toContain("no-restricted-imports");
   } finally {
     await cleanupFixtures();

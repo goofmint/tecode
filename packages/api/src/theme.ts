@@ -5,7 +5,7 @@
 /**
  * The UI color keys a theme can supply, reusing VS Code's color IDs so
  * existing VS Code theme knowledge transfers directly (Req 7.2). This is
- * the "approximately 40 keys" set called out in Req 7.2; the six keys
+ * the ~40-key set called out in Req 7.2, realized here as 55 keys; the six keys
  * named explicitly there (`editor.background`, `editor.foreground`,
  * `sideBar.background`, `statusBar.background`, `tab.activeBackground`,
  * `list.activeSelectionBackground`) are included below. A theme that omits
