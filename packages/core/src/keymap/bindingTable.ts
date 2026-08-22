@@ -162,11 +162,18 @@ export function createBindingTable(
     }
   }
 
-  function lookup(canonicalStroke: string, get: WhenContextGetter): ResolvedBinding | undefined {
-    const bucket = byKey.get(canonicalStroke);
-    if (!bucket) return undefined;
+  // Masking is a static fact of the built table — precompute each key's
+  // visible entries once so lookup (which runs on every keystroke) is a
+  // plain array scan with no per-call Map/array allocation.
+  const visibleByKey = new Map<string, CompiledEntry[]>();
+  for (const [key, bucket] of byKey) {
+    visibleByKey.set(key, visibleEntries(bucket));
+  }
 
-    const visible = visibleEntries(bucket);
+  function lookup(canonicalStroke: string, get: WhenContextGetter): ResolvedBinding | undefined {
+    const visible = visibleByKey.get(canonicalStroke);
+    if (!visible) return undefined;
+
     // Highest precedence first; visibleEntries preserves ascending `order`,
     // so scan from the end.
     for (let i = visible.length - 1; i >= 0; i--) {
@@ -180,11 +187,8 @@ export function createBindingTable(
 
   function entries(): ReadonlyMap<string, ResolvedBinding[]> {
     const result = new Map<string, ResolvedBinding[]>();
-    for (const [key, bucket] of byKey) {
-      result.set(
-        key,
-        visibleEntries(bucket).map(toResolvedBinding),
-      );
+    for (const [key, visible] of visibleByKey) {
+      result.set(key, visible.map(toResolvedBinding));
     }
     return result;
   }

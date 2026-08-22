@@ -83,7 +83,11 @@ function join(modifiers: string[], key: string): string {
  *   double `+` in the middle) are dropped rather than propagated.
  */
 export function normalizeKey(key: string): string {
-  const raw = key ?? "";
+  // Tolerate sloppy whitespace ("ctrl + p", " Ctrl+Shift+P ") by trimming
+  // the ends and collapsing spaces around "+" separators. Single strokes
+  // never legitimately contain whitespace — chord splitting (Task 1.6)
+  // happens on whitespace before normalizeKey is called.
+  const raw = (key ?? "").trim().replace(/\s*\+\s*/g, "+");
 
   // A run of only "+" characters has no modifier text to parse — the
   // entire input names the "+" key itself.

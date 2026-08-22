@@ -101,3 +101,9 @@ describe("normalizeKey — other defensive/odd input", () => {
     expect(normalizeKey(once)).toBe(once);
   });
 });
+
+test("whitespace around separators and ends is tolerated", () => {
+  expect(normalizeKey("ctrl + p")).toBe(normalizeKey("ctrl+p"));
+  expect(normalizeKey(" Ctrl+ Shift+P ")).toBe(normalizeKey("ctrl+shift+p"));
+  expect(normalizeKey("ctrl + +")).toBe(normalizeKey("ctrl++"));
+});
