@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createHostLog } from "../host/errors";
 import { createBindingTable, type KeymapLayers } from "./bindingTable";
-import { CHORD_TIMEOUT_MS, createChordStateMachine, type ChordScheduler } from "./chords";
+import {
+  CHORD_TIMEOUT_MS,
+  createChordStateMachine,
+  type ChordScheduler,
+  type ChordStateMachine,
+} from "./chords";
 
 /** Build a context getter from a plain object, matching the rest of the
  * keymap test suite's table-driven helper (bindingTable.test.ts,
@@ -89,8 +94,8 @@ function createExecuteRecorder() {
 }
 
 /** Track every `onDidChangePending` payload in order. */
-function trackPending(machine: { onDidChangePending: (l: (v: unknown) => void) => unknown }) {
-  const events: unknown[] = [];
+function trackPending(machine: ChordStateMachine): (string | undefined)[] {
+  const events: (string | undefined)[] = [];
   machine.onDidChangePending((v) => events.push(v));
   return events;
 }
@@ -447,4 +452,164 @@ test("a scheduler whose set() throws does not break pending entry", () => {
   expect(machine.handleStroke("ctrl+k")).toBe("consumed");
   expect(machine.handleStroke("ctrl+s")).toBe("consumed");
   expect(executed).toEqual(["keybindings.open"]);
+});
+
+describe("createChordStateMachine — failure isolation and logging", () => {
+  test("a synchronously throwing execute is caught and logged as an error", () => {
+    const table = chordTable();
+    const scheduler = createFakeScheduler();
+    const log = createHostLog();
+    const machine = createChordStateMachine({
+      table,
+      execute: () => {
+        throw new Error("handler exploded");
+      },
+      getContext: contextOf(),
+      scheduler,
+      log,
+    });
+
+    expect(machine.handleStroke("ctrl+k")).toBe("consumed");
+    expect(machine.handleStroke("ctrl+s")).toBe("consumed");
+
+    const errors = log.entries().filter((entry) => entry.level === "error");
+    expect(errors.length).toBe(1);
+    expect(errors[0]?.error.message).toContain("keybindings.open");
+    expect(errors[0]?.error.message).toContain("handler exploded");
+  });
+
+  test("a rejecting async execute is caught and logged as an error", async () => {
+    const table = chordTable();
+    const scheduler = createFakeScheduler();
+    const log = createHostLog();
+    const machine = createChordStateMachine({
+      table,
+      execute: () => Promise.reject(new Error("async failure")),
+      getContext: contextOf(),
+      scheduler,
+      log,
+    });
+
+    machine.handleStroke("ctrl+k");
+    machine.handleStroke("ctrl+s");
+
+    // Let the rejection handler's microtask run before asserting.
+    await Promise.resolve();
+
+    const errors = log.entries().filter((entry) => entry.level === "error");
+    expect(errors.length).toBe(1);
+    expect(errors[0]?.error.message).toContain("async failure");
+  });
+
+  test("a throwing onDidChangePending listener does not stop later listeners", () => {
+    const table = chordTable();
+    const scheduler = createFakeScheduler();
+    const { execute } = createExecuteRecorder();
+    const machine = createChordStateMachine({
+      table,
+      execute,
+      getContext: contextOf(),
+      scheduler,
+    });
+
+    machine.onDidChangePending(() => {
+      throw new Error("listener exploded");
+    });
+    const events = trackPending(machine);
+
+    expect(machine.handleStroke("ctrl+k")).toBe("consumed");
+    expect(machine.handleStroke("escape")).toBe("consumed");
+
+    // The later listener saw both transitions despite the first throwing.
+    expect(events).toEqual(["ctrl+k", undefined]);
+  });
+
+  test("discarding a failed continuation records a warning in the injected log", () => {
+    const table = chordTable();
+    const scheduler = createFakeScheduler();
+    const { execute } = createExecuteRecorder();
+    const log = createHostLog();
+    const machine = createChordStateMachine({
+      table,
+      execute,
+      getContext: contextOf(),
+      scheduler,
+      log,
+    });
+
+    machine.handleStroke("ctrl+k");
+    machine.handleStroke("x");
+
+    const warnings = log.entries().filter((entry) => entry.level === "warning");
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]?.error.message).toContain('no binding for "ctrl+k x"');
+  });
+
+  test("a chord timeout records a warning in the injected log", () => {
+    const table = chordTable();
+    const scheduler = createFakeScheduler();
+    const { execute } = createExecuteRecorder();
+    const log = createHostLog();
+    const machine = createChordStateMachine({
+      table,
+      execute,
+      getContext: contextOf(),
+      scheduler,
+      log,
+    });
+
+    machine.handleStroke("ctrl+k");
+    scheduler.fire();
+
+    const warnings = log.entries().filter((entry) => entry.level === "warning");
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]?.error.message).toContain("timed out: ctrl+k");
+  });
+});
+
+test("a stale timeout that scheduler.clear failed to cancel does nothing when it fires", () => {
+  // A scheduler whose clear() always throws: armed callbacks are never
+  // actually cancelled, so completing the chord leaves the old timeout
+  // live — the generation guard must make it a no-op when it fires.
+  let nextHandle = 0;
+  const armed = new Map<number, () => void>();
+  const brokenClearScheduler: ChordScheduler & { fireAll(): void } = {
+    set(fn) {
+      const handle = nextHandle++;
+      armed.set(handle, fn);
+      return handle;
+    },
+    clear() {
+      throw new Error("clear broken");
+    },
+    fireAll() {
+      const callbacks = Array.from(armed.values());
+      armed.clear();
+      for (const cb of callbacks) cb();
+    },
+  };
+
+  const table = chordTable();
+  const { calls, execute } = createExecuteRecorder();
+  const log = createHostLog();
+  const machine = createChordStateMachine({
+    table,
+    execute,
+    getContext: contextOf(),
+    scheduler: brokenClearScheduler,
+    log,
+  });
+  const events = trackPending(machine);
+
+  machine.handleStroke("ctrl+k");
+  machine.handleStroke("ctrl+s");
+  expect(calls).toEqual(["keybindings.open"]);
+  expect(events).toEqual(["ctrl+k", undefined]);
+
+  // The stale timeout from the pending phase now fires anyway. It must not
+  // log a bogus "timed out" warning or fire another exit event.
+  brokenClearScheduler.fireAll();
+
+  expect(events).toEqual(["ctrl+k", undefined]);
+  expect(log.entries().filter((entry) => entry.level === "warning")).toEqual([]);
 });

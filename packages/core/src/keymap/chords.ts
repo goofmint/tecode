@@ -127,7 +127,10 @@ export interface ChordStateMachine {
    * already idle. */
   reset(): void;
   /** Clear all `onDidChangePending` listeners and any armed timeout. Does
-   * not fire a final change event — there is nothing left listening. */
+   * not fire a final change event — there is nothing left listening. After
+   * dispose, {@link handleStroke} always returns `"passthrough"` without
+   * touching the table or executing anything, and {@link reset} is a
+   * no-op. */
   dispose(): void;
 }
 
@@ -170,6 +173,12 @@ export function createChordStateMachine(deps: ChordStateMachineDeps): ChordState
 
   let state: InternalState = { kind: "idle" };
   let machineDisposed = false;
+  // Guards stale timeout callbacks: clearArmedTimeout swallows a throwing
+  // scheduler.clear, so a callback the scheduler failed to cancel could
+  // otherwise still fire after its pending state already ended. Every state
+  // transition bumps the generation; a timeout callback armed under an
+  // older generation returns without acting.
+  let generation = 0;
   const listeners = new Set<Listener<string | undefined>>();
 
   function logSafely(level: "error" | "warning", message: string): void {
@@ -233,6 +242,7 @@ export function createChordStateMachine(deps: ChordStateMachineDeps): ChordState
    * event — the single choke point every "back to idle" path uses. */
   function goIdle(): void {
     clearArmedTimeout();
+    generation += 1;
     state = { kind: "idle" };
     fireChange(undefined);
   }
@@ -241,12 +251,15 @@ export function createChordStateMachine(deps: ChordStateMachineDeps): ChordState
    * clearing any previously armed timeout and arming a fresh one. */
   function goPending(prefix: string): void {
     clearArmedTimeout();
+    generation += 1;
+    const armedGeneration = generation;
     let timeoutHandle: unknown;
     try {
       timeoutHandle = scheduler.set(() => {
-        // The timeout firing IS the transition back to idle — no further
-        // guard needed here since clearArmedTimeout on any other exit path
-        // already cancelled this callback via the injected scheduler.
+        // Stale-callback guard: if any transition happened since this
+        // timeout was armed (clearArmedTimeout may have failed to cancel it
+        // when scheduler.clear threw), this callback must do nothing.
+        if (armedGeneration !== generation) return;
         logSafely("warning", `Chord sequence timed out: ${prefix}`);
         goIdle();
       }, CHORD_TIMEOUT_MS);
@@ -347,6 +360,7 @@ export function createChordStateMachine(deps: ChordStateMachineDeps): ChordState
   function dispose(): void {
     machineDisposed = true;
     clearArmedTimeout();
+    generation += 1;
     state = { kind: "idle" };
     listeners.clear();
   }

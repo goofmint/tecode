@@ -448,6 +448,22 @@ describe("createBindingTable — chord sequence keys (Req 4.4, design.md §6.3)"
     expect(table.hasSequencePrefix("ctrl+k", contextOf())).toBe(false);
   });
 
+  test("a 3-stroke binding reports both intermediate prefixes, and neither prefix nor full key leaks into lookup early", () => {
+    const layers = layersOf({
+      user: [{ key: "ctrl+k ctrl+s ctrl+x", command: "chained.command" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.hasSequencePrefix("ctrl+k", contextOf())).toBe(true);
+    expect(table.hasSequencePrefix("ctrl+k ctrl+s", contextOf())).toBe(true);
+    // The full sequence is a complete key, not a prefix of anything longer.
+    expect(table.hasSequencePrefix("ctrl+k ctrl+s ctrl+x", contextOf())).toBe(false);
+
+    // Intermediate sequences are not bound keys themselves.
+    expect(table.lookup("ctrl+k ctrl+s", contextOf())).toBeUndefined();
+    expect(table.lookup("ctrl+k ctrl+s ctrl+x", contextOf())?.command).toBe("chained.command");
+  });
+
   test("normalization applies before sequence matching (mixed-case, unsorted modifiers)", () => {
     const layers = layersOf({
       user: [{ key: "Ctrl+K Shift+Ctrl+S", command: "keybindings.open" }],
