@@ -62,7 +62,14 @@ function describeValue(value: unknown): string {
   try {
     return JSON.stringify(value) ?? String(value);
   } catch {
-    return String(value);
+    // String(value) can itself throw (a hostile Symbol.toPrimitive or
+    // toString), so the fallback needs its own guard with a fixed,
+    // conversion-free last resort.
+    try {
+      return String(value);
+    } catch {
+      return "<unprintable value>";
+    }
   }
 }
 

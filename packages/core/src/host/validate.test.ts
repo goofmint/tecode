@@ -101,6 +101,29 @@ describe("validateManifest — top-level shape", () => {
     }
   });
 
+  test("an activation event whose toJSON and string conversion both throw is still reported, never thrown", () => {
+    const hostile = {
+      toJSON() {
+        throw new Error("json failure");
+      },
+      [Symbol.toPrimitive]() {
+        throw new Error("string failure");
+      },
+    };
+    let result: ReturnType<typeof validateManifest> | undefined;
+    expect(() => {
+      result = validateManifest(validManifest({ activationEvents: [hostile] }));
+    }).not.toThrow();
+    expect(result?.valid).toBe(false);
+    if (result && !result.valid) {
+      expect(
+        result.errors.some(
+          (e) => e.startsWith("activationEvents[0]:") && e.includes("<unprintable value>"),
+        ),
+      ).toBe(true);
+    }
+  });
+
   test("a BigInt activation event is reported as an error, never thrown", () => {
     let result: ReturnType<typeof validateManifest> | undefined;
     expect(() => {
