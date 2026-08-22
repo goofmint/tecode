@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   chmod as fsChmod,
   mkdtemp,
+  symlink,
   open,
   readdir,
   readFile,
@@ -263,7 +264,7 @@ describe("DocumentManager.save (Req 5.5)", () => {
     const realFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
-      writeFile: (p, data, enc) => fsWriteFile(p, data, enc),
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: async () => {
         throw new Error("simulated rename failure");
@@ -387,9 +388,9 @@ describe("DocumentManager — concurrency (review regressions)", () => {
     const gatedFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
-      writeFile: async (p, data, enc) => {
+      writeFile: async (p, data, opts) => {
         await writeGate;
-        await fsWriteFile(p, data, enc);
+        await fsWriteFile(p, data, opts);
       },
       chmod: (p, mode) => fsChmod(p, mode),
       rename: (from, to) => fsRename(from, to),
@@ -406,9 +407,11 @@ describe("DocumentManager — concurrency (review regressions)", () => {
       },
     ]);
 
-    // The save snapshots "first" synchronously, then stalls inside
-    // writeFile — a second edit lands while the bytes are in flight.
+    // The save snapshots "first" and stalls inside writeFile — wait for
+    // it to reach the gate (the queued save starts on a microtask), then
+    // land a second edit while the bytes are in flight.
     const pendingSave = manager.save(uri);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     doc.applyEdits([
       {
         range: { start: { line: 0, character: 5 }, end: { line: 0, character: 5 } },
@@ -448,5 +451,132 @@ describe("DocumentManager.save — permission preservation (review nitpick)", ()
     expect(await readFile(path, "utf8")).toBe("echo bye");
     // The executable bit survives the temp-file rename.
     expect((await fsStat(path)).mode & 0o777).toBe(0o755);
+  });
+});
+
+describe("DocumentManager.save — hardening (review regressions)", () => {
+  test("a stat failure other than ENOENT aborts the save, reports, and keeps dirty", async () => {
+    const path = join(dir, "iofail.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink, errors } = baseDeps();
+
+    let failStat = false;
+    const ioFs: DocumentManagerFs = {
+      stat: async (p) => {
+        if (failStat) {
+          throw Object.assign(new Error("disk read failure"), { code: "EIO" });
+        }
+        return fsStat(p);
+      },
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: (p, mode) => fsChmod(p, mode),
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({ log, sink, fs: ioFs });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } },
+        newText: "modified",
+      },
+    ]);
+
+    failStat = true;
+    const saved: string[] = [];
+    manager.onDidSave(() => saved.push("fired"));
+
+    expect(await manager.save(uri)).toBe(false);
+    expect(doc.dirty).toBe(true);
+    expect(saved).toHaveLength(0);
+    expect(errors.at(-1)!.message).toContain("disk read failure");
+    expect(await readFile(path, "utf8")).toBe("original");
+  });
+
+  test("a symlink squatting the predictable temp name cannot redirect the write", async () => {
+    const path = join(dir, "target.txt");
+    await writeFile(path, "original", "utf8");
+    const victimPath = join(dir, "victim.txt");
+    await writeFile(victimPath, "untouched", "utf8");
+
+    // Squat the first temp name a fresh manager would use with a symlink
+    // to the victim: exclusive creation must refuse it and retry under a
+    // different name instead of writing through the link.
+    const squattedTemp = join(dir, `.target.txt.tmp-${process.pid}-0`);
+    await symlink(victimPath, squattedTemp);
+
+    const { log, sink } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } },
+        newText: "modified",
+      },
+    ]);
+
+    expect(await manager.save(uri)).toBe(true);
+    expect(doc.dirty).toBe(false);
+    expect(await readFile(path, "utf8")).toBe("modified");
+    expect(await readFile(victimPath, "utf8")).toBe("untouched");
+  });
+
+  test("saves of the same uri are serialized: an older snapshot can never clobber a newer one", async () => {
+    const path = join(dir, "serial.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let gateArmed = true;
+    const gatedFs: DocumentManagerFs = {
+      stat: (p) => fsStat(p),
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: async (p, data, opts) => {
+        if (gateArmed) {
+          gateArmed = false;
+          await writeGate;
+        }
+        await fsWriteFile(p, data, opts);
+      },
+      chmod: (p, mode) => fsChmod(p, mode),
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({ log, sink, fs: gatedFs });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } },
+        newText: "first",
+      },
+    ]);
+    // save #1 stalls inside writeFile with snapshot "first"; a newer edit
+    // and save #2 arrive while it is in flight.
+    const p1 = manager.save(uri);
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+        newText: "second",
+      },
+    ]);
+    const p2 = manager.save(uri);
+    releaseWrite();
+
+    expect(await p1).toBe(true);
+    expect(await p2).toBe(true);
+    // save #2 ran strictly after save #1 finished, snapshotting the newest
+    // text — the older snapshot can never end up as the final disk state.
+    expect(await readFile(path, "utf8")).toBe("second");
+    expect(doc.dirty).toBe(false);
   });
 });

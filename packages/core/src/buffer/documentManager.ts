@@ -34,7 +34,11 @@ export const LARGE_FILE_THRESHOLD_BYTES = 10 * 1024 * 1024;
 export interface DocumentManagerFs {
   stat(path: string): Promise<{ size: number; mode: number }>;
   readFile(path: string, encoding: "utf8"): Promise<string>;
-  writeFile(path: string, data: string, encoding: "utf8"): Promise<void>;
+  writeFile(
+    path: string,
+    data: string,
+    options: { encoding: "utf8"; flag: "wx" },
+  ): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   unlink(path: string): Promise<void>;
@@ -45,7 +49,7 @@ function createNodeFs(): DocumentManagerFs {
   return {
     stat: (path) => nodeFs.stat(path),
     readFile: (path, encoding) => nodeFs.readFile(path, encoding),
-    writeFile: (path, data, encoding) => nodeFs.writeFile(path, data, encoding),
+    writeFile: (path, data, options) => nodeFs.writeFile(path, data, options),
     chmod: (path, mode) => nodeFs.chmod(path, mode),
     rename: (oldPath, newPath) => nodeFs.rename(oldPath, newPath),
     unlink: (path) => nodeFs.unlink(path),
@@ -115,6 +119,16 @@ export interface DocumentManager {
   onDidOpen: Event<CoreDocument>;
   onDidClose: Event<CoreDocument>;
   onDidSave: Event<CoreDocument>;
+}
+
+/** Extract an errno-style `code` (e.g. `"ENOENT"`, `"EEXIST"`) from a
+ * caught unknown, or `undefined` when it carries none. */
+function errorCode(err: unknown): string | undefined {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
 }
 
 /** Render a caught `unknown` value as a message string without risking a
@@ -255,7 +269,30 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     return document;
   }
 
-  async function save(uri: Uri): Promise<boolean> {
+  /** Per-uri chain of in-flight saves: a second save of the same uri
+   * waits for the first to fully finish (rename included), so an older
+   * snapshot's rename can never land after — and silently clobber — a
+   * newer save's bytes on disk. */
+  const saveQueues = new Map<Uri, Promise<unknown>>();
+
+  function save(uri: Uri): Promise<boolean> {
+    const prev = saveQueues.get(uri) ?? Promise.resolve();
+    const run = prev.then(
+      () => saveNow(uri),
+      () => saveNow(uri),
+    );
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    saveQueues.set(uri, tail);
+    void tail.then(() => {
+      if (saveQueues.get(uri) === tail) saveQueues.delete(uri);
+    });
+    return run;
+  }
+
+  async function saveNow(uri: Uri): Promise<boolean> {
     const document = documentsMap.get(uri);
     if (!document) {
       notifySafely({
@@ -273,27 +310,51 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     }
 
     const path = uriToPath(uri);
-    const tempPath = join(
-      dirname(path),
-      `.${basename(path)}.tmp-${process.pid}-${tempCounter++}`,
-    );
     const text = document.getText();
     const versionAtWrite = document.version;
 
     // Capture the target's current mode (when it exists) so the rename
     // does not silently reset an executable or restricted file to the
-    // temp file's default umask mode.
+    // temp file's default umask mode. Only ENOENT ("first save of a new
+    // file") may continue with the default mode — any other stat failure
+    // (EIO, EACCES, ...) means the target is not trustworthy right now,
+    // so report and abort rather than saving with a possibly-wrong mode.
     let targetMode: number | undefined;
     try {
       targetMode = (await fs.stat(path)).mode;
-    } catch {
-      // First save of a not-yet-existing file: keep the default mode.
+    } catch (cause) {
+      if (errorCode(cause) !== "ENOENT") {
+        const err: HostError = {
+          message: `Failed to save document: ${describeError(cause)}`,
+          path: uri,
+        };
+        logSafely("error", err);
+        notifySafely(err);
+        return false;
+      }
     }
 
-    let wroteTemp = false;
+    // Create the temp file EXCLUSIVELY ("wx" — O_CREAT|O_EXCL): a plain
+    // writeFile follows an existing symlink, so a link pre-created at the
+    // predictable temp name could redirect the write to an arbitrary
+    // file. EEXIST (someone squatted the name) retries under fresh names.
+    let tempPath: string | undefined;
     try {
-      await fs.writeFile(tempPath, text, "utf8");
-      wroteTemp = true;
+      for (let attempt = 0; attempt < 3 && tempPath === undefined; attempt++) {
+        const candidate = join(
+          dirname(path),
+          `.${basename(path)}.tmp-${process.pid}-${tempCounter++}`,
+        );
+        try {
+          await fs.writeFile(candidate, text, { encoding: "utf8", flag: "wx" });
+          tempPath = candidate;
+        } catch (cause) {
+          if (errorCode(cause) !== "EEXIST") throw cause;
+        }
+      }
+      if (tempPath === undefined) {
+        throw new Error("every candidate temp-file name already exists");
+      }
       if (targetMode !== undefined) {
         await fs.chmod(tempPath, targetMode);
       }
@@ -305,7 +366,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
       };
       logSafely("error", err);
       notifySafely(err);
-      if (wroteTemp) {
+      if (tempPath !== undefined) {
         try {
           await fs.unlink(tempPath);
         } catch {
