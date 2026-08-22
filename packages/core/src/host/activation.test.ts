@@ -323,6 +323,77 @@ test("disposeAll settles an in-flight activation first, so its subscriptions are
   expect(host.getState("lang.slow")).toBe("registered");
 });
 
+test("concurrent deactivations share one teardown — deactivate() runs exactly once", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const commands = createCommandRegistry({ log, sink });
+  let releaseDeactivate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseDeactivate = resolve;
+  });
+  let deactivations = 0;
+  const ext = fixtureRecord("slow.teardown", {}, {
+    activate() {},
+    async deactivate() {
+      deactivations += 1;
+      await gate;
+    },
+  });
+  const host = createExtensionHost({ extensions: [ext], api: fixtureApi(commands), log, sink });
+  await host.activateExtension("slow.teardown");
+
+  const first = host.deactivateExtension("slow.teardown");
+  const second = host.deactivateExtension("slow.teardown");
+  releaseDeactivate();
+  await Promise.all([first, second]);
+
+  expect(deactivations).toBe(1);
+  expect(host.getState("slow.teardown")).toBe("registered");
+});
+
+test("a reactivation racing a slow teardown waits for it, ending active with a fresh context", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const commands = createCommandRegistry({ log, sink });
+  let releaseDeactivate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseDeactivate = resolve;
+  });
+  let activations = 0;
+  const subscriptionLog: string[] = [];
+  const ext = fixtureRecord("rebounce.ext", {}, {
+    activate(ctx: ExtensionContext) {
+      activations += 1;
+      const generation = activations;
+      ctx.subscriptions.push({
+        dispose() {
+          subscriptionLog.push(`disposed-${generation}`);
+        },
+      });
+    },
+    async deactivate() {
+      await gate;
+    },
+  });
+  const host = createExtensionHost({ extensions: [ext], api: fixtureApi(commands), log, sink });
+  await host.activateExtension("rebounce.ext");
+
+  const teardown = host.deactivateExtension("rebounce.ext");
+  // Fired while teardown is still awaiting deactivate(): must chain after
+  // it, not race it — a straggling teardown must never wipe the fresh ctx.
+  const reactivation = host.activateExtension("rebounce.ext");
+  releaseDeactivate();
+  await Promise.all([teardown, reactivation]);
+
+  expect(activations).toBe(2);
+  expect(host.getState("rebounce.ext")).toBe("active");
+  // Generation 1's subscription was disposed by the teardown; generation
+  // 2's is still live and gets disposed by a final clean deactivation.
+  expect(subscriptionLog).toEqual(["disposed-1"]);
+  await host.deactivateExtension("rebounce.ext");
+  expect(subscriptionLog).toEqual(["disposed-1", "disposed-2"]);
+});
+
 test("activateExtension after disposeAll started is a no-op, so nothing activates on a shut-down host", async () => {
   const log = createHostLog();
   const { sink } = createRecordingSink();

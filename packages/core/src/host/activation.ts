@@ -247,6 +247,10 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
    * extension into one activation (see {@link ExtensionHost.activateExtension}'s
    * TSDoc). */
   const inFlight = new Map<string, Promise<void>>();
+  // In-progress deactivations, keyed like inFlight — see deactivateExtension
+  // for why teardown must be serialized per extension, and activateExtension
+  // for why a reactivation waits for a pending teardown to finish first.
+  const tearingDown = new Map<string, Promise<void>>();
   // The SET of extension IDs whose activate(ctx) calls are executing on the
   // current async path (a set, not a single ID: nested activations — A's
   // activate triggering B's — must keep A visible, or an A→B→A cycle would
@@ -376,6 +380,11 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
     // immediately — the caller (e.g. a lazy command execute) then proceeds
     // down its documented not-yet-activated path.
     if (activatingContext.getStore()?.has(id)) return Promise.resolve();
+    // A teardown of this extension is still in progress: reactivation must
+    // start from a fully torn-down state, or the finishing teardown would
+    // wipe the new activation's ctx/module out from under it.
+    const teardown = tearingDown.get(id);
+    if (teardown) return teardown.then(() => activateExtension(id));
     const record = records.get(id);
     const runtime = runtimes.get(id);
     if (!record || !runtime || runtime.state !== "registered") {
@@ -392,10 +401,7 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
     return promise;
   }
 
-  async function deactivateExtension(id: string): Promise<void> {
-    const runtime = runtimes.get(id);
-    if (!runtime || runtime.state !== "active") return;
-
+  async function performDeactivation(id: string, runtime: ExtensionRuntime): Promise<void> {
     const { ctx, module } = runtime;
     if (ctx) disposeSubscriptions(id, ctx);
     if (module?.deactivate) {
@@ -411,6 +417,24 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
     runtime.state = "registered";
     runtime.ctx = undefined;
     runtime.module = undefined;
+  }
+
+  function deactivateExtension(id: string): Promise<void> {
+    // Serialize per extension: state stays "active" until deactivate()
+    // settles, so without this a second concurrent call would run
+    // module.deactivate() a second time — and, if a reactivation slipped in
+    // after the first teardown finished, the straggler would then wipe the
+    // NEW activation's ctx/module. Concurrent callers share one teardown.
+    const existing = tearingDown.get(id);
+    if (existing) return existing;
+    const runtime = runtimes.get(id);
+    if (!runtime || runtime.state !== "active") return Promise.resolve();
+
+    const promise = performDeactivation(id, runtime).finally(() => {
+      tearingDown.delete(id);
+    });
+    tearingDown.set(id, promise);
+    return promise;
   }
 
   async function disposeAll(): Promise<void> {
