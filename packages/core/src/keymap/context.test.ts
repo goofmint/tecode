@@ -102,3 +102,18 @@ test("distinct keys are stored independently", () => {
   expect(context.get<boolean>("editorFocus")).toBe(true);
   expect(context.get<boolean>("explorerFocus")).toBe(false);
 });
+
+test("a throwing listener does not stop other listeners or break set", () => {
+  const context = createContextService();
+  const seen: string[] = [];
+  context.onDidChange(() => {
+    throw new Error("bad listener");
+  });
+  context.onDidChange((key) => {
+    seen.push(key);
+  });
+
+  expect(() => context.set("editorFocus", true)).not.toThrow();
+  expect(seen).toEqual(["editorFocus"]);
+  expect(context.get<boolean>("editorFocus")).toBe(true);
+});

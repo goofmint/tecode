@@ -183,6 +183,7 @@ function describeToken(token: Token): string {
  * Throws {@link WhenParseError} on any lexical or syntactic problem,
  * including trailing input after a complete expression. */
 function parseWhen(clause: string): WhenNode {
+  parseCount += 1;
   const tokens = tokenize(clause);
   let pos = 0;
 
@@ -266,14 +267,21 @@ function parseWhen(clause: string): WhenNode {
   return ast;
 }
 
+/** Total {@link parseWhen} invocations since module load — read-only
+ * observability for the AST-cache tests; nothing in the production path
+ * can be altered through it. */
+let parseCount = 0;
+
 /**
- * Indirection around {@link parseWhen} used only so `when.test.ts` can
- * spy on it to prove {@link compileWhen}'s AST-cache guarantee (parse
- * once, evaluate many times) without exporting the parser as public API.
- * Not part of the module's public surface — `packages/core/src/keymap/index.ts`
- * does not re-export it.
+ * @internal Test-only, read-only: how many times the parser has run since
+ * module load. Lets `when.test.ts` prove {@link compileWhen}'s AST-cache
+ * guarantee (parse once, evaluate many times) without exposing a mutable
+ * hook on the production parse path. Not re-exported from
+ * `packages/core/src/keymap/index.ts`.
  */
-export const __whenTestHooks = { parse: parseWhen };
+export function __getParseCountForTests(): number {
+  return parseCount;
+}
 
 /* ------------------------------------------------------------------ */
 /* Evaluation                                                          */
@@ -328,7 +336,7 @@ export interface CompiledWhen {
  * rather than let one bad clause abort startup.
  */
 export function compileWhen(clause: string): CompiledWhen {
-  const ast = __whenTestHooks.parse(clause);
+  const ast = parseWhen(clause);
   return {
     source: clause,
     evaluate(get: WhenContextGetter): boolean {

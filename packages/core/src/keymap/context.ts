@@ -46,7 +46,12 @@ export function createContextService(): ContextService {
     // Snapshot before iterating: a listener that disposes itself (or
     // another listener) during the loop must not perturb this dispatch.
     for (const listener of Array.from(listeners)) {
-      listener(key);
+      try {
+        listener(key);
+      } catch {
+        // Isolate listener failures: one throwing listener must not stop
+        // the remaining listeners or propagate out of set().
+      }
     }
   }
 

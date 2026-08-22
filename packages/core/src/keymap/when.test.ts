@@ -1,5 +1,5 @@
-import { describe, expect, spyOn, test } from "bun:test";
-import { compileWhen, WhenParseError, __whenTestHooks } from "./when";
+import { describe, expect, test } from "bun:test";
+import { compileWhen, WhenParseError, __getParseCountForTests } from "./when";
 
 /** Build a context getter from a plain object, for table-driven tests. */
 function contextOf(values: Record<string, unknown>): (key: string) => unknown {
@@ -178,29 +178,25 @@ describe("compileWhen — malformed clauses throw WhenParseError", () => {
 
 describe("compileWhen — AST-cache guarantee", () => {
   test("parses the clause exactly once, regardless of how many times evaluate is called", () => {
-    const parseSpy = spyOn(__whenTestHooks, "parse");
-    const before = parseSpy.mock.calls.length;
+    const before = __getParseCountForTests();
 
     const compiled = compileWhen("editorTextFocus && editorLangId == 'ts'");
-    expect(parseSpy.mock.calls.length).toBe(before + 1);
+    expect(__getParseCountForTests()).toBe(before + 1);
 
     for (let i = 0; i < 5; i++) {
       compiled.evaluate(contextOf({ editorTextFocus: true, editorLangId: "ts" }));
     }
 
-    expect(parseSpy.mock.calls.length).toBe(before + 1);
-    parseSpy.mockRestore();
+    expect(__getParseCountForTests()).toBe(before + 1);
   });
 
   test("two separate compileWhen calls each parse once, independently", () => {
-    const parseSpy = spyOn(__whenTestHooks, "parse");
-    const before = parseSpy.mock.calls.length;
+    const before = __getParseCountForTests();
 
     compileWhen("a");
     compileWhen("b");
 
-    expect(parseSpy.mock.calls.length).toBe(before + 2);
-    parseSpy.mockRestore();
+    expect(__getParseCountForTests()).toBe(before + 2);
   });
 });
 
