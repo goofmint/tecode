@@ -379,6 +379,12 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
   }
 
   async function disposeAll(): Promise<void> {
+    // Settle in-flight activations first: a fire-and-forget trigger (e.g.
+    // onLanguage) may still be mid-activation, and deactivateExtension
+    // skips anything not yet "active" — without this, such an extension
+    // would finish activating after shutdown with its subscriptions never
+    // disposed.
+    await Promise.all(Array.from(inFlight.values()));
     for (const id of records.keys()) {
       await deactivateExtension(id);
     }

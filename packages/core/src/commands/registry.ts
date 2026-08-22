@@ -33,6 +33,12 @@ interface CommandEntry {
   meta: CommandMeta;
   extensionId?: string;
   lazy: boolean;
+  /** True while `execute()` is awaiting this entry's owning extension's
+   * activation. Guards re-entrancy: an extension whose `activate(ctx)`
+   * executes its own still-lazy command would otherwise `await` its own
+   * in-flight activation promise and deadlock — with the marker set, the
+   * recursive call falls through to the not-activated error path instead. */
+  activating?: boolean;
 }
 
 /** Options for {@link CommandRegistry.registerLazy}. */
@@ -196,10 +202,13 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
   async function execute(id: string, ...args: unknown[]): Promise<unknown> {
     let entry = commands.get(id);
 
-    if (entry && !entry.handler && entry.extensionId && activateExtension) {
+    if (entry && !entry.handler && entry.extensionId && activateExtension && !entry.activating) {
       // Lazy, not-yet-activated command (design.md §4.1, §4.2) — activate
       // its owning extension, then re-look-up: activation is expected to
       // replace this entry with a real handler via register() (Task 1.12).
+      // `activating` (see CommandEntry) keeps a recursive execute() from
+      // inside that same activation from deadlocking on its own promise.
+      entry.activating = true;
       try {
         await activateExtension(entry.extensionId);
       } catch (cause) {
@@ -210,6 +219,12 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
           extensionId: entry.extensionId,
           message: `activateExtension("${entry.extensionId}") threw: ${describeError(cause)}`,
         });
+      } finally {
+        // Clear on the ORIGINAL entry (activation may have replaced it in
+        // the map): once activation has settled, future execute() calls may
+        // legitimately retry the hook (it no-ops fast for active/failed
+        // extensions).
+        entry.activating = false;
       }
       entry = commands.get(id);
     }

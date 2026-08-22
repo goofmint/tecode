@@ -165,9 +165,10 @@ test("onLanguage activates every extension declaring that language, exactly once
 
   host.onLanguage("typescript");
   // onLanguage is fire-and-forget (synchronous, matches DocumentManagerDeps'
-  // onLanguageActivation shape) — give the in-flight activation a tick to settle.
-  await Promise.resolve();
-  await Promise.resolve();
+  // onLanguageActivation shape) — join the same in-flight activation via
+  // activateExtension instead of guessing a microtask count, so the wait
+  // stays deterministic however many awaits performActivation grows.
+  await host.activateExtension("lang.ts");
 
   expect(tsActivations).toBe(1);
   expect(jsActivations).toBe(0);
@@ -175,7 +176,7 @@ test("onLanguage activates every extension declaring that language, exactly once
   expect(host.getState("lang.js")).toBe("registered");
 
   host.onLanguage("typescript");
-  await Promise.resolve();
+  await host.activateExtension("lang.ts");
 
   expect(tsActivations).toBe(1);
 });
@@ -285,6 +286,80 @@ test("disposeAll deactivates every active extension and is idempotent", async ()
   // Idempotent: nothing left active, so a second call deactivates nothing.
   await host.disposeAll();
   expect(order.sort()).toEqual(["a", "b"]);
+});
+
+test("disposeAll settles an in-flight activation first, so its subscriptions are still disposed", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const commands = createCommandRegistry({ log, sink });
+  let releaseActivate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseActivate = resolve;
+  });
+  const disposed: string[] = [];
+  const slow = fixtureRecord(
+    "lang.slow",
+    { activationEvents: ["onLanguage:slow"] },
+    {
+      async activate(ctx: ExtensionContext) {
+        ctx.subscriptions.push({
+          dispose() {
+            disposed.push("slow-sub");
+          },
+        });
+        await gate;
+      },
+    },
+  );
+  const host = createExtensionHost({ extensions: [slow], api: fixtureApi(commands), log, sink });
+
+  // Fire-and-forget start, then shut down while activation is still pending.
+  host.onLanguage("slow");
+  const disposal = host.disposeAll();
+  releaseActivate();
+  await disposal;
+
+  expect(disposed).toEqual(["slow-sub"]);
+  expect(host.getState("lang.slow")).toBe("registered");
+});
+
+test("an extension executing its own lazy command during activate() does not deadlock", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  // The hook closes over `host`, declared below — safe because the hook only
+  // runs from execute(), long after the const initializes (the standard
+  // registry-before-host wiring order documented in registry.ts).
+  const commands = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: (extensionId) => host.activateExtension(extensionId),
+  });
+  let innerResult: unknown = "not-run";
+  const selfCalling = fixtureRecord("self.ext", { activationEvents: ["onCommand:self.run"] }, {
+    async activate(ctx: ExtensionContext) {
+      // Executes its own still-lazy command BEFORE registering the real
+      // handler — without registry.ts's `activating` re-entrancy guard this
+      // would await its own in-flight activation promise forever.
+      innerResult = await ctx.api.commands.execute("self.run");
+      ctx.api.commands.register("self.run", () => "real");
+    },
+  });
+  const host = createExtensionHost({
+    extensions: [selfCalling],
+    api: fixtureApi(commands),
+    log,
+    sink,
+  });
+  commands.registerLazy("self.run", { extensionId: "self.ext" });
+
+  const result = await commands.execute("self.run");
+
+  // The outer call re-dispatches to the real handler after activation; the
+  // recursive inner call fell through to the not-activated error path.
+  expect(result).toBe("real");
+  expect(innerResult).toBeUndefined();
+  expect(errors.some((e) => e.message.includes("self.run"))).toBe(true);
+  expect(host.getState("self.ext")).toBe("active");
 });
 
 // --- failure isolation --------------------------------------------------------
