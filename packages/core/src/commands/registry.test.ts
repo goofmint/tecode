@@ -209,3 +209,81 @@ test("createHostLog accumulates entries in append order and starts empty", () =>
     { level: "error", error: { message: "second", extensionId: "demo" } },
   ]);
 });
+
+test("execute keeps its never-throwing contract when the sink itself throws", async () => {
+  const log = createHostLog();
+  const throwingSink = {
+    error() {
+      throw new Error("sink is broken");
+    },
+  };
+  const registry = createCommandRegistry({ log, sink: throwingSink });
+
+  expect(await registry.execute("no.such.command")).toBeUndefined();
+
+  registry.register("editor.action.boom", () => {
+    throw new Error("handler failure");
+  });
+  expect(await registry.execute("editor.action.boom")).toBeUndefined();
+});
+
+test("execute keeps its never-throwing contract when the log itself throws", async () => {
+  const throwingLog = {
+    append() {
+      throw new Error("log is broken");
+    },
+    entries: () => [],
+  };
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log: throwingLog, sink });
+
+  registry.register("editor.action.boom", () => {
+    throw new Error("handler failure");
+  });
+  expect(await registry.execute("editor.action.boom")).toBeUndefined();
+  // Re-registration warnings also go through the guarded log path.
+  expect(() => registry.register("editor.action.boom", () => "ok")).not.toThrow();
+});
+
+test("execute survives an error whose message getter throws", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.register("editor.action.cursed", () => {
+    const cursed = new Error("unreachable");
+    Object.defineProperty(cursed, "message", {
+      get() {
+        throw new Error("message getter throws");
+      },
+    });
+    throw cursed;
+  });
+
+  expect(await registry.execute("editor.action.cursed")).toBeUndefined();
+  expect(errors[0]?.message).toContain("Unknown error");
+});
+
+test("register rejects command IDs that are not namespace.verb form", () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  for (const bad of ["save", "editor.", ".save", "editor..save", "editor save.x", ""]) {
+    expect(() => registry.register(bad, () => undefined)).toThrow(TypeError);
+  }
+  // Multi-segment IDs are valid (e.g. editor.action.deleteLine).
+  expect(() =>
+    registry.register("editor.action.deleteLine", () => undefined),
+  ).not.toThrow();
+});
+
+test("HostLog.entries returns a snapshot, not the internal records", () => {
+  const log = createHostLog();
+  log.append("error", { message: "original" });
+
+  const snapshot = log.entries();
+  snapshot[0]!.error.message = "mutated";
+
+  expect(log.entries()[0]?.error.message).toBe("original");
+});

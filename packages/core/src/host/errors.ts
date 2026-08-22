@@ -48,7 +48,9 @@ export function createHostLog(): HostLog {
       records.push({ level, error });
     },
     entries() {
-      return records;
+      // Snapshot: cloning each entry (and its error) keeps the log
+      // append-only — callers can't mutate accumulated records.
+      return records.map(({ level, error }) => ({ level, error: { ...error } }));
     },
   };
 }

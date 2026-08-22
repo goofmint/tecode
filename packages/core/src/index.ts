@@ -2,6 +2,7 @@
 export { HOST_PLACEHOLDER } from "./host/index";
 export {
   createCommandRegistry,
+  isValidCommandId,
   type CommandRegistry,
   type CommandRegistryDeps,
 } from "./commands/index";

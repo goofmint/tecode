@@ -42,14 +42,24 @@ export interface CommandRegistry {
 }
 
 /** Render a caught `unknown` value as a message string without risking a
- * second throw (e.g. from a non-Error with a throwing `toString`). */
+ * second throw (e.g. a throwing `toString`, or an `Error` subclass whose
+ * `message` getter throws). */
 function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
   try {
+    if (err instanceof Error) return err.message;
     return String(err);
   } catch {
     return "Unknown error";
   }
+}
+
+/**
+ * Whether `id` follows the `namespace.verb` convention (Req 3.2): two or
+ * more non-empty, whitespace-free segments separated by dots (e.g.
+ * `editor.action.deleteLine`). Shared so manifest validation can reuse it.
+ */
+export function isValidCommandId(id: string): boolean {
+  return /^[^\s.]+(\.[^\s.]+)+$/.test(id);
 }
 
 /**
@@ -62,13 +72,37 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
   const { log, sink } = deps;
   const commands = new Map<string, CommandEntry>();
 
+  /** Guarded `log.append` — an injected log must not be able to break the
+   * registry's error paths (execute's never-throwing contract). */
+  function logSafely(level: "error" | "warning", err: HostError): void {
+    try {
+      log.append(level, err);
+    } catch {
+      // Swallowed: reporting a reporting failure has nowhere left to go.
+    }
+  }
+
+  /** Guarded `sink.error` — same rationale as {@link logSafely}. */
+  function notifySafely(err: HostError): void {
+    try {
+      sink.error(err);
+    } catch {
+      // Swallowed: preserve execute()'s never-throwing contract.
+    }
+  }
+
   function register(
     id: string,
     handler: CommandHandler,
     meta: CommandMeta = {},
   ): Disposable {
+    if (!isValidCommandId(id)) {
+      throw new TypeError(
+        `Invalid command ID "${id}": expected namespace.verb form (Req 3.2)`,
+      );
+    }
     if (commands.has(id)) {
-      log.append("warning", {
+      logSafely("warning", {
         message: `Command re-registered, replacing previous handler: ${id}`,
       });
     }
@@ -94,7 +128,7 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
     const entry = commands.get(id);
     if (!entry) {
       const err: HostError = { message: `Command not found: ${id}` };
-      sink.error(err);
+      notifySafely(err);
       return undefined;
     }
     try {
@@ -103,8 +137,8 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
       const err: HostError = {
         message: `Command "${id}" threw: ${describeError(cause)}`,
       };
-      log.append("error", err);
-      sink.error(err);
+      logSafely("error", err);
+      notifySafely(err);
       return undefined;
     }
   }
