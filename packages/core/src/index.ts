@@ -36,9 +36,20 @@ export {
 export {
   createDocument,
   createLineBuffer,
+  createSystemClock,
+  createUndoStack,
+  TYPING_COALESCE_WINDOW_MS,
   type AppliedEdit,
+  type ApplyEditsOptions,
+  type Clock,
+  type CoreDocument,
   type CreateDocumentOptions,
   type LineBuffer,
+  type PushInput,
+  type TypingCoalesceHint,
+  type UndoEntry,
+  type UndoStack,
+  type UndoStackDeps,
 } from "./buffer/index";
 export { UI_PLACEHOLDER } from "./ui/index";
 export { CONFIG_PLACEHOLDER } from "./config/index";

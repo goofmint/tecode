@@ -1,8 +1,28 @@
 import { describe, expect, test } from "bun:test";
-import type { DocumentChangeEvent, Eol, TextEdit } from "@tecode/api";
+import type { DocumentChangeEvent, Eol, Selection, TextEdit } from "@tecode/api";
 import type { HostError } from "../host/errors";
 import { createHostLog } from "../host/errors";
+import type { Clock } from "./clock";
+import { TYPING_COALESCE_WINDOW_MS } from "./undoStack";
 import { createDocument } from "./document";
+
+/** A fake, manually advanceable {@link Clock} — deterministic coalescing
+ * tests must never depend on real elapsed time (matches undoStack.test.ts's
+ * fake clock). */
+function createFakeClock(startAt = 0): Clock & { advance(ms: number): void } {
+  let now = startAt;
+  return {
+    now: () => now,
+    advance(ms: number) {
+      now += ms;
+    },
+  };
+}
+
+function cursorAt(line: number, character: number): Selection {
+  const pos = { line, character };
+  return { start: pos, end: pos, anchor: pos, active: pos };
+}
 
 /** A {@link StatusSink} stub that records every error it receives, for
  * assertions (matching registry.test.ts's `createRecordingSink`). */
@@ -432,5 +452,337 @@ describe("createDocument — transaction (minimal passthrough for this task)", (
 
     expect(events).toHaveLength(2);
     expect(doc.version).toBe(2);
+  });
+});
+
+describe("createDocument — transaction undo grouping (Req 5.4)", () => {
+  test("a transaction's multiple applyEdits calls undo as a single step", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "ab",
+      sink,
+      log,
+    });
+
+    doc.transaction(() => {
+      doc.applyEdits([
+        {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          newText: "A",
+        },
+      ]);
+      doc.applyEdits([
+        {
+          range: { start: { line: 0, character: 1 }, end: { line: 0, character: 2 } },
+          newText: "B",
+        },
+      ]);
+    });
+    expect(doc.version).toBe(2);
+
+    // One undo() call reverts both edits at once.
+    const events: DocumentChangeEvent[] = [];
+    doc.onDidChange((e) => events.push(e));
+    doc.undo();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.inverseEdits).toHaveLength(2);
+    expect(doc.version).toBe(3);
+
+    // A second undo() call finds nothing further to undo (returns
+    // undefined and fires no additional event).
+    expect(doc.undo()).toBeUndefined();
+    expect(events).toHaveLength(1);
+  });
+
+  test("nested transaction() calls share the outer transaction's group", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "abc",
+      sink,
+      log,
+    });
+
+    doc.transaction(() => {
+      doc.applyEdits([
+        {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          newText: "A",
+        },
+      ]);
+      doc.transaction(() => {
+        doc.applyEdits([
+          {
+            range: { start: { line: 0, character: 1 }, end: { line: 0, character: 2 } },
+            newText: "B",
+          },
+        ]);
+      });
+      doc.applyEdits([
+        {
+          range: { start: { line: 0, character: 2 }, end: { line: 0, character: 3 } },
+          newText: "C",
+        },
+      ]);
+    });
+
+    const events: DocumentChangeEvent[] = [];
+    doc.onDidChange((e) => events.push(e));
+    doc.undo();
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.inverseEdits).toHaveLength(3);
+    expect(doc.undo()).toBeUndefined();
+  });
+
+  test("the transaction group is closed even when fn throws, so later edits are not swept in", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "ab",
+      sink,
+      log,
+    });
+
+    expect(() =>
+      doc.transaction(() => {
+        doc.applyEdits([
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+            newText: "A",
+          },
+        ]);
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+
+    // A later, unrelated edit must not merge into the aborted
+    // transaction's group.
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 1 }, end: { line: 0, character: 2 } },
+        newText: "B",
+      },
+    ]);
+
+    doc.undo();
+    doc.undo();
+    // Two independent undo steps existed (no third to pop).
+    expect(doc.undo()).toBeUndefined();
+  });
+});
+
+describe("createDocument — undo/redo round-trip (Req 5.4)", () => {
+  test("undo -> redo -> undo round-trips buffer content and selection payloads exactly", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "hello world",
+      sink,
+      log,
+    });
+
+    const events: DocumentChangeEvent[] = [];
+    doc.onDidChange((e) => events.push(e));
+
+    const before = [cursorAt(0, 0)];
+    const after = [cursorAt(0, 5)];
+    doc.applyEdits(
+      [
+        {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+          newText: "HELLO",
+        },
+      ],
+      { selectionsBefore: before, selectionsAfter: after },
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]!.inverseEdits[0]!.newText).toBe("hello");
+
+    // undo: restores "hello", returns selectionsBefore.
+    const undoneSelections = doc.undo();
+    expect(undoneSelections).toEqual(before);
+    expect(events).toHaveLength(2);
+    expect(events[1]!.inverseEdits[0]!.newText).toBe("HELLO"); // redo batch
+
+    // redo: restores "HELLO", returns selectionsAfter.
+    const redoneSelections = doc.redo();
+    expect(redoneSelections).toEqual(after);
+    expect(events).toHaveLength(3);
+    expect(events[2]!.inverseEdits[0]!.newText).toBe("hello"); // undo batch again
+
+    // undo again: back to "hello", exact same payload as the first undo.
+    const undoneAgain = doc.undo();
+    expect(undoneAgain).toEqual(before);
+    expect(events).toHaveLength(4);
+    expect(events[3]!.inverseEdits[0]!.newText).toBe("HELLO");
+    expect(doc.version).toBe(4);
+  });
+
+  test("a new edit after undo clears the redo stack", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "hello",
+      sink,
+      log,
+    });
+
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+        newText: "x",
+      },
+    ]);
+    doc.undo();
+    expect(doc.redo()).toBeDefined(); // sanity: redo is available before the new edit
+
+    // Undo again to restore the redo entry we just consumed, then verify
+    // a fresh edit clears it.
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+        newText: "y",
+      },
+    ]);
+    doc.undo();
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+        newText: "z",
+      },
+    ]);
+    expect(doc.redo()).toBeUndefined();
+  });
+
+  test("undo()/redo() are silent no-ops on empty stacks", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "hello",
+      sink,
+      log,
+    });
+
+    expect(() => doc.undo()).not.toThrow();
+    expect(doc.undo()).toBeUndefined();
+    expect(() => doc.redo()).not.toThrow();
+    expect(doc.redo()).toBeUndefined();
+    expect(doc.version).toBe(0);
+  });
+});
+
+describe("createDocument — readonly and undo/redo (Req 5.5)", () => {
+  test("a readonly document never records undo entries, so undo() stays a no-op", () => {
+    const { log, sink, errors } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///big.txt",
+      languageId: "plaintext",
+      text: "hello world",
+      readonly: true,
+      sink,
+      log,
+    });
+
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
+        newText: "HELLO",
+      },
+    ]);
+
+    expect(errors).toHaveLength(1);
+    expect(doc.undo()).toBeUndefined();
+    expect(doc.redo()).toBeUndefined();
+  });
+});
+
+describe("createDocument — typing coalescing end-to-end (Req 5.4)", () => {
+  function typeChar(
+    doc: ReturnType<typeof createDocument>,
+    char: string,
+    at: number,
+  ): void {
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: at }, end: { line: 0, character: at } },
+        newText: char,
+      },
+    ]);
+  }
+
+  test("consecutive keystrokes within 750 ms undo together as one entry", () => {
+    const { log, sink } = baseDeps();
+    const clock = createFakeClock();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "",
+      sink,
+      log,
+      clock,
+    });
+
+    typeChar(doc, "a", 0);
+    clock.advance(10);
+    typeChar(doc, "b", 1);
+    clock.advance(10);
+    typeChar(doc, "c", 2);
+    expect(doc.version).toBe(3);
+
+    const events: DocumentChangeEvent[] = [];
+    doc.onDidChange((e) => events.push(e));
+    doc.undo();
+
+    // All three keystrokes undone in a single step.
+    expect(events).toHaveLength(1);
+    expect(events[0]!.inverseEdits).toHaveLength(3);
+    expect(doc.undo()).toBeUndefined();
+  });
+
+  test("a keystroke more than 750 ms after the last one starts a new undo entry", () => {
+    const { log, sink } = baseDeps();
+    const clock = createFakeClock();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "",
+      sink,
+      log,
+      clock,
+    });
+
+    typeChar(doc, "a", 0);
+    clock.advance(TYPING_COALESCE_WINDOW_MS + 1);
+    typeChar(doc, "b", 1);
+
+    const events: DocumentChangeEvent[] = [];
+    doc.onDidChange((e) => events.push(e));
+    doc.undo();
+    expect(events[0]!.inverseEdits).toHaveLength(1);
+    doc.undo();
+    expect(events[1]!.inverseEdits).toHaveLength(1);
+    expect(doc.undo()).toBeUndefined();
+  });
+
+  test("defaults to a real system clock when none is injected", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "",
+      sink,
+      log,
+    });
+    typeChar(doc, "a", 0);
+    expect(() => doc.undo()).not.toThrow();
   });
 });
