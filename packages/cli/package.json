@@ -1,0 +1,13 @@
+{
+  "name": "@tecode/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.ts",
+  "bin": {
+    "tecode": "src/main.ts"
+  },
+  "dependencies": {
+    "@tecode/core": "workspace:*"
+  }
+}
