@@ -200,6 +200,26 @@ function compileEntry(
   order: number,
   log: HostLog,
 ): CompiledEntry | undefined {
+  // Runtime type guards: KeybindingContribution is a compile-time type only —
+  // entries come from JSON (keybindings.json, manifests) with no validation
+  // yet, so a missing/non-string field must be skipped, not thrown on.
+  if (typeof contribution.key !== "string") {
+    logSafely(
+      log,
+      "warning",
+      `Skipping ${layer} keybinding with a non-string key`,
+    );
+    return undefined;
+  }
+  if (typeof contribution.command !== "string") {
+    logSafely(
+      log,
+      "warning",
+      `Skipping ${layer} keybinding on "${contribution.key}" with a non-string command`,
+    );
+    return undefined;
+  }
+
   const key = normalizeKey(contribution.key);
   if (key.length === 0) {
     logSafely(

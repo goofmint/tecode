@@ -342,3 +342,30 @@ describe("createBindingTable — sanity against the KeybindingContribution shape
     expect(() => table.entries()).not.toThrow();
   });
 });
+
+test("non-string key or command entries are skipped with a warning, never thrown on", () => {
+  const log = createHostLog();
+  const malformed = [
+    { key: "ctrl+p" } as unknown as KeybindingContribution,
+    { key: "ctrl+p", command: null } as unknown as KeybindingContribution,
+    { key: "ctrl+p", command: 42 } as unknown as KeybindingContribution,
+    { command: "editor.action.ok" } as unknown as KeybindingContribution,
+    { key: 7, command: "editor.action.ok" } as unknown as KeybindingContribution,
+  ];
+
+  const table = createBindingTable(
+    {
+      defaults: malformed,
+      fallback: [],
+      extension: [],
+      user: [{ key: "ctrl+p", command: "quickOpen.show" }],
+    },
+    { log },
+  );
+
+  expect(table.lookup("ctrl+p", () => undefined)?.command).toBe("quickOpen.show");
+  expect(log.entries().length).toBe(malformed.length);
+  for (const entry of log.entries()) {
+    expect(entry.level).toBe("warning");
+  }
+});
