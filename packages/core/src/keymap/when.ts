@@ -306,7 +306,14 @@ function evaluateNode(node: WhenNode, get: WhenContextGetter): boolean {
       // never equal a string literal — treat as not-equal to keep
       // evaluate's never-throwing contract.
       if (typeof actual === "symbol") return false;
-      return String(actual) === node.value;
+      try {
+        return String(actual) === node.value;
+      } catch {
+        // Values with no usable primitive conversion (e.g. a
+        // null-prototype object) also make String() throw — same
+        // treatment: not equal, never throw.
+        return false;
+      }
     }
     case "not":
       return !evaluateNode(node.operand, get);

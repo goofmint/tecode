@@ -207,3 +207,11 @@ test("eq against a Symbol context value is false rather than throwing", () => {
 
   expect(compiled.evaluate(get)).toBe(false);
 });
+
+test("eq against a value with no primitive conversion is false rather than throwing", () => {
+  const compiled = compileWhen("editorLangId == 'ts'");
+  const get = (key: string) =>
+    key === "editorLangId" ? Object.create(null) : undefined;
+
+  expect(compiled.evaluate(get)).toBe(false);
+});
