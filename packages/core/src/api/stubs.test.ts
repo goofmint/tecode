@@ -38,6 +38,23 @@ test("createBaseTheme fills in every UiColorKey and is frozen", () => {
 
   expect(Object.isFrozen(theme)).toBe(true);
   expect(Object.isFrozen(theme.colors)).toBe(true);
+  expect(Object.isFrozen(theme.tokens)).toBe(true);
+});
+
+test("createBaseTheme's RGB values are frozen copies — mutating one never leaks anywhere", () => {
+  const theme = createBaseTheme();
+  const bg = theme.colors["editor.background"];
+
+  expect(Object.isFrozen(bg)).toBe(true);
+  // Strict-mode assignment to a frozen object throws, so the shared base
+  // constants (editor/panel/tab all alias the same palette entry) can
+  // never be corrupted through a returned theme.
+  expect(() => {
+    "use strict";
+    (bg as { r: number }).r = 0;
+  }).toThrow();
+  expect(theme.colors["panel.background"].r).toBe(bg.r);
+  expect(createBaseTheme().colors["editor.background"].r).toBe(bg.r);
 });
 
 test("createBaseTheme returns a fresh, independently-frozen object each call", () => {

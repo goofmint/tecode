@@ -175,7 +175,15 @@ const BASE_COLORS: Record<UiColorKey, RGB> = {
  * value it read back cannot corrupt every other extension's later read of
  * the same singleton `themes.current` reference. */
 export function createBaseTheme(): ResolvedTheme {
-  return Object.freeze({ colors: Object.freeze({ ...BASE_COLORS }), tokens: {} });
+  // Deep-freeze via per-key RGB COPIES: the spread above only copies the
+  // map, so freezing it alone would still hand out the mutable shared
+  // BG/FG/... module constants — `theme.colors["editor.background"].r = 0`
+  // would then corrupt every alias of that constant (panel.background,
+  // tab.activeBackground) and every later createBaseTheme() result.
+  const colors = Object.fromEntries(
+    Object.entries(BASE_COLORS).map(([key, rgb]) => [key, Object.freeze({ ...rgb })]),
+  ) as Record<UiColorKey, RGB>;
+  return Object.freeze({ colors: Object.freeze(colors), tokens: Object.freeze({}) });
 }
 
 /**
