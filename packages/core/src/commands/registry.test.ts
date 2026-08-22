@@ -287,3 +287,13 @@ test("HostLog.entries returns a snapshot, not the internal records", () => {
 
   expect(log.entries()[0]?.error.message).toBe("original");
 });
+
+test("HostLog.append clones the incoming error, isolating later caller mutations", () => {
+  const log = createHostLog();
+  const err: HostError = { message: "original" };
+  log.append("error", err);
+
+  err.message = "mutated by caller";
+
+  expect(log.entries()[0]?.error.message).toBe("original");
+});

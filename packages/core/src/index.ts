@@ -6,7 +6,20 @@ export {
   type CommandRegistry,
   type CommandRegistryDeps,
 } from "./commands/index";
-export { KEYMAP_PLACEHOLDER } from "./keymap/index";
+export {
+  compileWhen,
+  createContextService,
+  WhenParseError,
+  type CompiledWhen,
+  type ContextService,
+  type WhenAndNode,
+  type WhenContextGetter,
+  type WhenEqNode,
+  type WhenKeyNode,
+  type WhenNode,
+  type WhenNotNode,
+  type WhenOrNode,
+} from "./keymap/index";
 export { BUFFER_PLACEHOLDER } from "./buffer/index";
 export { UI_PLACEHOLDER } from "./ui/index";
 export { CONFIG_PLACEHOLDER } from "./config/index";

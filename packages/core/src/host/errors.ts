@@ -45,7 +45,9 @@ export function createHostLog(): HostLog {
   const records: HostLogEntry[] = [];
   return {
     append(level, error) {
-      records.push({ level, error });
+      // Clone on the way in as well: a caller mutating the error object it
+      // passed must not rewrite the stored record (append-only contract).
+      records.push({ level, error: { ...error } });
     },
     entries() {
       // Snapshot: cloning each entry (and its error) keeps the log
