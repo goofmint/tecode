@@ -76,3 +76,40 @@ describe("cellWidthUpTo (design.md §8.3's cursor-column mapping)", () => {
     expect(cellWidthUpTo("abc", Number.NaN)).toBe(0);
   });
 });
+
+describe("tabs (Req 6.6: string-width measures \"\\t\" as 0 cells on its own)", () => {
+  test("a line starting with a tab advances to the next tab stop, not 0 cells", () => {
+    // Default tabSize (4): the tab alone occupies columns 0-3.
+    expect(cellWidth("\tx")).toBe(5); // 4 (tab) + 1 ("x")
+    expect(cellWidthUpTo("\tx", 1)).toBe(4); // up to (not including) "x"
+    expect(cellWidthUpTo("\tx", 2)).toBe(5); // through "x"
+  });
+
+  test("a tab embedded mid-text advances from the current column, not from 0", () => {
+    // "a" (1 cell) then a tab from column 1 -> next stop at column 4.
+    expect(cellWidthUpTo("a\tx", 2)).toBe(4); // up to (not including) "x"
+    expect(cellWidth("a\tx")).toBe(5); // 4 + 1 ("x")
+
+    // "abc" (3 cells) then a tab from column 3 -> next stop at column 4
+    // (a tab always advances at least one cell, even one column short of a
+    // stop already on a boundary).
+    expect(cellWidthUpTo("abc\tx", 4)).toBe(4); // up to (not including) "x"
+    expect(cellWidth("abc\tx")).toBe(5);
+  });
+
+  test("a tab exactly on a stop still advances a full tabSize", () => {
+    // "abcd" (4 cells, already at column 4) then a tab -> next stop at 8.
+    expect(cellWidthUpTo("abcd\tx", 5)).toBe(8); // up to (not including) "x"
+  });
+
+  test("a custom tabSize changes where the tab stop lands", () => {
+    expect(cellWidthUpTo("\tx", 1, 2)).toBe(2);
+    expect(cellWidthUpTo("a\tx", 2, 8)).toBe(8);
+    expect(cellWidth("\tx", 2)).toBe(3); // 2 (tab) + 1 ("x")
+  });
+
+  test("multiple tabs each advance to their own next stop", () => {
+    // "\t\t" -> columns 0-3 (first tab), 4-7 (second tab): 8 cells total.
+    expect(cellWidth("\t\t")).toBe(8);
+  });
+});

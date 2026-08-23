@@ -196,10 +196,16 @@ function lineOverlayKey(lineIndex: number, selections: readonly Selection[]): st
 /** Props for the memoized {@link EditorLineRow}. */
 interface EditorLineRowProps {
   lineIndex: number;
+  /** Compared directly (not just via `tick`) in {@link editorLineRowPropsEqual}:
+   * `useLineTicks`' shifting can't represent a row it never observed (its
+   * TSDoc), so `tick` alone can under-report a content change for a line
+   * shifted into view by an edit above it. Comparing `text` too is the
+   * backstop that keeps such a row from rendering stale content. */
   text: string;
   selections: readonly Selection[];
-  /** From {@link useLineTicks} — the sole "this line's text changed" memo
-   * signal (this module's TSDoc). */
+  /** From {@link useLineTicks} — the primary "this line's text changed" memo
+   * signal for observed rows (this module's TSDoc); see `text` above for why
+   * it isn't sufficient alone. */
   tick: number;
   /** From {@link lineOverlayKey} — the sole "this line's selection/cursor
    * overlay changed" memo signal. */
@@ -219,6 +225,7 @@ interface EditorLineRowProps {
 function editorLineRowPropsEqual(prev: EditorLineRowProps, next: EditorLineRowProps): boolean {
   return (
     prev.lineIndex === next.lineIndex &&
+    prev.text === next.text &&
     prev.tick === next.tick &&
     prev.overlayKey === next.overlayKey &&
     prev.gutterWidth === next.gutterWidth &&
@@ -406,7 +413,9 @@ export function EditorView(props: EditorViewProps): ReactNode {
  * utilities so cursor columns map to terminal cells correctly") — exported
  * for the future key-routing task (2.2) to compute where a click or a
  * cursor move actually lands, without duplicating {@link cellWidthUpTo}'s
- * import here. */
-export function cursorCellColumn(lineText: string, character: number): number {
-  return cellWidthUpTo(lineText, character);
+ * import here. `tabSize` is forwarded as-is (see `cellWidth.ts`'s TSDoc on
+ * why a tab's cell width isn't a fixed constant); it defaults the same way
+ * `cellWidthUpTo` does. */
+export function cursorCellColumn(lineText: string, character: number, tabSize?: number): number {
+  return cellWidthUpTo(lineText, character, tabSize);
 }

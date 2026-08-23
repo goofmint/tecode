@@ -48,7 +48,7 @@
  */
 
 import { basename } from "node:path";
-import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import type { Disposable, SlotId, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
@@ -139,9 +139,19 @@ function useStatusBarItems(slotRegistry: SlotRegistry): readonly SlotViewEntry[]
  * race (this module's TSDoc). Returns `[]` when `documents` is
  * `undefined` — a caller that never wires a `DocumentManager` in gets
  * exactly the pre-existing "no tabs" placeholder behavior (this module's
- * TSDoc on `EditorArea`). */
+ * TSDoc on `EditorArea`).
+ *
+ * `documents.documents` is a getter that returns a fresh `Array.from(...)`
+ * on every access (`documentManager.ts`), so reading it directly here would
+ * hand out a new array reference on every render — including renders this
+ * hook's own subscription didn't cause — breaking any effect that depends
+ * on `[openDocuments]` expecting that reference to stay stable when the
+ * open-document set hasn't actually changed. `useMemo`, keyed on the
+ * reducer's own `version` (bumped only by `forceRender`, i.e. only by an
+ * actual `onDidOpen`/`onDidClose`), re-reads the getter just once per real
+ * change instead. */
 function useOpenDocuments(documents: DocumentManager | undefined): readonly CoreDocument[] {
-  const [, forceRender] = useReducer((n: number) => n + 1, 0);
+  const [version, forceRender] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
     if (!documents) return undefined;
     const openSub = documents.onDidOpen(() => forceRender());
@@ -153,7 +163,7 @@ function useOpenDocuments(documents: DocumentManager | undefined): readonly Core
       closeSub.dispose();
     };
   }, [documents]);
-  return documents?.documents ?? [];
+  return useMemo(() => documents?.documents ?? [], [documents, version]);
 }
 
 /** Seeds React state from `layoutState.get()` (Req 6.4) and keeps it in

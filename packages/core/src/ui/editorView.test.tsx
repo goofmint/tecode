@@ -269,6 +269,50 @@ describe("EditorView — dirty-range re-render (Req 13.1, design.md §7.1)", () 
     expect(seen).not.toContain(3);
     expect(seen).not.toContain(4);
   });
+
+  test("a multi-line insertion above unobserved rows does not leave them showing stale content", async () => {
+    // Regression test: `useLineTicks`' shifting can only carry forward
+    // ticks it already holds (its TSDoc's "known limitation"), so a row
+    // that was never individually edited before — every row, on a
+    // document's very first edit — shifts to a new index with no tick
+    // change at all. `EditorLineRow`'s memo must fall back to comparing
+    // `text` directly, or the shifted-in row keeps rendering whatever the
+    // row at that screen position showed before the edit.
+    const document = createTestDocument("a\nb\nc\nd\ne");
+    const state = stateWith(document.uri, [cursorAt(0, 0)]);
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={5} />,
+      { width: 20, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    const before = captureCharFrame();
+    // 5 lines -> 1-digit gutter; row at screen position 3 (0-based) shows
+    // document line "d" as line number 4.
+    expect(before).toMatch(/4 d/);
+
+    act(() => {
+      // Insert two new lines before line 0 — every row below the edit
+      // (including "d", never individually edited before now) shifts down
+      // by 2 with no prior tick to carry forward.
+      document.applyEdits([
+        { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "X\nY\n" },
+      ]);
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const after = captureCharFrame();
+    // Screen position 3 (0-based, still visible under a 5-row viewport)
+    // now holds document line "b" (line number 4) — "d" moved off-screen
+    // to line number 6.
+    expect(after).toMatch(/4 b/);
+    expect(after).not.toMatch(/4 d/);
+    expect(after).not.toContain("d");
+  });
 });
 
 describe("EditorView — editorTextFocus context key (Req 4.6)", () => {

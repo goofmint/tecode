@@ -58,7 +58,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
-import type { BoxRenderable } from "@opentui/core";
+import { TabSelectRenderable, type BoxRenderable } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { createCommandRegistry } from "../commands/registry";
 import { createDocumentManager, type DocumentManagerFs } from "../buffer/documentManager";
@@ -355,7 +355,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     expect(frame).not.toContain("No editor open.");
   });
 
-  test("switching tabs switches the active document's content", async () => {
+  test("closing the active document falls back to another open document", async () => {
     const { slotRegistry, layoutState, context } = createHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
@@ -399,6 +399,62 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     expect(captureCharFrame()).toContain("SECOND_FILE_CONTENT");
   });
 
+  test("selecting the second tab switches the active document's content", async () => {
+    // Unlike the "closing the active document" test above, this one
+    // actually drives the tab-selection path: `Tabs`' `<tab-select>`
+    // (`components.tsx`) -> `EditorArea`'s `onSelectTab` ->
+    // `Shell`'s `onSelectEditorTab`/`setActiveDocumentUri` (shell.tsx).
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({
+        "/workspace/a.ts": "FIRST_FILE_CONTENT",
+        "/workspace/b.ts": "SECOND_FILE_CONTENT",
+      }),
+    });
+
+    const { renderOnce, renderer, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => {
+      await documents.openDocument(pathToUri("/workspace/a.ts"));
+      await documents.openDocument(pathToUri("/workspace/b.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Both documents are open, but "a.ts" (opened first) is still active.
+    expect(captureCharFrame()).toContain("FIRST_FILE_CONTENT");
+
+    // Drive the real `<tab-select>` renderable exactly as a right-arrow +
+    // enter keypress would (`TabSelectRenderable.handleKeyPress`'s own
+    // `move-right`/`select-current` bindings): move off the first tab, then
+    // fire the selection this component's `onSelect` prop listens for
+    // (`components.tsx`'s `Tabs`) — not a direct call to `Shell`'s
+    // `setActiveDocumentUri`, which would bypass the component wiring this
+    // test exists to cover.
+    const tabSelect = findTabSelect(renderer.root);
+    expect(tabSelect).toBeDefined();
+    act(() => {
+      tabSelect?.moveRight();
+      tabSelect?.selectCurrent();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(captureCharFrame()).toContain("SECOND_FILE_CONTENT");
+    expect(captureCharFrame()).not.toContain("FIRST_FILE_CONTENT");
+  });
+
   test("no open documents keeps the 'No editor open.' placeholder", async () => {
     const { slotRegistry, layoutState, context } = createHarness();
     await layoutState.ready;
@@ -433,4 +489,19 @@ function findAllFocusable(node: unknown): unknown[] {
     found.push(...findAllFocusable(child));
   }
   return found;
+}
+
+/** Depth-first search for the `<tab-select>` renderable `Tabs`
+ * (`components.tsx`) mounts — used only by the tab-selection test above to
+ * drive the real `TabSelectRenderable.moveRight`/`selectCurrent` methods
+ * (the same pair `handleKeyPress`'s `move-right`/`select-current`
+ * keybindings call), rather than reaching into `Shell`'s state directly. */
+function findTabSelect(node: unknown): TabSelectRenderable | undefined {
+  if (node instanceof TabSelectRenderable) return node;
+  const candidate = node as { getChildren?: () => unknown[] };
+  for (const child of candidate?.getChildren?.() ?? []) {
+    const found = findTabSelect(child);
+    if (found) return found;
+  }
+  return undefined;
 }

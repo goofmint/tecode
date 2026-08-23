@@ -75,6 +75,17 @@ export interface LineTicks {
  *   now-stale row to re-render even though this hook never "bumped" the new
  *   index directly.
  *
+ * **Known limitation**: this shifting only carries forward ticks the `Map`
+ * already holds — a line below `endLine` that was never previously observed
+ * (never present as a key, as opposed to reading `0` from `getLineTick`'s
+ * default) has nothing to shift, so it can land at its new index still
+ * reading whatever tick (possibly `0`) some *other* line held there before,
+ * even though its own content did change by moving. `lineCountDelta`-based
+ * shifting cannot represent a row it never observed. `editorView.tsx`'s row
+ * memo compensates by also comparing the line's live `text`, not just this
+ * tick, so a content change is never missed even when the tick under-reports
+ * it.
+ *
  * Isolates listener exceptions the same way `document.ts`'s own `emit` does
  * (a throwing subscriber elsewhere must not break this hook, and this
  * hook's own reducer dispatch cannot throw), and disposes the subscription
