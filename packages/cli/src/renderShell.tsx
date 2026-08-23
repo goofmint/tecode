@@ -16,13 +16,17 @@ import {
   ContextFocusTracker,
   Shell,
   ThemeProvider,
+  type ChordStateMachine,
   type CommandRegistry,
   type ConfigService,
   type ContextService,
   type DocumentManager,
+  type EditorInputRouter,
+  type EditorSessionService,
   type LayoutStateService,
   type SlotRegistry,
 } from "@tecode/core";
+import { handleKeyEvent } from "./keyRouting";
 
 /** Everything one `renderShell` call needs to mount the Shell (this
  * module's TSDoc) — exactly the live services `main.ts`'s sync phase has
@@ -43,6 +47,23 @@ export interface ShellRenderDeps {
   theme: ResolvedTheme;
   documents?: DocumentManager;
   config?: ConfigService;
+  /** Owns the active document/`EditorState` from outside `Shell` (Task
+   * 2.2, `ui/editorSession.ts`) — threaded straight through to `Shell`'s
+   * own `editorSession` prop. Optional, matching `documents`/`config`
+   * above: a caller/test that omits it gets `Shell`'s original
+   * component-local fallback (`shell.tsx`'s TSDoc). */
+  editorSession?: EditorSessionService;
+  /** The live chord state machine (Req 4.4, design.md §6.1) —
+   * {@link renderShellToTerminal} wires `renderer.keyInput` through it (and
+   * `editorInputRouter` below) only when BOTH are given; either omitted
+   * keeps the shell key-inert, matching the headless renderer's existing
+   * behavior and every test that does not need real key routing. */
+  chordMachine?: Pick<ChordStateMachine, "handleStroke">;
+  /** The editor input router (Req 4.6, 6.6, design.md §6.1, §8.3) —
+   * receives every stroke the chord machine reports as `"passthrough"`.
+   * See {@link chordMachine}'s TSDoc for when the listener is actually
+   * wired. */
+  editorInputRouter?: Pick<EditorInputRouter, "routeKeyEvent">;
 }
 
 /** The render seam's shape: resolves once "first frame" has happened (see
@@ -78,10 +99,25 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
           commands={deps.commands}
           documents={deps.documents}
           config={deps.config}
+          editorSession={deps.editorSession}
         />
       </ContextFocusTracker>
     </ThemeProvider>,
   );
+
+  // The real input pipeline (Req 4.4, 4.6, 6.6; design.md §6.1): only wired
+  // when both collaborators are given (this module's `ShellRenderDeps`
+  // TSDoc) — `main.ts`'s composition root always supplies both, but a
+  // caller/test that constructs `ShellRenderDeps` without them keeps the
+  // shell key-inert exactly as before this task.
+  if (deps.chordMachine && deps.editorInputRouter) {
+    const chordMachine = deps.chordMachine;
+    const editorInputRouter = deps.editorInputRouter;
+    renderer.keyInput.on("keypress", (key) => {
+      handleKeyEvent({ chordMachine, editorInputRouter }, key);
+    });
+  }
+
   await renderer.idle();
 };
 

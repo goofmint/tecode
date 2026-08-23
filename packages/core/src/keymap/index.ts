@@ -18,6 +18,7 @@ export {
 } from "./when";
 export { createContextService, type ContextService } from "./context";
 export { normalizeKey, normalizeKeySequence } from "./normalize";
+export { keyEventToStroke, type KeyEventLike } from "./keyEvent";
 export {
   createBindingTable,
   type BindingLayer,

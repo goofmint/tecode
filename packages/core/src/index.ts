@@ -52,6 +52,7 @@ export {
   createBindingTable,
   createChordStateMachine,
   createContextService,
+  keyEventToStroke,
   normalizeKey,
   normalizeKeySequence,
   WhenParseError,
@@ -63,6 +64,7 @@ export {
   type ChordStateMachineDeps,
   type CompiledWhen,
   type ContextService,
+  type KeyEventLike,
   type KeymapLayers,
   type ResolvedBinding,
   type WhenAndNode,
@@ -106,6 +108,7 @@ export {
   cellWidthUpTo,
   computeVisibleLineRange,
   ContextFocusTracker,
+  createEditorSessionService,
   createInitialEditorState,
   createLayoutStateService,
   createSlotRegistry,
@@ -130,9 +133,12 @@ export {
   useFocusTracking,
   useLineTicks,
   useTheme,
+  wireEditorLangIdContext,
   type ActivityBarProps,
   type ContextFocusTrackerProps,
   type EditorAreaProps,
+  type EditorSessionService,
+  type EditorSessionServiceDeps,
   type EditorState,
   type EditorViewProps,
   type FocusEmitter,
@@ -161,6 +167,7 @@ export {
   type TreeNode,
   type TreeProps,
   type VisibleLineRange,
+  type WireEditorLangIdContextDeps,
 } from "./ui/index";
 export {
   CORE_CONFIGURATION,
@@ -188,3 +195,10 @@ export {
   type ThemesStub,
   type WindowStub,
 } from "./api/index";
+export {
+  comparePositions,
+  createEditorInputRouter,
+  transformPosition,
+  type EditorInputRouter,
+  type EditorInputRouterDeps,
+} from "./editor/index";
