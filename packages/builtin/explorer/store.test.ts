@@ -234,6 +234,113 @@ describe("createExplorerStore (Task 3.3, Req 11.2)", () => {
     });
   });
 
+  describe("reload diffing against external changes (code review fix)", () => {
+    test("external delete of an expanded+selected subdirectory purges its metadata and resets selection", async () => {
+      const tree: FakeTree = { src: { nested: { "a.ts": null } } };
+      const { store } = createStore(tree);
+      await store.reload(ROOT);
+      await new Promise<void>((resolve) => {
+        const sub = store.onDidChange(() => {
+          sub.dispose();
+          resolve();
+        });
+        store.toggle("file:///workspace/src" as Uri, true);
+      });
+      await new Promise<void>((resolve) => {
+        const sub = store.onDidChange(() => {
+          sub.dispose();
+          resolve();
+        });
+        store.toggle("file:///workspace/src/nested" as Uri, true);
+      });
+      store.setSelectedId("file:///workspace/src/nested" as Uri);
+      expect(store.isDirectory("file:///workspace/src/nested" as Uri)).toBe(true);
+
+      // Externally delete "src/nested" (the selected, expanded directory)
+      // and reload its now-stale parent.
+      delete (tree.src as FakeTree).nested;
+      await store.reload("file:///workspace/src" as Uri);
+
+      expect(store.isDirectory("file:///workspace/src/nested" as Uri)).toBe(false);
+      expect(store.getParent("file:///workspace/src/nested/a.ts" as Uri)).toBeUndefined();
+      expect(store.getName("file:///workspace/src/nested" as Uri)).toBeUndefined();
+      expect(store.getExpandedIds()).not.toContain("file:///workspace/src/nested");
+      // Selection resets to the affected parent, not left dangling on a
+      // uri that no longer exists (a broken create target otherwise).
+      expect(store.getSelectedId()).toBe("file:///workspace/src" as Uri);
+    });
+
+    test("a file replaced by a same-named directory drops the stale file metadata", async () => {
+      const tree: FakeTree = { thing: null };
+      const { store } = createStore(tree);
+      await store.reload(ROOT);
+      expect(store.isDirectory("file:///workspace/thing" as Uri)).toBe(false);
+
+      tree.thing = { "child.ts": null };
+      await store.reload(ROOT);
+
+      expect(store.isDirectory("file:///workspace/thing" as Uri)).toBe(true);
+      const changed = waitForChange(store);
+      store.toggle("file:///workspace/thing" as Uri, true);
+      await changed;
+      expect(store.getNodes().find((n) => n.label === "thing")?.children?.map((c) => c.label)).toEqual([
+        "child.ts",
+      ]);
+    });
+
+    test("a directory replaced by a same-named file drops its cached children and expanded state", async () => {
+      const tree: FakeTree = { thing: { "child.ts": null } };
+      const { store } = createStore(tree);
+      await store.reload(ROOT);
+      await new Promise<void>((resolve) => {
+        const sub = store.onDidChange(() => {
+          sub.dispose();
+          resolve();
+        });
+        store.toggle("file:///workspace/thing" as Uri, true);
+      });
+      expect(store.isDirectory("file:///workspace/thing" as Uri)).toBe(true);
+      expect(store.getExpandedIds()).toEqual(["file:///workspace/thing"]);
+
+      tree.thing = null;
+      await store.reload(ROOT);
+
+      expect(store.isDirectory("file:///workspace/thing" as Uri)).toBe(false);
+      expect(store.getExpandedIds()).toEqual([]);
+      expect(store.getParent("file:///workspace/thing/child.ts" as Uri)).toBeUndefined();
+    });
+  });
+
+  describe("reload staleness (concurrent reloads of the same directory)", () => {
+    test("a reload that started earlier but resolves later is discarded, not allowed to overwrite a fresher result", async () => {
+      let call = 0;
+      const releaseFirst: Array<() => void> = [];
+      const store = createExplorerStore(ROOT, {
+        readdir: async () => {
+          call += 1;
+          if (call === 1) {
+            await new Promise<void>((resolve) => releaseFirst.push(resolve));
+            return [{ name: "stale.ts", type: "file" }];
+          }
+          return [{ name: "fresh.ts", type: "file" }];
+        },
+        ignore: createIgnoreChecker(),
+        showMessage: () => {},
+        showHidden: false,
+      });
+
+      const firstReload = store.reload(ROOT); // starts first, blocks on releaseFirst
+      const secondReload = store.reload(ROOT); // starts second, resolves immediately
+      await secondReload;
+      expect(store.getNodes().map((n) => n.label)).toEqual(["fresh.ts"]);
+
+      releaseFirst.shift()?.(); // let the stale (first-started) reload finish now
+      await firstReload;
+
+      expect(store.getNodes().map((n) => n.label)).toEqual(["fresh.ts"]);
+    });
+  });
+
   describe("showHidden", () => {
     test("setShowHidden(true) reloads every already-loaded directory and reveals hidden entries", async () => {
       const { store } = createStore({ ".env": null, "keep.ts": null });

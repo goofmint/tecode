@@ -126,6 +126,22 @@ describe("createFileSystem", () => {
       expect(new TextDecoder().decode(await fs.read(pathToUri(newPath)))).toBe("content");
     });
 
+    test("rename rejects when the destination already exists, leaving it unchanged", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const oldPath = join(dir, "old.txt");
+      const newPath = join(dir, "new.txt");
+      await nodeWriteFile(oldPath, "source content", "utf8");
+      await nodeWriteFile(newPath, "destination content", "utf8");
+      const fs = createFileSystem();
+
+      await expect(fs.rename(pathToUri(oldPath), pathToUri(newPath))).rejects.toThrow();
+
+      expect(new TextDecoder().decode(await fs.read(pathToUri(newPath)))).toBe(
+        "destination content",
+      );
+      expect(new TextDecoder().decode(await fs.read(pathToUri(oldPath)))).toBe("source content");
+    });
+
     test("rename rejects when the source does not exist", async () => {
       dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
       const fs = createFileSystem();

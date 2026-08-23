@@ -81,18 +81,34 @@ function describeError(err: unknown): string {
 }
 
 /** Validates a new file/folder name (Req 11.2's "create... with input-box
- * prompts"): non-empty, no path separator, and not already used by a
- * sibling already listed in `dirUri` (a best-effort check against
- * whatever the store last loaded — the real `write`/`mkdir` call is still
- * the final authority, so a race with an out-of-band change is simply
- * reported as an error at that point instead). `currentName`, when given
- * (renaming), exempts that one name from the collision check — renaming a
- * file to its own current name is otherwise indistinguishable from "name
- * already taken". */
+ * prompts"): non-empty, no path separator, not `.`/`..`, and not already
+ * used by a sibling already listed in `dirUri` (a best-effort check
+ * against whatever the store last loaded — the real `write`/`mkdir` call
+ * is still the final authority, so a race with an out-of-band change is
+ * simply reported as an error at that point instead). `currentName`, when
+ * given (renaming), exempts that one name from the collision check —
+ * renaming a file to its own current name is otherwise indistinguishable
+ * from "name already taken".
+ *
+ * **`.`/`..` rejection (security, code review fix)**: {@link joinChildUri}
+ * builds the target `Uri` as `new URL(encodeURIComponent(name), dirUri)` —
+ * `encodeURIComponent` does NOT escape `.`, so an unvalidated `".."`
+ * resolves the `URL` constructor's own `..`-segment normalization to the
+ * PARENT of `dirUri`, escaping the directory the create/rename command
+ * thinks it's confined to (`"."` similarly collapses to `dirUri` itself,
+ * silently overwriting/renaming onto the directory rather than a real
+ * child of it). Both the create path and the rename path below call this
+ * function again, explicitly, right before their own `joinChildUri` call —
+ * `showInputBox`'s `validateInput` already runs this, but that only blocks
+ * accepting the UI prompt; a caller invoking `api.commands.execute` on
+ * these command ids programmatically bypasses the input box (and its
+ * validation) entirely, so the guard at the `joinChildUri` call site is
+ * the one that actually matters. */
 function validateEntryName(value: string, siblingNames: readonly string[], currentName?: string): string | undefined {
   const trimmed = value.trim();
   if (trimmed.length === 0) return "Name cannot be empty.";
   if (trimmed.includes("/")) return "Name cannot contain \"/\".";
+  if (trimmed === "." || trimmed === "..") return `"${trimmed}" is not a valid name.`;
   if (trimmed !== currentName && siblingNames.includes(trimmed)) {
     return `"${trimmed}" already exists here.`;
   }
@@ -124,13 +140,25 @@ function registerCreateCommands(ctx: ExtensionContext, store: ExplorerStore): vo
           return;
         }
 
+        const siblingNames = siblingNamesOf(store, dirUri);
         const name = await api.window.showInputBox({
           prompt,
-          validateInput: (value) => validateEntryName(value, siblingNamesOf(store, dirUri)),
+          validateInput: (value) => validateEntryName(value, siblingNames),
         });
         if (!name) return;
 
-        const uri = joinChildUri(dirUri, name.trim());
+        const trimmedName = name.trim();
+        // Explicit re-check right at the `joinChildUri` call site (this
+        // module's `validateEntryName` TSDoc's "code review fix") —
+        // `validateInput` above only gates the input box UI, not a
+        // programmatic `api.commands.execute` call.
+        const nameError = validateEntryName(trimmedName, siblingNames);
+        if (nameError) {
+          api.window.showMessage(nameError, "error");
+          return;
+        }
+
+        const uri = joinChildUri(dirUri, trimmedName);
         try {
           if (kind === "file") await api.workspace.fs.write(uri, new Uint8Array());
           else await api.workspace.fs.mkdir(uri);
@@ -193,14 +221,26 @@ function registerRenameCommand(ctx: ExtensionContext, store: ExplorerStore): voi
         return;
       }
 
+      const siblingNames = siblingNamesOf(store, parent);
       const newName = await api.window.showInputBox({
         prompt: "New name",
         value: currentName,
-        validateInput: (value) => validateEntryName(value, siblingNamesOf(store, parent), currentName),
+        validateInput: (value) => validateEntryName(value, siblingNames, currentName),
       });
       if (!newName || newName.trim() === currentName) return;
 
-      const newUri = joinChildUri(parent, newName.trim());
+      const trimmedNewName = newName.trim();
+      // Explicit re-check right at the `joinChildUri` call site — see
+      // `validateEntryName`'s TSDoc's "code review fix": `validateInput`
+      // only gates the input box UI, not a programmatic
+      // `api.commands.execute` call.
+      const nameError = validateEntryName(trimmedNewName, siblingNames, currentName);
+      if (nameError) {
+        api.window.showMessage(nameError, "error");
+        return;
+      }
+
+      const newUri = joinChildUri(parent, trimmedNewName);
       try {
         await api.workspace.fs.rename(uri, newUri);
       } catch (cause) {

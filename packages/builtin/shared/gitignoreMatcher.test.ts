@@ -40,6 +40,13 @@ describe("parseGitignore (Task 3.3, Req 11.2)", () => {
     expect(matcher.isIgnored("src/nested/index.ts", false)).toBe(false);
   });
 
+  test("? is not a wildcard — it matches only a literal '?', never crossing to an unrelated character", () => {
+    const matcher = parseGitignore("foo?.log");
+    expect(matcher.isIgnored("foo?.log", false)).toBe(true);
+    expect(matcher.isIgnored("fo.log", false)).toBe(false);
+    expect(matcher.isIgnored("fooX.log", false)).toBe(false);
+  });
+
   test("** matches across path separators", () => {
     const matcher = parseGitignore("**/*.log");
     expect(matcher.isIgnored("a/b/c/debug.log", false)).toBe(true);

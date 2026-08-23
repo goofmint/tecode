@@ -177,6 +177,16 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
   const expanded = new Set<Uri>();
   const listeners = new Set<Listener<void>>();
 
+  // Per-directory reload generation counter (code review fix, Task 3.3, Req
+  // 11.2): bumped at the START of every `reload(dirUri)` call, BEFORE the
+  // first `await`. A reload only commits state/`fireChange()` once every
+  // one of its `await`s resolves AND its captured generation is still the
+  // latest recorded for that `dirUri` — a concurrent reload of the SAME
+  // directory (a `fs.watch` event racing a `setShowHidden` reload, e.g.)
+  // that started later always wins; whichever finishes with a stale
+  // generation is discarded rather than clobbering the newer result.
+  const reloadGenerations = new Map<Uri, number>();
+
   let showHidden = deps.showHidden;
   let selectedId: Uri | undefined;
 
@@ -205,17 +215,56 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
     };
   }
 
+  /**
+   * Recursively purge `uri`'s own bookkeeping AND every cached descendant's
+   * (code review fix: an externally-removed or type-changed directory
+   * entry must not leave stale `parentByUri`/`relativeDirByUri`/
+   * `directoryUris`/`childrenByDir` entries for itself or anything cached
+   * underneath it — a stale `directoryUris` entry in particular is exactly
+   * what turned a deleted-but-still-"known-directory" uri into a broken
+   * create target). Returns whether the CURRENT selection was purged (this
+   * uri itself, or any descendant of it), so the caller can reset
+   * selection to the affected parent.
+   */
+  function purgeSubtree(uri: Uri): boolean {
+    let purgedSelection = selectedId === uri;
+    if (directoryUris.has(uri)) {
+      const cachedChildren = childrenByDir.get(uri);
+      if (cachedChildren) {
+        for (const child of cachedChildren) {
+          if (purgeSubtree(child.uri)) purgedSelection = true;
+        }
+      }
+      childrenByDir.delete(uri);
+      directoryUris.delete(uri);
+      expanded.delete(uri);
+    }
+    relativeDirByUri.delete(uri);
+    parentByUri.delete(uri);
+    reloadGenerations.delete(uri);
+    return purgedSelection;
+  }
+
   async function reload(dirUri: Uri): Promise<void> {
     if (!rootUri) return;
     const relativeDir = relativeDirByUri.get(dirUri) ?? "";
+
+    // See the `reloadGenerations` field comment above: this call only ever
+    // commits below if it is still the most recently STARTED reload for
+    // `dirUri` by the time it finishes.
+    const generation = (reloadGenerations.get(dirUri) ?? 0) + 1;
+    reloadGenerations.set(dirUri, generation);
+    const isStale = (): boolean => reloadGenerations.get(dirUri) !== generation;
 
     let entries: DirEntry[];
     try {
       entries = await deps.readdir(dirUri);
     } catch (cause) {
+      if (isStale()) return;
       deps.showMessage(`Could not read directory: ${describeError(cause)}`, "error");
       return;
     }
+    if (isStale()) return;
 
     const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
     let visible: DirEntry[];
@@ -234,17 +283,42 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
       deps.showMessage(`Could not filter directory listing: ${describeError(cause)}`, "error");
       visible = sorted;
     }
+    if (isStale()) return;
 
-    const children: ExplorerChild[] = visible.map((entry) => {
-      const childUri = joinChildUri(dirUri, entry.name);
-      const isDirectory = entry.type === "directory";
-      relativeDirByUri.set(childUri, relativeDir.length > 0 ? `${relativeDir}/${entry.name}` : entry.name);
+    const newEntries = visible.map((entry) => ({
+      uri: joinChildUri(dirUri, entry.name),
+      name: entry.name,
+      isDirectory: entry.type === "directory",
+    }));
+    const newIsDirectoryByUri = new Map(newEntries.map((entry) => [entry.uri, entry.isDirectory]));
+
+    // Diff against whatever this directory last had cached (code review
+    // fix): a previous child missing from `newIsDirectoryByUri` entirely
+    // (deleted externally) or present with a DIFFERENT type (file<->
+    // directory) both purge that uri's own metadata and — when it was
+    // itself a directory — every cached descendant's too.
+    const previousChildren = childrenByDir.get(dirUri) ?? [];
+    let selectionPurged = false;
+    for (const previous of previousChildren) {
+      const newIsDirectory = newIsDirectoryByUri.get(previous.uri);
+      if (newIsDirectory === undefined || newIsDirectory !== previous.isDirectory) {
+        if (purgeSubtree(previous.uri)) selectionPurged = true;
+      }
+    }
+
+    const children: ExplorerChild[] = newEntries.map(({ uri: childUri, name, isDirectory }) => {
+      relativeDirByUri.set(childUri, relativeDir.length > 0 ? `${relativeDir}/${name}` : name);
       parentByUri.set(childUri, dirUri);
       if (isDirectory) directoryUris.add(childUri);
-      return { uri: childUri, name: entry.name, isDirectory };
+      return { uri: childUri, name, isDirectory };
     });
 
     childrenByDir.set(dirUri, children);
+    // The affected parent is `dirUri` itself (this is the directory whose
+    // listing just changed) — root when `dirUri` is the root (this
+    // module's TSDoc's "reset selection to the affected parent (or
+    // root)").
+    if (selectionPurged) selectedId = dirUri;
     fireChange();
   }
 

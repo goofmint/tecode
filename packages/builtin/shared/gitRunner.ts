@@ -66,6 +66,20 @@ export interface GitRunner {
    * showing everything rather than crashing the caller.
    */
   checkIgnore(cwd: string, absolutePaths: readonly string[]): Promise<ReadonlySet<string>>;
+  /**
+   * Whether `cwd` is inside a git working tree at all (`git rev-parse
+   * --is-inside-work-tree` exits `0` and prints `true`) — the seam
+   * `ignore.ts` needs to tell "git is installed but this workspace isn't a
+   * repo" apart from "git is installed and definitively found nothing
+   * ignored" (Task 3.3, Req 11.2 code review: `checkIgnore` against a
+   * non-repository `cwd` degrades to an empty set exactly like the
+   * "nothing ignored" case, which — left unchecked — silently disables the
+   * `.gitignore` glob fallback for every non-repo workspace). Never
+   * rejects: any failure (git disappears mid-session, spawn error) reports
+   * `false`, same "degrade gracefully" contract as {@link isAvailable} and
+   * {@link checkIgnore}.
+   */
+  isRepository(cwd: string): Promise<boolean>;
 }
 
 /** Convert a `file://...` {@link Uri} to a real filesystem path for
@@ -108,14 +122,20 @@ export function createBunGitRunner(): GitRunner {
   async function checkIgnore(cwd: string, absolutePaths: readonly string[]): Promise<ReadonlySet<string>> {
     if (absolutePaths.length === 0) return new Set();
     try {
-      const proc = Bun.spawn(["git", "check-ignore", "--stdin"], {
+      // `-z`: paths in on stdin AND matches out on stdout are NUL-separated
+      // rather than newline-separated, with no trimming of either side —
+      // a path containing a space or an embedded newline stays intact and
+      // matchable (a plain `\n`-joined stdin/stdout would either misparse
+      // such a path into pieces or, with a naive `.trim()`, corrupt one
+      // that has meaningful leading/trailing whitespace in its name).
+      const proc = Bun.spawn(["git", "check-ignore", "-z", "--stdin"], {
         cwd,
         stdin: "pipe",
         stdout: "pipe",
         stderr: "ignore",
       });
       const stdin = proc.stdin;
-      stdin.write(`${absolutePaths.join("\n")}\n`);
+      stdin.write(absolutePaths.map((path) => `${path}\0`).join(""));
       stdin.end();
       const output = await new Response(proc.stdout).text();
       // `git check-ignore --stdin` exits 1 when NONE of the inputs are
@@ -123,15 +143,27 @@ export function createBunGitRunner(): GitRunner {
       // discard whatever stdout it already produced (exit 1 with empty
       // stdout is the common, entirely expected "nothing ignored" case).
       await proc.exited;
-      const matched = output
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
+      const matched = output.split("\0").filter((entry) => entry.length > 0);
       return new Set(matched);
     } catch {
       return new Set();
     }
   }
 
-  return { isAvailable, checkIgnore };
+  async function isRepository(cwd: string): Promise<boolean> {
+    try {
+      const proc = Bun.spawn(["git", "rev-parse", "--is-inside-work-tree"], {
+        cwd,
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const output = await new Response(proc.stdout).text();
+      const exitCode = await proc.exited;
+      return exitCode === 0 && output.trim() === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  return { isAvailable, checkIgnore, isRepository };
 }

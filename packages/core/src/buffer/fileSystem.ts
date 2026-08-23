@@ -146,8 +146,29 @@ export function createFileSystem(deps: FileSystemDeps = {}): FileSystem {
     await nodeFs.rm(uriToPath(uri), { recursive: true });
   }
 
+  /**
+   * `node:fs/promises.rename` silently replaces an existing destination on
+   * Linux/macOS (POSIX `rename(2)` semantics) — the opposite of the API
+   * contract's "rejects ... `newUri` already exists" ({@link
+   * FileSystem.rename}). There is no atomic POSIX rename-without-replace,
+   * so this probes the destination with `lstat` first and rejects before
+   * calling through; a concurrent create of `newUri` between that probe
+   * and the actual rename (TOCTOU) can still slip through and be
+   * overwritten — accepted for the MVP, matching this module's other
+   * best-effort races (see `watch`'s create/delete disambiguation above).
+   */
   async function rename(oldUri: Uri, newUri: Uri): Promise<void> {
-    await nodeFs.rename(uriToPath(oldUri), uriToPath(newUri));
+    const destination = uriToPath(newUri);
+    let destinationExists = true;
+    try {
+      await nodeFs.lstat(destination);
+    } catch {
+      destinationExists = false;
+    }
+    if (destinationExists) {
+      throw new Error(`Cannot rename: "${newUri}" already exists.`);
+    }
+    await nodeFs.rename(uriToPath(oldUri), destination);
   }
 
   async function mkdir(uri: Uri): Promise<void> {

@@ -19,7 +19,15 @@ async function initRepo(dir: string): Promise<void> {
   await proc.exited;
 }
 
-describe("createBunGitRunner (Task 3.3, Req 11.2)", () => {
+// This suite exercises the REAL `git` CLI (this module's own TSDoc above)
+// rather than stubbing `GitRunner`, so it needs a real `git` binary on
+// `PATH` — not guaranteed on every CI image. Decided once, top-level,
+// against the very same `isAvailable()` this suite tests, and used to
+// skip the whole suite rather than asserting `isAvailable() === true`
+// unconditionally (which would fail outright on a git-less image).
+const hasGit = await createBunGitRunner().isAvailable();
+
+describe.skipIf(!hasGit)("createBunGitRunner (Task 3.3, Req 11.2)", () => {
   let dir: string | undefined;
 
   afterEach(async () => {
@@ -98,6 +106,21 @@ describe("createBunGitRunner (Task 3.3, Req 11.2)", () => {
     const runner = createBunGitRunner();
     const ignored = await runner.checkIgnore("/nonexistent", []);
     expect(ignored.size).toBe(0);
+  });
+
+  test("isRepository reports true inside a git working tree", async () => {
+    dir = await mkdtemp(join(tmpdir(), "tecode-gitrunner-"));
+    await initRepo(dir);
+
+    const runner = createBunGitRunner();
+    expect(await runner.isRepository(dir)).toBe(true);
+  });
+
+  test("isRepository reports false for a directory that is not a git repository", async () => {
+    dir = await mkdtemp(join(tmpdir(), "tecode-gitrunner-not-a-repo-"));
+
+    const runner = createBunGitRunner();
+    expect(await runner.isRepository(dir)).toBe(false);
   });
 });
 

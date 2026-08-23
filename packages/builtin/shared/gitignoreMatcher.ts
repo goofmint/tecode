@@ -44,9 +44,13 @@ interface CompiledPattern {
 /** Escape every regex metacharacter in `segment` EXCEPT the glob
  * wildcards this module itself interprets (`*`, handled by the caller
  * before this ever runs) — used on whatever literal text remains between
- * wildcards. */
+ * wildcards. `?` is NOT one of this module's wildcards (this module's
+ * TSDoc's "Scope": "`?` is deliberately NOT supported"), so it must be
+ * escaped here too — left bare, it compiles to a regex "any one character"
+ * quantifier/atom instead of matching a literal `?` (e.g. `foo?.log` would
+ * wrongly match `fo.log`). */
 function escapeRegexLiteral(segment: string): string {
-  return segment.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return segment.replace(/[.+^${}()|[\]\\?]/g, "\\$&");
 }
 
 /**

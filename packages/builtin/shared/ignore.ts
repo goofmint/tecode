@@ -18,12 +18,18 @@
  *    project's own `.gitignore` says) are applied first.
  * 3. Whatever survives step 2 is then checked against `.gitignore`
  *    content: batched `git check-ignore --stdin` (`gitRunner.ts`) when the
- *    `git` CLI is available, or {@link parseGitignore}'s glob matcher over
- *    the WORKSPACE ROOT's `.gitignore` file otherwise (its own module's
- *    TSDoc documents the "single root file only" simplification the glob
- *    path makes — the git path has no such limitation, since `git
- *    check-ignore` itself resolves the real, full chain of `.gitignore`
- *    files).
+ *    `git` CLI is available AND the workspace root is actually inside a
+ *    git working tree ({@link GitRunner.isRepository}, checked once per
+ *    root and cached — `git` installed but the workspace not a repo falls
+ *    through to the glob path below exactly like "git unavailable", rather
+ *    than silently disabling `.gitignore` filtering the way `checkIgnore`
+ *    alone would: it degrades a non-repo `cwd` to an empty "nothing
+ *    ignored" set indistinguishable from a real, git-confirmed empty
+ *    result), or {@link parseGitignore}'s glob matcher over the WORKSPACE
+ *    ROOT's `.gitignore` file otherwise (its own module's TSDoc documents
+ *    the "single root file only" simplification the glob path makes — the
+ *    git path has no such limitation, since `git check-ignore` itself
+ *    resolves the real, full chain of `.gitignore` files).
  *
  * **`readFile`, not a raw path** ({@link IgnoreCheckerDeps.readFile}): the
  * glob fallback needs the root `.gitignore`'s CONTENT, which — per this
@@ -133,6 +139,32 @@ export function createIgnoreChecker(deps: IgnoreCheckerDeps = {}): IgnoreChecker
   // `.gitignore`-content reloading, only live `showHidden` reloading).
   const gitignoreCache = new Map<string, Promise<GitignoreMatcher>>();
 
+  // Whether `rootUri` is actually inside a git working tree — cached per
+  // root exactly like `gitignoreCache` above, and checked only once `git`
+  // itself is known to be available. `git` installed but the workspace NOT
+  // a repo (this module's TSDoc's code-review fix: previously fell through
+  // to `checkIgnore`, which degrades a non-repo `cwd` to an empty set
+  // indistinguishable from "nothing ignored" — silently disabling the
+  // `.gitignore` glob fallback) now routes to the glob path instead, same
+  // as "git unavailable".
+  const repositoryCache = new Map<string, Promise<boolean>>();
+
+  async function isRepository(rootPath: string): Promise<boolean> {
+    const cached = repositoryCache.get(rootPath);
+    if (cached) return cached;
+    const checked = (async () => {
+      try {
+        return await deps.gitRunner!.isRepository(rootPath);
+      } catch {
+        // Documented never-throw on GitRunner, guarded anyway (matches
+        // `isGitAvailable`'s own guard just below).
+        return false;
+      }
+    })();
+    repositoryCache.set(rootPath, checked);
+    return checked;
+  }
+
   async function loadGitignoreMatcher(rootUri: Uri): Promise<GitignoreMatcher> {
     const cached = gitignoreCache.get(rootUri);
     if (cached) return cached;
@@ -174,7 +206,8 @@ export function createIgnoreChecker(deps: IgnoreCheckerDeps = {}): IgnoreChecker
     });
     if (candidates.length === 0) return [];
 
-    if (await isGitAvailable()) {
+    const rootPath = uriToGitPath(rootUri).replace(/\/+$/, "");
+    if ((await isGitAvailable()) && (await isRepository(rootPath))) {
       // `fileURLToPath` preserves a directory URL's trailing slash (e.g.
       // `"file:///workspace/"` -> `"/workspace/"`) — stripped here so the
       // join below never produces a doubled `//` in front of `entry.name`.

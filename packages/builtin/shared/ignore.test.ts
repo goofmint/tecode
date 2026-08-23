@@ -29,6 +29,9 @@ function createUnavailableGitRunner(): GitRunner {
     checkIgnore: async () => {
       throw new Error("must not be called when git is unavailable");
     },
+    isRepository: async () => {
+      throw new Error("must not be called when git is unavailable");
+    },
   };
 }
 
@@ -43,6 +46,7 @@ function createFakeGitRunner(
   return {
     calls,
     isAvailable: async () => true,
+    isRepository: async () => true,
     checkIgnore: async (cwd, paths) => {
       calls.push({ cwd, paths });
       const ignored = paths.filter((p) => ignoredBasenames.has(p.split("/").pop() ?? ""));
@@ -157,6 +161,7 @@ describe("createIgnoreChecker (Task 3.3, Req 11.2)", () => {
     test("a checkIgnore failure degrades to 'nothing further ignored' rather than throwing", async () => {
       const gitRunner: GitRunner = {
         isAvailable: async () => true,
+        isRepository: async () => true,
         checkIgnore: async () => {
           throw new Error("git exploded");
         },
@@ -171,6 +176,7 @@ describe("createIgnoreChecker (Task 3.3, Req 11.2)", () => {
         isAvailable: async () => {
           throw new Error("spawn failed");
         },
+        isRepository: async () => true,
         checkIgnore: async () => new Set(),
       };
       const checker = createIgnoreChecker({
@@ -178,6 +184,62 @@ describe("createIgnoreChecker (Task 3.3, Req 11.2)", () => {
         readFile: async () => new TextEncoder().encode("*.log"),
       });
       const visible = await checker.filterEntries(baseOptions([entry("debug.log"), entry("keep.ts")]));
+      expect(names(visible)).toEqual(["keep.ts"]);
+    });
+  });
+
+  describe("git available but the workspace is not a repository", () => {
+    test("falls back to the glob path rather than silently disabling .gitignore filtering", async () => {
+      const gitRunner: GitRunner = {
+        isAvailable: async () => true,
+        isRepository: async () => false,
+        checkIgnore: async () => {
+          throw new Error("must not be called when the workspace is not a git repository");
+        },
+      };
+      const checker = createIgnoreChecker({
+        gitRunner,
+        readFile: async () => new TextEncoder().encode("*.log"),
+      });
+      const visible = await checker.filterEntries(
+        baseOptions([entry("debug.log"), entry("keep.ts")]),
+      );
+      expect(names(visible)).toEqual(["keep.ts"]);
+    });
+
+    test("isRepository is checked once per root and cached", async () => {
+      let repoChecks = 0;
+      const gitRunner: GitRunner = {
+        isAvailable: async () => true,
+        isRepository: async () => {
+          repoChecks += 1;
+          return false;
+        },
+        checkIgnore: async () => new Set(),
+      };
+      const checker = createIgnoreChecker({ gitRunner, readFile: async () => new TextEncoder().encode("") });
+      await checker.filterEntries(baseOptions([entry("a.ts")]));
+      await checker.filterEntries(
+        baseOptions([entry("b.ts")], { dirUri: "file:///workspace/src/", relativeDir: "src" }),
+      );
+      expect(repoChecks).toBe(1);
+    });
+
+    test("an isRepository failure also falls back to the glob path rather than throwing", async () => {
+      const gitRunner: GitRunner = {
+        isAvailable: async () => true,
+        isRepository: async () => {
+          throw new Error("spawn failed");
+        },
+        checkIgnore: async () => new Set(),
+      };
+      const checker = createIgnoreChecker({
+        gitRunner,
+        readFile: async () => new TextEncoder().encode("*.log"),
+      });
+      const visible = await checker.filterEntries(
+        baseOptions([entry("debug.log"), entry("keep.ts")]),
+      );
       expect(names(visible)).toEqual(["keep.ts"]);
     });
   });

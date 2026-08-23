@@ -298,10 +298,11 @@ async function selectViaTree(
   uri: string,
 ): Promise<void> {
   const Component = fixture.getRegisteredView() as unknown as (props: Record<string, unknown>) => ReactNode;
-  const { renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
+  const { renderer, renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
   await renderOnce();
   const onSelect = fixture.getLastTreeProps()?.["onSelect"] as ((id: string) => void) | undefined;
   act(() => onSelect?.(uri));
+  renderer.destroy();
 }
 
 describe("explorer activate() (Task 3.3, Req 11.2)", () => {
@@ -413,6 +414,36 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
       expect(fixture.getMessages().some((m) => m.kind === "info")).toBe(true);
       fixture.dispose();
     });
+
+    test("validateInput rejects '.' and '..'", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      const fixture = createFixture(pathToUri(dir));
+      fixture.setNextInputValue(undefined);
+
+      await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
+
+      expect(fixture.getLastValidateInput()?.(".")).toBeDefined();
+      expect(fixture.getLastValidateInput()?.("..")).toBeDefined();
+      fixture.dispose();
+    });
+
+    test("a '..' name is rejected even when it bypasses validateInput (a programmatic caller), never escaping the target directory", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      const fixture = createFixture(pathToUri(dir));
+      // The fake `showInputBox` above returns whatever was queued
+      // regardless of `validateInput` — exactly the "bypasses the input
+      // box's own validation" scenario the explicit re-check at the
+      // `joinChildUri` call site guards against.
+      fixture.setNextInputValue("..");
+
+      await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
+
+      expect(fixture.getMessages().some((m) => m.kind === "error")).toBe(true);
+      // Nothing was created — in particular, no `fs.write` call ever
+      // reached the (would-be escaped) parent directory.
+      expect(await nodeReaddir(dir)).toEqual([]);
+      fixture.dispose();
+    });
   });
 
   test("explorer.newFolder creates a real directory", async () => {
@@ -481,6 +512,45 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
       await fixture.api.commands.execute(EXPLORER_RENAME_COMMAND_ID);
 
       expect(fixture.getMessages().some((m) => m.kind === "error")).toBe(true);
+      fixture.dispose();
+    });
+
+    test("validateInput rejects '.' and '..'", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      await nodeWriteFile(join(dir, "old.ts"), "content");
+      const fixture = createFixture(pathToUri(dir));
+      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
+      await new Promise((r) => setTimeout(r, 50));
+
+      await selectViaTree(fixture, pathToUri(join(dir, "old.ts")));
+      fixture.setNextInputValue(undefined);
+      await fixture.api.commands.execute(EXPLORER_RENAME_COMMAND_ID);
+
+      expect(fixture.getLastValidateInput()?.(".")).toBeDefined();
+      expect(fixture.getLastValidateInput()?.("..")).toBeDefined();
+      fixture.dispose();
+    });
+
+    test("a '..' name is rejected even when it bypasses validateInput, never escaping the parent directory", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      await nodeWriteFile(join(dir, "old.ts"), "content");
+      const fixture = createFixture(pathToUri(dir));
+      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
+      await new Promise((r) => setTimeout(r, 50));
+
+      await selectViaTree(fixture, pathToUri(join(dir, "old.ts")));
+      // The fake `showInputBox` returns whatever was queued regardless of
+      // `validateInput` — the "bypasses the input box's own validation"
+      // scenario the explicit re-check at the `joinChildUri` call site
+      // guards against.
+      fixture.setNextInputValue("..");
+
+      await fixture.api.commands.execute(EXPLORER_RENAME_COMMAND_ID);
+
+      expect(fixture.getMessages().some((m) => m.kind === "error")).toBe(true);
+      // The original file is untouched — no rename call ever reached the
+      // (would-be escaped) grandparent directory.
+      expect(await nodeReaddir(dir)).toEqual(["old.ts"]);
       fixture.dispose();
     });
   });
