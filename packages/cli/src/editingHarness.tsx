@@ -162,6 +162,7 @@ export async function buildEditingHarness(options: EditingHarnessOptions): Promi
       root.editorLangIdSync.dispose();
       root.themeConfigSync.dispose();
       root.themeSelectCommand.dispose();
+      root.openFileCommand.dispose();
       root.highlightService.dispose();
       root.languageRegistry.dispose();
       await extensionHost.disposeAll();

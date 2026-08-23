@@ -32,6 +32,7 @@ import {
   pathToUri,
   registerCoreConfiguration,
   registerModalCommands,
+  registerOpenFileCommand,
   registerTecodeAlias,
   registerThemeSelectCommand,
   wireEditorLangIdContext,
@@ -204,6 +205,13 @@ export interface AssemblyRoot {
    * boundary). Disposed alongside every other startup-owned subscription
    * in {@link wireProcessExit}. */
   themeSelectCommand: Disposable;
+  /** The `workbench.action.files.openUri` command registration (Task 3.2,
+   * Req 11.3, `ui/openFileCommand.ts`) — the privileged bridge command
+   * `command-palette`'s file quick-open picks a file through, registered
+   * directly on `commands` for the same privilege-boundary reason as
+   * `themeSelectCommand` above. Disposed alongside every other
+   * startup-owned subscription in {@link wireProcessExit}. */
+  openFileCommand: Disposable;
   /** The resolved workspace root this root was built for. */
   workspaceRoot: string;
   /** The layered keybinding table, kept up to date across every startup
@@ -551,6 +559,17 @@ export function buildAssemblyRoot(
     log,
   });
 
+  // `workbench.action.files.openUri` (Task 3.2, Req 11.3, `ui/
+  // openFileCommand.ts`'s TSDoc): another PRIVILEGED registration straight
+  // on `commands`, closing over `documents`/`editorSession` directly —
+  // `command-palette`'s file quick-open is this command's only caller
+  // today, reaching it purely through `tecode.commands.execute`.
+  const openFileCommand = registerOpenFileCommand(commands, {
+    documents,
+    editorSession,
+    log,
+  });
+
   // Live `workbench.colorTheme` config-change subscription (Req 7.5,
   // `ui/themeConfigSync.ts`'s TSDoc) — the INITIAL value is applied by
   // `runTecode` after `config.ready` settles, not here (same TSDoc).
@@ -593,6 +612,7 @@ export function buildAssemblyRoot(
     themeService,
     themeConfigSync,
     themeSelectCommand,
+    openFileCommand,
     workspaceRoot,
     keymap,
     chordMachine,
@@ -770,6 +790,7 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.editorLangIdSync.dispose();
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
+    root.openFileCommand.dispose();
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();
@@ -913,6 +934,7 @@ export async function runTecode(
     root.editorLangIdSync.dispose();
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
+    root.openFileCommand.dispose();
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();

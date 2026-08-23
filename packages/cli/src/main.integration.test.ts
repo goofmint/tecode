@@ -124,13 +124,14 @@ test("headless startup renders the shell before any extension's index.ts loads, 
     expect(firstFrameMs).toBeGreaterThanOrEqual(0);
     expect(firstFrameMs).toBeLessThan(1_000);
 
-    // 4, not 1: the workspace fixture extension AND the real `@tecode/
+    // 5, not 1: the workspace fixture extension AND the real `@tecode/
     // builtin` `editor-core` (Task 2.3, `onStartup`) AND `themes-default`
-    // (Task 2.7) AND `languages-basic` (Task 2.9) — the latter two are
+    // (Task 2.7) AND `languages-basic` (Task 2.9) AND `command-palette`
+    // (Task 3.2, `onStartup`) — `themes-default`/`languages-basic` are
     // pure-contribution extensions with no `onStartup` — they still count
     // as LOADED/registered, just never activated — all load during this
     // real (no `builtins` override) subprocess run.
-    expect(headlessExit?.["loaded"]).toBe(4);
+    expect(headlessExit?.["loaded"]).toBe(5);
     expect(headlessExit?.["skipped"]).toBe(0);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
