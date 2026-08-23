@@ -35,6 +35,7 @@ import type {
   EditorNamespace,
   FileSystem,
   FindNamespace,
+  LanguageContribution,
   LanguagesNamespace,
   Tecode,
   ThemeContribution,
@@ -55,6 +56,7 @@ import { Input, List, Tabs, Tree } from "../ui/components";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
 import type { ThemeRegistry } from "../ui/themeRegistry";
 import type { ThemeService } from "../ui/themeService";
+import type { LanguageRegistry } from "../languages/languageRegistry";
 import { cloneSelection, createEditorNamespace } from "./editorNamespace";
 import {
   createEditorStub,
@@ -163,6 +165,17 @@ export interface CreateTecodeApiDeps {
    * {@link CreateTecodeApiDeps.themeRegistry}'s TSDoc for the pairing
    * requirement. */
   themeService?: Pick<ThemeService, "get">;
+  /**
+   * Backs the REAL `tecode.languages` (Task 2.8, `languages/
+   * languageRegistry.ts`) — `register`/`getLanguage` delegate straight to
+   * the registry, and `getLanguageId` delegates to its
+   * `resolveLanguageId` (Req 8.3). Optional, single-dependency gating
+   * (unlike `themeRegistry`/`themeService`'s pairing — a `LanguageRegistry`
+   * needs no separate "current selection" service the way themes do): a
+   * caller that omits this (every test that predates this task) keeps
+   * `stubs.ts`'s `createLanguagesStub` exactly as before.
+   */
+  languageRegistry?: Pick<LanguageRegistry, "register" | "getLanguage" | "resolveLanguageId">;
 }
 
 /**
@@ -327,11 +340,23 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     Tabs,
   });
 
+  // Real backing (Task 2.8) when a `LanguageRegistry` is supplied;
+  // otherwise the exact same stub as before (`CreateTecodeApiDeps.
+  // languageRegistry`'s TSDoc).
   const languagesStub = createLanguagesStub();
+  const languageRegistry = deps.languageRegistry;
   const languagesNamespace: LanguagesNamespace = Object.freeze({
-    register: languagesStub.register,
-    getLanguageId: languagesStub.getLanguageId,
-    getLanguage: languagesStub.getLanguage,
+    // Wrapped in a one-argument closure (matches `themesNamespace.register`
+    // just above) — `LanguageRegistry.register`'s raw function accepts an
+    // extra `baseDir` parameter at runtime (core-internal, for the
+    // discovery/manifest path) that `LanguagesNamespace.register`'s
+    // single-argument signature never declares; passing the bound method
+    // straight through would let un-typechecked extension code supply it.
+    register: languageRegistry
+      ? (contribution: LanguageContribution) => languageRegistry.register(contribution)
+      : languagesStub.register,
+    getLanguageId: languageRegistry ? languageRegistry.resolveLanguageId : languagesStub.getLanguageId,
+    getLanguage: languageRegistry ? languageRegistry.getLanguage : languagesStub.getLanguage,
   });
 
   return Object.freeze({

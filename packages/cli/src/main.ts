@@ -3,6 +3,7 @@ import type { Disposable, FileSystem, Manifest, ResolvedTheme, Tecode } from "@t
 import {
   applyConfiguredTheme,
   BASE_THEME_ID,
+  createAssetResolver,
   createChordStateMachine,
   createCommandRegistry,
   createConfigService,
@@ -13,7 +14,9 @@ import {
   createExtensionHost,
   createFileSystem,
   createFindService,
+  createHighlightService,
   createHostLog,
+  createLanguageRegistry,
   createLayoutStateService,
   createNoopStatusSink,
   createSlotRegistry,
@@ -39,7 +42,9 @@ import {
   type EditorSessionService,
   type ExtensionHost,
   type FindService,
+  type HighlightService,
   type HostLog,
+  type LanguageRegistry,
   type LayoutStateService,
   type LoadExtensionsResult,
   type PendingThemeContribution,
@@ -199,6 +204,27 @@ export interface AssemblyRoot {
    * execute` and a keystroke typed into the widget both operate on the
    * exact same live state. */
   findService: FindService;
+  /** The language registry (Task 2.8, Req 8.1-8.3, `languages/
+   * languageRegistry.ts`): resolves a document's `languageId` from its
+   * extension (`DocumentManagerDeps.resolveLanguageId`, wired below,
+   * before `documents` is built) and backs `tecode.languages`' real
+   * `register`/`getLanguage`/`getLanguageId` (via `api` above).
+   * {@link runDeferredPhase} feeds `loadExtensions`'s `pendingLanguages`
+   * into it once discovery has run, mirroring `themeRegistry`'s own
+   * `pendingThemes` wiring. */
+  languageRegistry: LanguageRegistry;
+  /** The syntax-highlighting pipeline (Task 2.8, Req 8.1-8.3, design.md
+   * §10, `languages/highlightService.ts`) — built against `documents` and
+   * `languageRegistry` above, with the production `web-tree-sitter`-backed
+   * parser backend and a real-filesystem asset resolver (both defaulted
+   * inside `createHighlightService`/`createAssetResolver`). Threaded to
+   * `renderShell.tsx`'s `ShellRenderDeps.highlightService`, mirroring
+   * `findService`'s own composition-root wiring. With zero languages
+   * registered (Task 2.9/Issue #25 not landed yet), every open document
+   * resolves to `"plaintext"` and this never touches the parser backend at
+   * all (design.md §10's "no real grammars ship yet" — `languages/
+   * highlightService.ts`'s TSDoc). */
+  highlightService: HighlightService;
   /** Turns a keymap-fallthrough key event into a multi-cursor
    * `applyEdits` call (Req 4.6, 6.6, design.md §6.1, §8.3, Task 2.2) —
    * wired into `renderShellToTerminal`'s real `renderer.keyInput` listener
@@ -282,10 +308,29 @@ export function buildAssemblyRoot(
     sink,
     activateExtension: (id) => hostRef.current?.activateExtension(id) ?? Promise.resolve(),
   });
+  // Built before `documents` (Task 2.8, Req 8.3) so its `resolveLanguageId`
+  // can be wired straight into `DocumentManagerDeps` below — every document
+  // open resolves a real language id (or `"plaintext"`) from day one, not
+  // `documentManager.ts`'s own stub default.
+  const languageRegistry = createLanguageRegistry();
   const documents = createDocumentManager({
     log,
     sink,
+    resolveLanguageId: languageRegistry.resolveLanguageId,
     onLanguageActivation: (id) => hostRef.current?.onLanguage(id),
+  });
+  // The highlight service (Task 2.8, Req 8.1-8.3, design.md §10): built
+  // right after `documents`/`languageRegistry` exist, with the production
+  // asset resolver (real `node:fs/promises`) and parser backend (real
+  // `web-tree-sitter`, `createHighlightService`'s own default) — see
+  // `AssemblyRoot.highlightService`'s TSDoc for why this is safe with zero
+  // languages registered.
+  const highlightService = createHighlightService({
+    documents,
+    languageRegistry,
+    assetResolver: createAssetResolver(),
+    log,
+    sink,
   });
   const fs = createFileSystem({ log });
 
@@ -396,6 +441,7 @@ export function buildAssemblyRoot(
     findService,
     themeRegistry,
     themeService,
+    languageRegistry,
   });
 
   // Must run before any extension module is imported (see this function's
@@ -462,6 +508,8 @@ export function buildAssemblyRoot(
     chordMachine,
     editorSession,
     findService,
+    languageRegistry,
+    highlightService,
     editorInputRouter,
     editorLangIdSync,
     hostRef,
@@ -537,6 +585,18 @@ export async function runDeferredPhase(
     buildExtensionDirMap(loadResult.loaded),
   );
   applyConfiguredTheme(root.config, root.themeService);
+
+  // Feed every `contributes.languages` entry discovered by `loadExtensions`
+  // into the language registry (Task 2.8, Req 8.1-8.3) — the same
+  // `extensionId -> directory` map the theme registry's own
+  // `loadContributions` call above uses, so a language's `grammar`/
+  // `highlights` paths (`highlightService.ts`'s asset resolver) resolve
+  // against the correct owning extension's directory once it's actually
+  // used.
+  await root.languageRegistry.loadContributions(
+    loadResult.pendingLanguages,
+    buildExtensionDirMap(loadResult.loaded),
+  );
 
   const extensionHost = createExtensionHost({
     extensions: buildExtensionRecords(loadResult.loaded),
@@ -617,6 +677,8 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.editorLangIdSync.dispose();
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
+    root.highlightService.dispose();
+    root.languageRegistry.dispose();
     await root.hostRef.current?.disposeAll();
   };
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -711,6 +773,7 @@ export async function runTecode(
     config: root.config,
     editorSession: root.editorSession,
     findService: root.findService,
+    highlightService: root.highlightService,
     chordMachine: root.chordMachine,
     editorInputRouter: root.editorInputRouter,
   });
@@ -753,6 +816,8 @@ export async function runTecode(
     root.editorLangIdSync.dispose();
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
+    root.highlightService.dispose();
+    root.languageRegistry.dispose();
     await deferred.extensionHost.disposeAll();
     process.exit(0);
   }

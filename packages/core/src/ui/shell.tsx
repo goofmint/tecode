@@ -60,6 +60,7 @@ import type { EditorSessionService } from "./editorSession";
 import { createInitialEditorState, type EditorState } from "./editorState";
 import { EditorView } from "./editorView";
 import type { FindService } from "./findService";
+import type { HighlightService } from "../languages/highlightService";
 import { FindWidget } from "./findWidget";
 import type { FocusableNode } from "./focus";
 import { useFocusTracking } from "./focus";
@@ -342,6 +343,11 @@ export interface EditorAreaProps {
    * own TSDoc). Narrowed to the 3 actions `findWidget.tsx` actually calls.
    */
   findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
+  /** Threaded straight through to `EditorView` (Req 8.1, design.md §10) —
+   * see `EditorViewProps.highlightService`'s TSDoc. Optional, matching
+   * `findService`/`config` above: a caller/test that omits it gets
+   * `EditorView`'s current (unhighlighted) rendering unchanged. */
+  highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
 }
 
 /** The editor area (Req 6.1, 6.5, 6.6, 11.1): a `TabBar` over the real
@@ -425,6 +431,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
             document={props.activeDocument}
             state={props.activeEditorState}
             config={props.config}
+            highlightService={props.highlightService}
             onTextPlaneNode={handleTextPlaneNode}
           />
         ) : (
@@ -571,6 +578,10 @@ export interface ShellProps {
    * sibling (Req 11.1, design.md §13) — see `EditorAreaProps.findService`'s
    * TSDoc. */
   findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
+  /** Threaded straight through to `EditorArea` for `EditorView`'s syntax
+   * highlighting (Req 8.1, design.md §10) — see
+   * `EditorAreaProps.highlightService`'s TSDoc. */
+  highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
 }
 
 /** Re-renders the calling component whenever `session` reports a change
@@ -721,6 +732,7 @@ export function Shell(props: ShellProps): ReactNode {
           activeEditorState={activeDocument ? getOrCreateEditorState(activeDocument.uri) : undefined}
           config={props.config}
           findService={props.findService}
+          highlightService={props.highlightService}
         />
       </box>
       <Panel slotRegistry={props.slotRegistry} visible={layout.panelVisible} height={layout.panelHeight} />

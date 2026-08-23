@@ -68,19 +68,28 @@
 
 import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { RenderableEvents, type RGBA } from "@opentui/core";
-import type { Range, Selection } from "@tecode/api";
+import type { CaptureName, Range, Selection, Style } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { ConfigService } from "../config/service";
+import type { HighlightService, HighlightSpan } from "../languages/highlightService";
 import { cellWidthUpTo } from "./cellWidth";
-import { useLineTicks, type EditorState } from "./editorState";
+import { useHighlightRevision, useLineTicks, type EditorState } from "./editorState";
 import type { FocusableNode, FocusEmitter } from "./focus";
 import { useFocusTracking } from "./focus";
+import { resolveCaptureStyle } from "./themeLoader";
 import { computeVisibleLineRange, gutterDigitWidth, revealLine } from "./viewport";
 import { styleToTextColors, toColorInput, useTheme } from "./theme";
 
 /** Rows available to the text plane when no `viewportHeight` prop is given
  * (this module's TSDoc — a placeholder ahead of real layout measurement). */
 const DEFAULT_VIEWPORT_HEIGHT = 20;
+
+/** A shared empty-array reference for a line with no highlight spans (no
+ * `highlightService` wired in, or `getSpansForLine` itself returned `[]`)
+ * — avoids allocating a fresh empty array per visible line per render. Not
+ * part of {@link editorLineRowPropsEqual}'s comparison either way
+ * (`highlightRevision` is what that relies on), but cheap to share. */
+const EMPTY_SPANS: readonly HighlightSpan[] = [];
 
 /** One line's worth of colored text, after {@link buildLineRuns} has merged
  * the base/selection/cursor layers for that line (this module's TSDoc). */
@@ -109,6 +118,15 @@ interface EditorLineColors {
   /** Every OTHER find match's background (Req 11.1) — distinct from both
    * `selectionBg` and `findMatchBg`. */
   findMatchOtherBg: RGBA;
+  /** The active theme's capture-name -> style map (Req 8.1, design.md §10)
+   * — `buildLineRuns` resolves each highlight span's capture through
+   * `themeLoader.ts`'s `resolveCaptureStyle` (longest-prefix fallback,
+   * e.g. `"function.builtin"` -> `"function"`) against this. Bundled into
+   * the same memoized `colors` object as every other theme-derived value
+   * above (this module's TSDoc) rather than threaded as a separate prop,
+   * so `EditorLineRow`'s memo comparator keeps comparing exactly one
+   * theme-derived reference. */
+  tokens: Partial<Record<CaptureName, Style>>;
 }
 
 function isCollapsed(selection: Selection): boolean {
@@ -147,11 +165,18 @@ function clipRangeToLine(
   return { start, end };
 }
 
+/** One highlight span, clipped to a line's `[0, length)` — same shape as
+ * {@link ColRange} plus the capture name it resolves a style from. */
+interface HighlightRange extends ColRange {
+  capture: string;
+}
+
 /**
- * Merge the text/selection/cursor/find-match layers for one document line
- * into a sequence of colored runs (this module's TSDoc's "three pieces of
- * DOM, not four" plus the find-match overlay). `lineText` is padded with
- * one trailing space when a cursor sits at end-of-line (`character ===
+ * Merge the text/selection/cursor/find-match/highlight layers for one
+ * document line into a sequence of colored runs (this module's TSDoc's
+ * "three pieces of DOM, not four" plus the find-match overlay and the
+ * highlight-span foreground, Req 8, design.md §10). `lineText` is padded
+ * with one trailing space when a cursor sits at end-of-line (`character ===
  * lineText.length`), so that a collapsed cursor at the end of a line still
  * has a cell to render its block into.
  */
@@ -167,6 +192,11 @@ function buildLineRuns(params: {
   /** Index into `findMatches` of the CURRENT match, or `-1`/out-of-range
    * for "no active match" (renders every entry as an "other" match). */
   activeFindMatchIndex?: number;
+  /** This line's syntax-highlight spans (Req 8.1, design.md §10,
+   * `languages/highlightService.ts`'s `HighlightService.getSpansForLine`)
+   * — empty when no highlight service is wired in, the document's language
+   * is `"plaintext"`, or the line has no captures. */
+  spans?: readonly HighlightSpan[];
 }): LineRun[] {
   const {
     lineText,
@@ -175,6 +205,7 @@ function buildLineRuns(params: {
     colors,
     findMatches = [],
     activeFindMatchIndex = -1,
+    spans = [],
   } = params;
   const cursorCols = selections
     .filter((s) => s.active.line === lineIndex)
@@ -182,13 +213,6 @@ function buildLineRuns(params: {
   const needsPad = cursorCols.some((c) => c >= lineText.length);
   const text = needsPad ? `${lineText} ` : lineText;
   const length = text.length;
-
-  // The extension point for the future highlight service (Req 8, design.md
-  // §10): no spans exist yet, so this always resolves to `undefined` and
-  // every run's base color is `colors.fg` — but every run is still routed
-  // through `styleToTextColors` so wiring in real per-span styles later
-  // touches only the call site, not this function's structure.
-  const baseFg = styleToTextColors(undefined).fg ?? colors.fg;
 
   const boundaries = new Set<number>([0, length]);
   const selectionRanges: ColRange[] = [];
@@ -221,6 +245,36 @@ function buildLineRuns(params: {
     boundaries.add(clipped.start);
     boundaries.add(clipped.end);
   });
+  // Highlight spans (Req 8, design.md §10): clipped/clamped the same way
+  // every other overlay range is, and their boundaries fold into the same
+  // sorted segment list so a span's edge never gets merged into a
+  // differently-styled neighbor.
+  const highlightRanges: HighlightRange[] = [];
+  for (const span of spans) {
+    const start = clampCol(span.startCol, length);
+    const end = clampCol(span.endCol, length);
+    if (end <= start) continue;
+    highlightRanges.push({ start, end, capture: span.capture });
+    boundaries.add(start);
+    boundaries.add(end);
+  }
+
+  /** This segment's base (highlight-resolved) foreground — Req 8's
+   * "highlight foreground sits at the base-text tier" (this module's
+   * TSDoc): every non-cursor run below (active match, selection, other
+   * match, AND plain base text) uses this SAME per-segment value, so
+   * syntax colors show through a selection/find overlay's background,
+   * exactly like `colors.fg` already did before highlighting existed. The
+   * FIRST highlight range covering `[start, end)` wins (real `.scm`
+   * queries rarely produce overlapping captures for the same token; ties
+   * break in query/capture order, matching `getSpansForLine`'s own
+   * ordering). */
+  function resolveSegmentFg(start: number, end: number): RGBA {
+    const covering = highlightRanges.find((r) => start >= r.start && end <= r.end);
+    if (!covering) return colors.fg;
+    const style = resolveCaptureStyle(colors.tokens, covering.capture as CaptureName);
+    return styleToTextColors(style).fg ?? colors.fg;
+  }
 
   const sorted = Array.from(boundaries).sort((a, b) => a - b);
   const runs: LineRun[] = [];
@@ -236,17 +290,19 @@ function buildLineRuns(params: {
     const isOtherMatch = otherMatchRanges.some((r) => start >= r.start && end <= r.end);
 
     // Priority, highest first (this module's TSDoc): cursor > current find
-    // match > selection > other find matches > base text.
+    // match > selection > other find matches > base text. Highlight
+    // foreground sits at the base-text tier (`resolveSegmentFg`'s TSDoc) —
+    // every tier below cursor uses it, with only the background changing.
     if (isCursorCell) {
       runs.push({ text: segment, fg: colors.cursorFg, bg: colors.cursorBg });
     } else if (isActiveMatch) {
-      runs.push({ text: segment, fg: baseFg, bg: colors.findMatchBg });
+      runs.push({ text: segment, fg: resolveSegmentFg(start, end), bg: colors.findMatchBg });
     } else if (isSelected) {
-      runs.push({ text: segment, fg: baseFg, bg: colors.selectionBg });
+      runs.push({ text: segment, fg: resolveSegmentFg(start, end), bg: colors.selectionBg });
     } else if (isOtherMatch) {
-      runs.push({ text: segment, fg: baseFg, bg: colors.findMatchOtherBg });
+      runs.push({ text: segment, fg: resolveSegmentFg(start, end), bg: colors.findMatchOtherBg });
     } else {
-      runs.push({ text: segment, fg: baseFg });
+      runs.push({ text: segment, fg: resolveSegmentFg(start, end) });
     }
   }
   return runs;
@@ -298,6 +354,18 @@ interface EditorLineRowProps {
   findMatches: readonly Range[];
   /** Index into `findMatches` of the CURRENT match, `-1` for none. */
   activeFindMatchIndex: number;
+  /** This line's syntax-highlight spans (Req 8.1, design.md §10) — passed
+   * through to {@link buildLineRuns} for the render body; `highlightRevision`
+   * (not this array's identity) is what the memo comparator actually
+   * relies on, same "array threaded through, revision compared" split as
+   * `findMatches`/`overlayKey` above. */
+  spans: readonly HighlightSpan[];
+  /** From {@link useHighlightRevision} — bumps whenever the highlight
+   * service reports ANY change; every visible row shares this SAME number
+   * (`editorState.ts`'s `useHighlightRevision` TSDoc explains why it can't
+   * be scoped any finer than "the whole `EditorView`" without a per-line
+   * payload on the service's own `onDidChange`). */
+  highlightRevision: number;
   /** From {@link useLineTicks} — the primary "this line's text changed" memo
    * signal for observed rows (this module's TSDoc); see `text` above for why
    * it isn't sufficient alone. */
@@ -323,6 +391,7 @@ function editorLineRowPropsEqual(prev: EditorLineRowProps, next: EditorLineRowPr
     prev.text === next.text &&
     prev.tick === next.tick &&
     prev.overlayKey === next.overlayKey &&
+    prev.highlightRevision === next.highlightRevision &&
     prev.gutterWidth === next.gutterWidth &&
     prev.showLineNumbers === next.showLineNumbers &&
     prev.isActiveLine === next.isActiveLine &&
@@ -343,6 +412,7 @@ const EditorLineRow = memo(function EditorLineRow(props: EditorLineRowProps): Re
     colors: props.colors,
     findMatches: props.findMatches,
     activeFindMatchIndex: props.activeFindMatchIndex,
+    spans: props.spans,
   });
   const lineNumberText =
     String(props.lineIndex + 1).padStart(Math.max(0, props.gutterWidth - 1), " ") + " ";
@@ -420,6 +490,16 @@ export interface EditorViewProps {
   /** Test-only instrumentation — see {@link EditorLineRowProps.onDebugRender}. */
   onDebugLineRender?: (line: number) => void;
   /**
+   * The syntax-highlighting pipeline (Req 8.1, design.md §10,
+   * `languages/highlightService.ts`) — threaded through the composition
+   * root the same way `findService` is (`shell.tsx`'s `EditorAreaProps.
+   * findService` TSDoc). Optional and absent-safe: omitted entirely (every
+   * existing caller/test), every visible line simply gets `spans: []`
+   * (this component's row loop) — unhighlighted text, current behavior
+   * unchanged.
+   */
+  highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
+  /**
    * Reports the text plane's underlying OpenTUI node (or `null` on
    * detach/unmount) alongside this component's own internal focus-tracking
    * ref callbacks (Req 11.1) — `shell.tsx`'s `EditorArea` captures it so
@@ -444,6 +524,8 @@ export function EditorView(props: EditorViewProps): ReactNode {
 
   const theme = useTheme();
   const lineTicks = useLineTicks(document);
+  const highlightService = props.highlightService;
+  const highlightRevision = useHighlightRevision(highlightService);
   const contextFocusRef = useFocusTracking("editorTextFocus");
   const [isFocused, isFocusedRef] = useIsFocused();
   const onTextPlaneNode = props.onTextPlaneNode;
@@ -498,6 +580,7 @@ export function EditorView(props: EditorViewProps): ReactNode {
       lineNumberActiveFg: toColorInput(theme.colors["editorLineNumber.activeForeground"]),
       findMatchBg: toColorInput(theme.colors["editor.findMatchBackground"]),
       findMatchOtherBg: toColorInput(theme.colors["editor.findMatchHighlightBackground"]),
+      tokens: theme.tokens,
     }),
     [theme, isFocused],
   );
@@ -512,6 +595,8 @@ export function EditorView(props: EditorViewProps): ReactNode {
         selections={state.selections}
         findMatches={findMatches}
         activeFindMatchIndex={activeFindMatchIndex}
+        spans={highlightService?.getSpansForLine(document.uri, line) ?? EMPTY_SPANS}
+        highlightRevision={highlightRevision}
         tick={lineTicks.getLineTick(line)}
         overlayKey={lineOverlayKey(line, state.selections, findMatches, activeFindMatchIndex)}
         gutterWidth={gutterWidth}

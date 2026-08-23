@@ -10,11 +10,13 @@ import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import type { CapturedFrame } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
-import type { Selection } from "@tecode/api";
+import type { Disposable, ResolvedTheme, Selection } from "@tecode/api";
 import { createBaseTheme } from "../api/stubs";
 import { createHostLog } from "../host/errors";
 import { createDocument, type CoreDocument } from "../buffer/document";
-import { toColorInput } from "./theme";
+import type { HighlightSpan } from "../languages/highlightService";
+import type { ConfigService } from "../config/service";
+import { ThemeProvider, toColorInput } from "./theme";
 import { createInitialEditorState, createInitialFindState, type EditorState, type FindState } from "./editorState";
 import { EditorView } from "./editorView";
 
@@ -458,3 +460,180 @@ function findFocusable(node: unknown): unknown {
   }
   return undefined;
 }
+
+/** A `config` that hides line numbers (matches "editor.lineNumbers can be
+ * hidden via a config seam" above) — used by the highlighting tests below
+ * so expected columns don't need to account for the gutter's width. */
+const noLineNumbersConfig = { get: () => false } as unknown as ConfigService;
+
+/** A minimal fake `highlightService` (Req 8.1, design.md §10) — hand-rolled
+ * per house convention. `spansByLine` is looked up by line only (every test
+ * below renders exactly one document, so no per-uri branching is needed).
+ * `fire()` lets a test simulate the service's `onDidChange` (a line-
+ * invalidation signal, `highlightService.ts`'s TSDoc) without a real
+ * parse/edit pipeline behind it. */
+function createFakeHighlightService(spansByLine: Record<number, HighlightSpan[]>) {
+  const listeners = new Set<() => void>();
+  return {
+    getSpansForLine: (_uri: string, line: number): readonly HighlightSpan[] => spansByLine[line] ?? [],
+    onDidChange: (listener: () => void): Disposable => {
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    },
+    fire(): void {
+      for (const listener of Array.from(listeners)) listener();
+    },
+  };
+}
+
+describe("EditorView — syntax highlighting (Req 8.1-8.3, design.md §10)", () => {
+  test("a highlight span colors its own segment; a selection overlay still wins the background", async () => {
+    const document = createTestDocument("let x = 1;");
+    // Selects "x = 1" (columns 4..9) — overlaps the "x" highlight span at
+    // columns 4..5, and extends past it into unhighlighted text.
+    const state = stateWith(document.uri, [selectionAt(0, 4, 0, 9)]);
+    const highlightService = createFakeHighlightService({
+      0: [{ startCol: 4, endCol: 5, capture: "variable" }],
+    });
+    const theme: ResolvedTheme = {
+      ...createBaseTheme(),
+      tokens: { variable: { foreground: { r: 200, g: 10, b: 10 } } },
+    };
+
+    const { renderOnce, captureSpans } = await testRender(
+      <ThemeProvider theme={theme}>
+        <EditorView
+          document={document}
+          state={state}
+          viewportHeight={3}
+          config={noLineNumbersConfig}
+          highlightService={highlightService}
+        />
+      </ThemeProvider>,
+      { width: 30, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const spans = flatten(captureSpans());
+    const highlightFg = toColorInput({ r: 200, g: 10, b: 10 });
+    // The text plane is never `.focus()`ed in this test, so the INACTIVE
+    // selection background is what actually renders (Req 4.6,
+    // `editorView.tsx`'s `colors` memo).
+    const selectionBg = toColorInput(theme.colors["editor.inactiveSelectionBackground"]);
+
+    // "x" (highlighted AND selected): highlight foreground, selection
+    // background — the overlay's background wins, but the syntax color
+    // still shows through it (Req 8's "highlight foreground sits at the
+    // base-text tier").
+    const xRun = spans.find((s) => s.row === 0 && s.text === "x");
+    expect(xRun).toBeDefined();
+    expect(xRun!.fg).toEqual(highlightFg);
+    expect(xRun!.bg).toEqual(selectionBg);
+
+    // " = 1" (selected, NOT highlighted): base foreground, selection
+    // background.
+    const restRun = spans.find((s) => s.row === 0 && s.text === " = 1");
+    expect(restRun).toBeDefined();
+    expect(restRun!.fg).toEqual(toColorInput(theme.colors["editor.foreground"]));
+    expect(restRun!.bg).toEqual(selectionBg);
+
+    // "let " (neither): base foreground, no selection background override
+    // (the renderer reports SOME default `bg` for a run with no explicit
+    // color — asserted here by inequality with `selectionBg`, matching
+    // this file's existing "selection rendering" test's own comparison
+    // style, rather than assuming a literal `undefined`).
+    const leadingRun = spans.find((s) => s.row === 0 && s.text === "let ");
+    expect(leadingRun).toBeDefined();
+    expect(leadingRun!.fg).toEqual(toColorInput(theme.colors["editor.foreground"]));
+    expect(JSON.stringify(leadingRun!.bg)).not.toEqual(JSON.stringify(selectionBg));
+  });
+
+  test("longest-prefix fallback: a 'function.builtin' capture resolves via the theme's 'function' style", async () => {
+    // A second line keeps the initial collapsed cursor off line 0 (it
+    // would otherwise split "foo" into its own single-character run at
+    // column 0, same as `EditorLineRow`'s cursor-cell boundary for any
+    // other line).
+    const document = createTestDocument("foo()\nx");
+    const state = stateWith(document.uri, [cursorAt(1, 0)]);
+    const highlightService = createFakeHighlightService({
+      0: [{ startCol: 0, endCol: 3, capture: "function.builtin" }],
+    });
+    const theme: ResolvedTheme = {
+      ...createBaseTheme(),
+      tokens: { function: { foreground: { r: 1, g: 2, b: 3 } } },
+    };
+
+    const { renderOnce, captureSpans } = await testRender(
+      <ThemeProvider theme={theme}>
+        <EditorView
+          document={document}
+          state={state}
+          viewportHeight={2}
+          config={noLineNumbersConfig}
+          highlightService={highlightService}
+        />
+      </ThemeProvider>,
+      { width: 20, height: 3 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const fooRun = flatten(captureSpans()).find((s) => s.row === 0 && s.text === "foo");
+    expect(fooRun).toBeDefined();
+    expect(fooRun!.fg).toEqual(toColorInput({ r: 1, g: 2, b: 3 }));
+  });
+
+  test("omitting highlightService renders exactly as before (no spans, base foreground)", async () => {
+    // A second line keeps the initial collapsed cursor off line 0 — see
+    // the previous test's comment.
+    const document = createTestDocument("abc\nx");
+    const state = stateWith(document.uri, [cursorAt(1, 0)]);
+
+    const { renderOnce, captureSpans } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={2} config={noLineNumbersConfig} />,
+      { width: 20, height: 3 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const abcRun = flatten(captureSpans()).find((s) => s.row === 0 && s.text === "abc");
+    expect(abcRun).toBeDefined();
+    expect(abcRun!.fg).toEqual(toColorInput(baseTheme.colors["editor.foreground"]));
+  });
+
+  test("a highlightService.onDidChange fire re-renders visible lines with no other state change", async () => {
+    const document = createTestDocument("abc");
+    const state = createInitialEditorState(document.uri);
+    const highlightService = createFakeHighlightService({});
+    const renderedLines: number[] = [];
+
+    const { renderOnce } = await testRender(
+      <EditorView
+        document={document}
+        state={state}
+        viewportHeight={2}
+        highlightService={highlightService}
+        onDebugLineRender={(line) => renderedLines.push(line)}
+      />,
+      { width: 20, height: 3 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    const before = renderedLines.length;
+    expect(before).toBeGreaterThan(0);
+
+    act(() => {
+      highlightService.fire();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(renderedLines.length).toBeGreaterThan(before);
+  });
+});

@@ -2,8 +2,11 @@
  * `DocumentManager`: open/close/save lifecycle over `CoreDocument` (Req
  * 5.5, design.md §7.2). Owns the `Map<Uri, CoreDocument>` backing
  * `tecode.workspace.openDocument`/`documents`, resolves each document's
- * `languageId` on open (a stub ahead of the real language registry, Task
- * 2.8), fires `onLanguage:*` activation, and saves atomically (write a
+ * `languageId` on open (via {@link DocumentManagerDeps.resolveLanguageId}
+ * — the real language registry's `resolveLanguageId`, Task 2.8's
+ * `languages/languageRegistry.ts`, wired in by `main.ts`'s composition
+ * root; a stub default when omitted, this interface's own TSDoc), fires
+ * `onLanguage:*` activation, and saves atomically (write a
  * temp file in the same directory, then rename over the target — never
  * leaves a half-written file on disk).
  *
@@ -64,8 +67,9 @@ export interface DocumentManagerDeps {
    * design.md §14). */
   sink: StatusSink;
   /** Resolve a `Uri` to a language ID (Req 8.3). Defaults to a stub that
-   * always returns `"plaintext"` — the real language registry lands in
-   * Task 2.8. */
+   * always returns `"plaintext"`; production wiring passes
+   * `languages/languageRegistry.ts`'s `LanguageRegistry.resolveLanguageId`
+   * (Task 2.8, `main.ts`'s composition root). */
   resolveLanguageId?: (uri: Uri) => string;
   /** Called after a document opens, with its resolved `languageId`, so
    * the host can fire the matching `onLanguage:*` extension-activation

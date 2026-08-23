@@ -11,6 +11,7 @@
 import { useEffect, useReducer, useRef } from "react";
 import type { Range, Selection, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
+import type { HighlightService } from "../languages/highlightService";
 
 /**
  * One tab's editing state (design.md §8.3): which document it shows, the
@@ -184,4 +185,38 @@ export function useLineTicks(document: CoreDocument | undefined): LineTicks {
     documentTick: documentTickRef.current,
     getLineTick: (line: number) => ticksRef.current.get(line) ?? 0,
   };
+}
+
+/**
+ * Adjoins {@link useLineTicks}: a single, whole-`EditorView` revision
+ * counter that bumps whenever `highlightService` reports a change (Task
+ * 2.8, `languages/highlightService.ts`'s `HighlightService.onDidChange` —
+ * "a line-invalidation signal, not a diff", carrying no per-line payload,
+ * unlike `useLineTicks`' `dirtyRange`-driven per-line ticks above). Coarser
+ * than `useLineTicks` by necessity: the highlight service's `onDidChange`
+ * does not say WHICH lines (or even which document) changed, so every
+ * visible row's `buildLineRuns` call is treated as potentially stale on
+ * every fire — `editorView.tsx`'s `editorLineRowPropsEqual` compares this
+ * single number against every `EditorLineRow`'s `highlightRevision` prop,
+ * the same way it already compares `tick` per line. `highlightService`
+ * omitted (`EditorView`'s optional prop, this hook's own contract) yields a
+ * constant `0` that never bumps — `buildLineRuns` then always sees `spans:
+ * []` anyway (`editorView.tsx`'s row loop), so there is nothing to
+ * invalidate.
+ *
+ * Same subscribe-then-force-render-to-close-the-race shape as `useTheme.
+ * ts`'s `useLiveTheme`/`shell.tsx`'s `useSlotViews`.
+ */
+export function useHighlightRevision(
+  highlightService: Pick<HighlightService, "onDidChange"> | undefined,
+): number {
+  const [revision, forceRender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!highlightService) return undefined;
+    const sub = highlightService.onDidChange(() => forceRender());
+    // Closes the subscribe-after-render race — see this module's TSDoc.
+    forceRender();
+    return () => sub.dispose();
+  }, [highlightService]);
+  return revision;
 }

@@ -24,6 +24,7 @@ import {
   type EditorInputRouter,
   type EditorSessionService,
   type FindService,
+  type HighlightService,
   type LayoutStateService,
   type SlotRegistry,
   type ThemeService,
@@ -77,6 +78,13 @@ export interface ShellRenderDeps {
    * gets no `FindWidget` regardless of `find?.isOpen` (`shell.tsx`'s
    * `EditorAreaProps.findService` TSDoc). */
   findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
+  /** The syntax-highlighting pipeline (Task 2.8, Req 8.1-8.3, design.md
+   * §10) — threaded straight through to `Shell`'s own `highlightService`
+   * prop, which threads it to `EditorArea`/`EditorView` in turn. Optional,
+   * mirroring `editorSession`/`findService` above: a caller/test that
+   * omits it keeps `EditorView`'s current (unhighlighted) rendering
+   * unchanged. */
+  highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
   /** The live chord state machine (Req 4.4, design.md §6.1) —
    * {@link renderShellToTerminal} wires `renderer.keyInput` through it (and
    * `editorInputRouter` below) only when BOTH are given; either omitted
@@ -125,6 +133,7 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
           config={deps.config}
           editorSession={deps.editorSession}
           findService={deps.findService}
+          highlightService={deps.highlightService}
         />
       </ContextFocusTracker>
     </ThemeProvider>,
