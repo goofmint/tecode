@@ -7,9 +7,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHostLog } from "../host/errors";
-import { BASE_THEME_ID } from "../ui/themeRegistry";
 import { createConfigService, type ConfigServiceFs } from "./service";
-import { CORE_CONFIGURATION, registerCoreConfiguration } from "./coreDefaults";
+import { CORE_CONFIGURATION, DEFAULT_COLOR_THEME_ID, registerCoreConfiguration } from "./coreDefaults";
 
 /** A {@link ConfigServiceFs} with no files on disk, so every layer besides
  * the defaults layer stays empty (matches other suites' hermetic fs stubs). */
@@ -37,7 +36,7 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     expect(config.get<boolean>("editor.lineNumbers")).toBe(true);
     expect(config.get<number>("editor.tabSize")).toBe(4);
     expect(config.get<boolean>("editor.insertSpaces")).toBe(true);
-    expect(config.get<string>("workbench.colorTheme")).toBe(BASE_THEME_ID);
+    expect(config.get<string>("workbench.colorTheme")).toBe(DEFAULT_COLOR_THEME_ID);
   });
 
   test("CORE_CONFIGURATION declares exactly the four documented keys", () => {
@@ -61,7 +60,7 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     });
     expect(CORE_CONFIGURATION.properties["workbench.colorTheme"]).toMatchObject({
       type: "string",
-      default: BASE_THEME_ID,
+      default: DEFAULT_COLOR_THEME_ID,
     });
   });
 

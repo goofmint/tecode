@@ -214,6 +214,7 @@ export {
 export {
   CORE_CONFIGURATION,
   createConfigService,
+  DEFAULT_COLOR_THEME_ID,
   parseJsonc,
   registerCoreConfiguration,
   type ConfigService,
