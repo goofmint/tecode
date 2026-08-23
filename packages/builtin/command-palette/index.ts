@@ -48,9 +48,14 @@
  * `api.workspace.fs.readdir` (Task 3.2's plan: "verify what
  * `api.workspace.fs` actually exposes" — `@tecode/api`'s `FileSystem.
  * readdir(uri): Promise<DirEntry[]>`, `namespaces.ts`) rooted at
- * `api.workspace.rootUri`, with `createDefaultIgnorer()`'s interim stub
- * (`../shared/ignore.ts`, superseded by Task 3.3's real explorer ignore
- * logic) and a `maxResults` cap (`QUICK_OPEN_MAX_RESULTS`) that stops the
+ * `api.workspace.rootUri`, with `../shared/ignore.ts`'s REAL, Task
+ * 3.3-built `IgnoreChecker` (`createIgnoreChecker({ readFile:
+ * api.workspace.fs.read, gitRunner: createBunGitRunner() })` — batched
+ * `git check-ignore` when `git` is available, the root `.gitignore`'s glob
+ * matcher otherwise; this is the exact "one ignore-aware walk `ctrl+p` and
+ * the explorer both use" Task 3.3's issue calls for, replacing Task 3.2's
+ * interim `createDefaultIgnorer()` stub) and a `maxResults` cap
+ * (`QUICK_OPEN_MAX_RESULTS`) that stops the
  * traversal outright once hit rather than walking the whole tree first
  * (code review finding, "bounded workspace scan" — see `../shared/
  * walkFiles.ts`'s "Bounded scans"); a cap-truncated walk surfaces a
@@ -86,7 +91,7 @@
  */
 
 import type { CommandDescriptor, ExtensionContext, QuickPickItem } from "@tecode/api";
-import { createDefaultIgnorer, filterByWhen, fuzzyMatch, walkFiles } from "../shared";
+import { createBunGitRunner, createIgnoreChecker, filterByWhen, fuzzyMatch, walkFiles } from "../shared";
 import { QUICK_OPEN_COMMAND_ID, SHOW_COMMANDS_COMMAND_ID } from "./manifest";
 
 /** Cap on how many files {@link registerQuickOpen}'s workspace walk collects
@@ -142,6 +147,16 @@ function registerShowCommands(ctx: ExtensionContext): void {
 /** Registers `workbench.action.quickOpen` (this module's TSDoc). */
 function registerQuickOpen(ctx: ExtensionContext): void {
   const { api } = ctx;
+  // Built ONCE, when the extension activates, not per keystroke/invocation:
+  // `IgnoreChecker`'s own `git`-availability check and root-`.gitignore`
+  // parse are each cached internally per instance (`ignore.ts`'s TSDoc), so
+  // reusing this one instance across every `ctrl+p` in the session avoids
+  // re-spawning `git --version` and re-reading `.gitignore` on every open.
+  const ignore = createIgnoreChecker({
+    readFile: (uri) => api.workspace.fs.read(uri),
+    gitRunner: createBunGitRunner(),
+  });
+
   ctx.subscriptions.push(
     api.commands.register(QUICK_OPEN_COMMAND_ID, async () => {
       const rootUri = api.workspace.rootUri;
@@ -152,7 +167,7 @@ function registerQuickOpen(ctx: ExtensionContext): void {
 
       const { files, truncated } = await walkFiles(rootUri, {
         readdir: (uri) => api.workspace.fs.readdir(uri),
-        ignore: createDefaultIgnorer(),
+        ignore,
         maxResults: QUICK_OPEN_MAX_RESULTS,
       });
       if (files.length === 0) {

@@ -23,12 +23,14 @@
  *
  * `command-palette` (Task 3.2, Req 11.3) is the fourth built-in wired in
  * here — command search (`ctrl+shift+p`) and fuzzy file quick-open
- * (`ctrl+p`), both thin wrappers over `tecode.window.showQuickPick`. Every
- * remaining `packages/builtin/*` package (`explorer`, `keybindings-editor`,
- * `statusbar`) is still a placeholder with no `manifest.ts` — each is its
- * own later task (tasks.md's Phase 3/4 built-in tasks). `themes-default`
- * (Task 2.7, Req 11.4) and `languages-basic` (Task 2.9, Req 8.4) are the
- * second and third.
+ * (`ctrl+p`), both thin wrappers over `tecode.window.showQuickPick`.
+ * `explorer` (Task 3.3, Req 11.2) is the fifth — a directory tree over
+ * `workspace.fs.readdir`/`watch`, create/rename/delete, `.gitignore`-aware
+ * visibility, and `ctrl+shift+e`. Every remaining `packages/builtin/*`
+ * package (`keybindings-editor`, `statusbar`) is still a placeholder with
+ * no `manifest.ts` — each is its own later task (tasks.md's Phase 3/4
+ * built-in tasks). `themes-default` (Task 2.7, Req 11.4) and
+ * `languages-basic` (Task 2.9, Req 8.4) are the second and third.
  *
  * **`builtinThemeAssets`** (Task 2.7, design.md §3): the embedded-JSON
  * counterpart to `builtinModules` above, for a built-in's
@@ -48,6 +50,8 @@ import * as commandPaletteModule from "./command-palette/index";
 import commandPaletteManifest from "./command-palette/manifest";
 import * as editorCoreModule from "./editor-core/index";
 import editorCoreManifest from "./editor-core/manifest";
+import * as explorerModule from "./explorer/index";
+import explorerManifest from "./explorer/manifest";
 import * as themesDefaultModule from "./themes-default/index";
 import themesDefaultManifest, {
   DARK_MODERN_THEME_ID,
@@ -87,6 +91,7 @@ export const builtinManifests: Manifest[] = [
   themesDefaultManifest,
   languagesBasicManifest,
   commandPaletteManifest,
+  explorerManifest,
 ];
 
 /** Every built-in extension's real implementation module, keyed by
@@ -98,6 +103,7 @@ export const builtinModules: Record<string, BuiltinExtensionModule> = {
   [themesDefaultManifest.id]: themesDefaultModule,
   [languagesBasicManifest.id]: languagesBasicModule,
   [commandPaletteManifest.id]: commandPaletteModule,
+  [explorerManifest.id]: explorerModule,
 };
 
 /** Every built-in extension's embedded theme JSON assets, keyed by the

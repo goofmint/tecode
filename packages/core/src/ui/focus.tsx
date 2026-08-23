@@ -75,6 +75,18 @@ export function ContextFocusTracker(props: ContextFocusTrackerProps): ReactNode 
  * discipline rather than requiring every isolated component test to wrap
  * itself in a provider it does not care about.
  *
+ * **`key: undefined`** (Task 3.3, `components.tsx`'s `Tree`'s optional
+ * `focusContextKey` prop): lets a component call this hook UNCONDITIONALLY
+ * (satisfying React's rules-of-hooks — a component cannot call a hook only
+ * when some prop happens to be set) even when it has no context key to
+ * report to for this particular instance. The returned ref callback still
+ * attaches/detaches its `FOCUSED`/`BLURRED` listeners exactly as normal (so
+ * a later prop change from `undefined` to a real key, or vice versa, is
+ * simply a different `key` value on the next render — this hook has no
+ * special-cased "key changed" branch beyond its existing `[context, key]`
+ * dependency array), it just never calls `context?.set(...)` while `key`
+ * is `undefined`.
+ *
  * **Detaching a still-focused node** (Req 11.1's find widget — the first
  * conditionally-mounted-only-while-focused consumer this codebase has):
  * every OTHER `useFocusTracking` consumer so far stays mounted for the
@@ -89,7 +101,7 @@ export function ContextFocusTracker(props: ContextFocusTrackerProps): ReactNode 
  * unmounting to `null`) — closing that gap without needing every caller to
  * remember to blur before unmounting.
  */
-export function useFocusTracking(key: string): (node: FocusEmitter | null) => void {
+export function useFocusTracking(key: string | undefined): (node: FocusEmitter | null) => void {
   const context = useContext(FocusContextServiceContext);
   // Remembers the exact listener closures registered on the currently
   // attached node — `.off()` only removes a listener given the SAME
@@ -114,17 +126,17 @@ export function useFocusTracking(key: string): (node: FocusEmitter | null) => vo
         attached.current = null;
         if (isFocusedRef.current) {
           isFocusedRef.current = false;
-          context?.set(key, false);
+          if (key !== undefined) context?.set(key, false);
         }
       }
       if (node) {
         const onFocused = () => {
           isFocusedRef.current = true;
-          context?.set(key, true);
+          if (key !== undefined) context?.set(key, true);
         };
         const onBlurred = () => {
           isFocusedRef.current = false;
-          context?.set(key, false);
+          if (key !== undefined) context?.set(key, false);
         };
         node.on(RenderableEvents.FOCUSED, onFocused);
         node.on(RenderableEvents.BLURRED, onBlurred);

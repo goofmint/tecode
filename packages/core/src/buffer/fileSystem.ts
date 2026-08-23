@@ -129,6 +129,58 @@ export function createFileSystem(deps: FileSystemDeps = {}): FileSystem {
     };
   }
 
+  /**
+   * `Req 10.1's delete/rename/mkdir` (Task 3.3, Req 11.2): thin
+   * `node:fs/promises` pass-throughs, matching `read`/`write`/`stat`'s own
+   * "reject on failure, preserve the original error" contract — no
+   * try/catch here, exactly like every other method above; a caller that
+   * needs a never-throwing surface (the explorer built-in) wraps these
+   * itself and reports via `window.showMessage(..., "error")` (design.md
+   * §14).
+   */
+  async function deleteEntry(uri: Uri): Promise<void> {
+    // `recursive: true` lets this delete a non-empty directory too (Req
+    // 11.2's "delete" — the explorer does not require an empty-directory
+    // precondition); `force: false` (the default) so a missing path still
+    // rejects rather than silently no-op'ing.
+    await nodeFs.rm(uriToPath(uri), { recursive: true });
+  }
+
+  /**
+   * `node:fs/promises.rename` silently replaces an existing destination on
+   * Linux/macOS (POSIX `rename(2)` semantics) — the opposite of the API
+   * contract's "rejects ... `newUri` already exists" ({@link
+   * FileSystem.rename}). There is no atomic POSIX rename-without-replace,
+   * so this probes the destination with `lstat` first and rejects before
+   * calling through; a concurrent create of `newUri` between that probe
+   * and the actual rename (TOCTOU) can still slip through and be
+   * overwritten — accepted for the MVP, matching this module's other
+   * best-effort races (see `watch`'s create/delete disambiguation above).
+   */
+  async function rename(oldUri: Uri, newUri: Uri): Promise<void> {
+    const destination = uriToPath(newUri);
+    let destinationExists = true;
+    try {
+      await nodeFs.lstat(destination);
+    } catch {
+      destinationExists = false;
+    }
+    if (destinationExists) {
+      throw new Error(`Cannot rename: "${newUri}" already exists.`);
+    }
+    await nodeFs.rename(uriToPath(oldUri), destination);
+  }
+
+  async function mkdir(uri: Uri): Promise<void> {
+    // No `recursive: true`: Req 11.2's "New Folder" always creates one
+    // folder inside an already-visible (and therefore already-existing)
+    // directory — surfacing a missing-parent failure here, rather than
+    // silently creating intermediate directories, matches `write`'s own
+    // choice to let a missing-parent `ENOENT` propagate rather than paper
+    // over it.
+    await nodeFs.mkdir(uriToPath(uri));
+  }
+
   async function readdir(uri: Uri): Promise<DirEntry[]> {
     const path = uriToPath(uri);
     const entries = await nodeFs.readdir(path, { withFileTypes: true });
@@ -243,5 +295,5 @@ export function createFileSystem(deps: FileSystemDeps = {}): FileSystem {
     };
   }
 
-  return { read, write, stat, readdir, watch };
+  return { read, write, stat, readdir, watch, delete: deleteEntry, rename, mkdir };
 }

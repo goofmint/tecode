@@ -102,6 +102,27 @@ export interface FileSystem {
   /** Watch a file or directory for changes. Returns a {@link Disposable}
    * that stops the watch. */
   watch(uri: Uri, listener: Listener<FileChangeEvent>): Disposable;
+  /**
+   * Delete the file or (empty or non-empty) directory at `uri` (Task 3.3,
+   * Req 11.2 — the explorer's delete command). Rejects on failure (does
+   * not exist, permission denied) — same never-silently-swallows contract
+   * as {@link read}/{@link write}; the caller (the explorer built-in)
+   * surfaces the rejection via `window.showMessage(..., "error")`.
+   */
+  delete(uri: Uri): Promise<void>;
+  /**
+   * Rename/move the file or directory at `oldUri` to `newUri` (Task 3.3,
+   * Req 11.2 — the explorer's rename command). Rejects on failure
+   * (`oldUri` missing, `newUri` already exists, permission denied) —
+   * same contract as {@link delete}.
+   */
+  rename(oldUri: Uri, newUri: Uri): Promise<void>;
+  /**
+   * Create a new, empty directory at `uri` (Task 3.3, Req 11.2 — the
+   * explorer's "New Folder" command). Rejects on failure (already exists,
+   * parent missing, permission denied) — same contract as {@link delete}.
+   */
+  mkdir(uri: Uri): Promise<void>;
 }
 
 /**

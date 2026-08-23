@@ -118,6 +118,7 @@ test("Dark Modern is active before renderShell would be called, with zero extens
     expect(loadedIds).toEqual([
       "tecode.command-palette",
       "tecode.editor-core",
+      "tecode.explorer",
       "tecode.languages-basic",
       "tecode.themes-default",
     ]);

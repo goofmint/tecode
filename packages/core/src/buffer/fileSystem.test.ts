@@ -82,6 +82,102 @@ describe("createFileSystem", () => {
     await expect(fs.read(pathToUri(join(dir, "missing.txt")))).rejects.toThrow();
   });
 
+  describe("delete/rename/mkdir (Task 3.3, Req 11.2)", () => {
+    test("delete removes a file", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const filePath = join(dir, "doomed.txt");
+      await nodeWriteFile(filePath, "bye", "utf8");
+      const fs = createFileSystem();
+
+      await fs.delete(pathToUri(filePath));
+
+      await expect(fs.stat(pathToUri(filePath))).rejects.toThrow();
+    });
+
+    test("delete removes a non-empty directory recursively", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const subDir = join(dir, "sub");
+      await mkdir(subDir);
+      await nodeWriteFile(join(subDir, "child.txt"), "x", "utf8");
+      const fs = createFileSystem();
+
+      await fs.delete(pathToUri(subDir));
+
+      await expect(fs.stat(pathToUri(subDir))).rejects.toThrow();
+    });
+
+    test("delete rejects for a path that does not exist", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const fs = createFileSystem();
+
+      await expect(fs.delete(pathToUri(join(dir, "missing.txt")))).rejects.toThrow();
+    });
+
+    test("rename moves a file to a new name", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const oldPath = join(dir, "old.txt");
+      const newPath = join(dir, "new.txt");
+      await nodeWriteFile(oldPath, "content", "utf8");
+      const fs = createFileSystem();
+
+      await fs.rename(pathToUri(oldPath), pathToUri(newPath));
+
+      await expect(fs.stat(pathToUri(oldPath))).rejects.toThrow();
+      expect(new TextDecoder().decode(await fs.read(pathToUri(newPath)))).toBe("content");
+    });
+
+    test("rename rejects when the destination already exists, leaving it unchanged", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const oldPath = join(dir, "old.txt");
+      const newPath = join(dir, "new.txt");
+      await nodeWriteFile(oldPath, "source content", "utf8");
+      await nodeWriteFile(newPath, "destination content", "utf8");
+      const fs = createFileSystem();
+
+      await expect(fs.rename(pathToUri(oldPath), pathToUri(newPath))).rejects.toThrow();
+
+      expect(new TextDecoder().decode(await fs.read(pathToUri(newPath)))).toBe(
+        "destination content",
+      );
+      expect(new TextDecoder().decode(await fs.read(pathToUri(oldPath)))).toBe("source content");
+    });
+
+    test("rename rejects when the source does not exist", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const fs = createFileSystem();
+
+      await expect(
+        fs.rename(pathToUri(join(dir, "missing.txt")), pathToUri(join(dir, "new.txt"))),
+      ).rejects.toThrow();
+    });
+
+    test("mkdir creates a new empty directory", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const fs = createFileSystem();
+      const newDir = join(dir, "created");
+
+      await fs.mkdir(pathToUri(newDir));
+
+      const stat = await fs.stat(pathToUri(newDir));
+      expect(stat.type).toBe("directory");
+    });
+
+    test("mkdir rejects when the directory already exists", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      await mkdir(join(dir, "exists"));
+      const fs = createFileSystem();
+
+      await expect(fs.mkdir(pathToUri(join(dir, "exists")))).rejects.toThrow();
+    });
+
+    test("mkdir rejects when the parent directory does not exist", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-fs-"));
+      const fs = createFileSystem();
+
+      await expect(fs.mkdir(pathToUri(join(dir, "missing-parent", "child")))).rejects.toThrow();
+    });
+  });
+
   describe("watch — real fs.watch integration (design.md §16)", () => {
     test("reports a 'changed' event when a watched file is modified", async () => {
       dir = await mkdtemp(join(tmpdir(), "tecode-fs-watch-"));
