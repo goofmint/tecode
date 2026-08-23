@@ -442,6 +442,22 @@ describe("createTecodeApi — real editor.* backing via editorSession (Req 6.5, 
       { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "X" },
     ]);
     expect(api.editor.getLine(0)).toBe("Xhello");
+
+    // Finding 2: `api.editor.selections[0]`/`api.editor.cursor`/
+    // `api.window.activeEditor.selections[0]` are deep copies — mutating one
+    // must not reach back into `EditorSessionService` state or bypass
+    // `setSelections`.
+    const liveSelection = api.editor.selections[0]!;
+    liveSelection.active.character = 999;
+    liveSelection.start.line = 999;
+    const liveCursor = api.editor.cursor;
+    liveCursor.character = 999;
+    const liveWindowSelection = api.window.activeEditor?.selections[0];
+    liveWindowSelection!.active.character = 999;
+
+    expect(api.editor.selections[0]?.active).toEqual(newPos);
+    expect(api.editor.cursor).toEqual(newPos);
+    expect(api.window.activeEditor?.selections[0]?.active).toEqual(newPos);
   });
 
   test("workspace.save persists to disk and clears dirty through the real API", async () => {

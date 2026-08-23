@@ -50,7 +50,7 @@ import type { StatusSink } from "../host/errors";
 import type { EditorSessionService } from "../ui/editorSession";
 import { Input, List, Tabs, Tree } from "../ui/components";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
-import { createEditorNamespace } from "./editorNamespace";
+import { cloneSelection, createEditorNamespace } from "./editorNamespace";
 import {
   createEditorStub,
   createLanguagesStub,
@@ -182,7 +182,14 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
       if (!deps.editorSession) return windowStub.activeEditor;
       const document = deps.editorSession.getActiveDocument();
       if (!document) return undefined;
-      return { document, selections: deps.editorSession.getState(document.uri).selections };
+      // Deep-copied (Finding 2) — same reasoning as `editorNamespace.ts`'s
+      // `cloneSelection` TSDoc: this reads through the same
+      // `EditorSessionService` state `tecode.editor.selections` does, and
+      // must not hand out the same mutable objects either.
+      return {
+        document,
+        selections: deps.editorSession.getState(document.uri).selections.map(cloneSelection),
+      };
     },
     showMessage: windowStub.showMessage,
     showQuickPick: windowStub.showQuickPick,

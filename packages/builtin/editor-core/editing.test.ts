@@ -25,6 +25,17 @@ function selectionOf(startLine: number, startChar: number, endLine: number, endC
   return { start, end, anchor: start, active: end };
 }
 
+/** Same range as {@link selectionOf}, but built by extending LEFTWARD/UPWARD
+ * — `anchor` is the range's `end`, `active` is its `start` — `start`/`end`
+ * stay document-ordered regardless (`@tecode/api`'s `Range` contract), only
+ * `anchor`/`active` flip. Used to prove a command's behavior depends on
+ * `selection.start`, not `selection.active` (Finding 3). */
+function reversedSelectionOf(startLine: number, startChar: number, endLine: number, endChar: number): Selection {
+  const start = pos(startLine, startChar);
+  const end = pos(endLine, endChar);
+  return { start, end, anchor: end, active: start };
+}
+
 function reader(lines: string[]): LineReader {
   return { getLine: (n) => lines[n] ?? "", lineCount: lines.length };
 }
@@ -96,6 +107,22 @@ describe("buildNewlineEdit (Req 11.1, auto-indent)", () => {
     const edit = buildNewlineEdit(reader(["  abcdef"]), selectionOf(0, 2, 0, 5));
     expect(edit).toEqual({ range: { start: pos(0, 2), end: pos(0, 5) }, newText: "\n  " });
   });
+
+  test("Finding 3: direction-independent — indent comes from selection.start's line, not .active's", () => {
+    // Multi-line selection: line 0 is indented, line 1 is not. A FORWARD
+    // selection's `active` is line 1 (the same as `.end`); a BACKWARD
+    // selection's `active` is line 0 (the same as `.start`). Both must use
+    // line 0's indent, since the edit is applied starting at
+    // `selection.start`.
+    const lines = ["  abc", "def"];
+    const forward = selectionOf(0, 3, 1, 2);
+    const backward = reversedSelectionOf(0, 3, 1, 2);
+    const forwardEdit = buildNewlineEdit(reader(lines), forward);
+    const backwardEdit = buildNewlineEdit(reader(lines), backward);
+    expect(forwardEdit.newText).toBe("\n  ");
+    expect(backwardEdit.newText).toBe("\n  ");
+    expect(forwardEdit).toEqual(backwardEdit);
+  });
 });
 
 describe("buildTabEdit (Req 11.1, respects editor.tabSize/insertSpaces)", () => {
@@ -123,6 +150,20 @@ describe("buildTabEdit (Req 11.1, respects editor.tabSize/insertSpaces)", () => 
     const edit = buildTabEdit(reader(["abcdef"]), selectionOf(0, 1, 0, 4), 4, true);
     expect(edit.range).toEqual({ start: pos(0, 1), end: pos(0, 4) });
   });
+
+  test("Finding 3: direction-independent — tab stop is computed from selection.start, not .active", () => {
+    // Multi-line selection: `.start` sits at column 2 on line 0 (tab stop
+    // needs 2 spaces); `.end`/a FORWARD `.active` sits at column 3 on line
+    // 1 (would need a different amount). Forward and backward selections
+    // over the SAME range must produce the identical insert.
+    const lines = ["ab", "xyzw"];
+    const forward = selectionOf(0, 2, 1, 3);
+    const backward = reversedSelectionOf(0, 2, 1, 3);
+    const forwardEdit = buildTabEdit(reader(lines), forward, 4, true);
+    const backwardEdit = buildTabEdit(reader(lines), backward, 4, true);
+    expect(forwardEdit.newText).toBe("  "); // column 2 -> 2 spaces to reach 4
+    expect(forwardEdit).toEqual(backwardEdit);
+  });
 });
 
 describe("buildOutdentEdit (Req 11.1, Shift+Tab)", () => {
@@ -143,6 +184,20 @@ describe("buildOutdentEdit (Req 11.1, Shift+Tab)", () => {
 
   test("no leading whitespace: undefined (nothing to remove)", () => {
     expect(buildOutdentEdit(reader(["abc"]), cursorAt(0, 0), 4)).toBeUndefined();
+  });
+
+  test("Finding 3: direction-independent — outdent targets selection.start's line, not .active's", () => {
+    // Line 0 has 4 leading spaces to remove; line 1 has none. A FORWARD
+    // selection's `active` is line 1 (would wrongly report "nothing to
+    // remove"); a BACKWARD selection's `active` is line 0. Both must outdent
+    // line 0.
+    const lines = ["    abc", "xyz"];
+    const forward = selectionOf(0, 2, 1, 1);
+    const backward = reversedSelectionOf(0, 2, 1, 1);
+    const forwardEdit = buildOutdentEdit(reader(lines), forward, 4);
+    const backwardEdit = buildOutdentEdit(reader(lines), backward, 4);
+    expect(forwardEdit).toEqual({ range: { start: pos(0, 0), end: pos(0, 4) }, newText: "" });
+    expect(forwardEdit).toEqual(backwardEdit);
   });
 });
 
@@ -203,12 +258,14 @@ describe("buildEditBatch (Req 6.6, 11.1 — multi-cursor + merge)", () => {
       if (call === 1) return undefined; // first selection: boundary no-op
       return { range: { start: s.active, end: s.active }, newText: "z" };
     });
-    // Both started at the same point; the one real edit inserts "z" there,
-    // and the no-op selection's original position (0,0) is unaffected since
-    // it's exactly at the edit's start, not after it — both land together
-    // and merge into a single cursor.
+    // Both started at the same point (0,0), which is also the real edit's
+    // `range.end` — `transformPosition` treats a position equal to
+    // `range.end` as AFTER the edit (Req: `comparePositions(anchor,
+    // range.end) >= 0`), not before it, so the no-op selection's original
+    // position is shifted past the inserted "z" by the same amount the
+    // editing cursor is, landing both at (0,1) and merging into one cursor.
     expect(batch.edits).toHaveLength(1);
-    expect(batch.selections.length).toBeGreaterThanOrEqual(1);
+    expect(batch.selections).toEqual([cursorAt(0, 1)]);
   });
 
   test("overlapping edits: the earlier one wins, the later cursor does not move via its own edit", () => {

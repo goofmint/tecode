@@ -165,6 +165,36 @@ describe("createEditorNamespace — active document (Req 6.5, 6.6, 11.1)", () =>
     expect(document.appliedEdits).toEqual([[edit]]);
   });
 
+  test("Finding 2: mutating a returned selection does not affect subsequent reads/state", () => {
+    const { editor, session, document } = setup();
+    const selection = editor.selections[0]!;
+    selection.start.character = 999;
+    selection.end.line = 999;
+    selection.anchor.character = 999;
+    selection.active.character = 999;
+
+    expect(editor.selections).toEqual([cursorAt(0, 5)]);
+    expect(editor.cursor).toEqual({ line: 0, character: 5 });
+    expect(session.getState(document.uri).selections).toEqual([cursorAt(0, 5)]);
+  });
+
+  test("Finding 2: mutating the returned cursor position does not affect subsequent reads", () => {
+    const { editor } = setup();
+    const cursor = editor.cursor;
+    cursor.character = 999;
+    expect(editor.cursor).toEqual({ line: 0, character: 5 });
+  });
+
+  test("Finding 2: mutating an array passed to setSelections afterward does not affect stored state", () => {
+    const { editor, session, document } = setup();
+    const pos = { line: 2, character: 0 };
+    const input: Selection[] = [{ start: pos, end: pos, anchor: pos, active: pos }];
+    editor.setSelections(input);
+    pos.character = 999; // mutate the shared object after handing it over
+    expect(session.getState(document.uri).selections).toEqual([cursorAt(2, 0)]);
+    expect(editor.selections).toEqual([cursorAt(2, 0)]);
+  });
+
   test("no error is reported for mutating calls once an editor is active", () => {
     const { editor, errors } = setup();
     editor.revealLine(1);

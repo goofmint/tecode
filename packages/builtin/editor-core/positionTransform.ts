@@ -84,7 +84,36 @@ function splitIntoLines(text: string): string[] {
  * Map `position` through `edits` (this module's TSDoc) — `edits` must be
  * non-overlapping; their relative order does not matter (same proof as
  * `@tecode/core`'s version, with `range.end` as the clamp target instead of
- * `range.start`).
+ * `range.start`) — this function sorts the relevant subset internally before
+ * combining them, so callers never need to pre-sort.
+ *
+ * `line` and `character` are computed separately, because they compose
+ * differently across MULTIPLE preceding edits on the anchor's own original
+ * line (the multi-cursor-newline case this function must get right):
+ *
+ * - `line` is a pure sum: every preceding edit (`anchor >= range.end`)
+ *   contributes its own `netLineDelta` independently, regardless of what any
+ *   other preceding edit inserted — an edit earlier on the same original
+ *   line still pushes this position down by however many lines IT inserted.
+ * - `character` is NOT a pure sum once more than one preceding edit shares
+ *   the anchor's original line (`range.end.line === anchor.line`): each such
+ *   edit's contribution has to be evaluated against the character position
+ *   left by the NEXT-closer edit, not against the original `anchor.character`
+ *   independently, because a multi-line edit resets the column origin for
+ *   everything to its left. So same-line preceding edits are walked in
+ *   DESCENDING `range.end` order (closest to the anchor first): a
+ *   single-line edit accumulates the usual `character - range.end.character
+ *   + range.start.character + newText.length` and the walk continues to the
+ *   next (further-left) edit; the FIRST multi-line edit encountered sets
+ *   `character = character - range.end.character + lastInsertedLineLength`
+ *   and the walk STOPS — that edit's inserted tail line is the new column
+ *   origin, so any edit further left (closer to the original line's start)
+ *   no longer affects `character` at all (it still affected `line`, in the
+ *   sum above, since its inserted newlines happened before reaching this
+ *   edit). When every same-line preceding edit is single-line (the case
+ *   every caller before this one ever exercised), this reduces to exactly
+ *   the old per-edit-in-any-order accumulation, since plain addition
+ *   commutes.
  */
 export function transformPosition(position: Position, edits: readonly TextEdit[]): Position {
   const containingEdit = edits.find(
@@ -92,29 +121,35 @@ export function transformPosition(position: Position, edits: readonly TextEdit[]
       comparePositions(range.start, position) < 0 && comparePositions(position, range.end) < 0,
   );
   const anchor = containingEdit ? containingEdit.range.end : position;
-  let line = anchor.line;
-  let character = anchor.character;
 
-  for (const edit of edits) {
-    if (edit === containingEdit) continue;
-    const { range, newText } = edit;
+  const preceding = edits.filter(
+    (edit) => edit !== containingEdit && comparePositions(anchor, edit.range.end) >= 0,
+  );
+
+  let line = anchor.line;
+  for (const { range, newText } of preceding) {
+    const insertedLineCount = splitIntoLines(newText).length - 1;
+    const removedLineCount = range.end.line - range.start.line;
+    line += insertedLineCount - removedLineCount;
+  }
+
+  let character = anchor.character;
+  const sameLine = preceding
+    .filter((edit) => edit.range.end.line === anchor.line)
+    .sort((a, b) => comparePositions(b.range.end, a.range.end));
+  for (const { range, newText } of sameLine) {
     const insertedLines = splitIntoLines(newText);
     const insertedLineCount = insertedLines.length - 1;
-    const removedLineCount = range.end.line - range.start.line;
-    const netLineDelta = insertedLineCount - removedLineCount;
-
-    if (comparePositions(anchor, range.end) >= 0) {
-      if (anchor.line === range.end.line) {
-        const lastInsertedLineLength = insertedLines[insertedLines.length - 1]!.length;
-        // See this module's TSDoc "One deliberate fix over core's
-        // formula": a multi-line replacement's tail line starts fresh at
-        // column 0, not at `range.start.character`.
-        const newEndCharacter =
-          insertedLineCount === 0 ? range.start.character + newText.length : lastInsertedLineLength;
-        character = character - range.end.character + newEndCharacter;
-      }
-      line += netLineDelta;
+    if (insertedLineCount === 0) {
+      character = character - range.end.character + range.start.character + newText.length;
+      continue;
     }
+    // See this module's TSDoc: a multi-line replacement's tail line starts
+    // fresh at column 0, becoming the new origin for everything to its
+    // left — stop walking further same-line edits.
+    const lastInsertedLineLength = insertedLines[insertedLines.length - 1]!.length;
+    character = character - range.end.character + lastInsertedLineLength;
+    break;
   }
 
   return { line, character };

@@ -19,7 +19,7 @@
  */
 
 import type { Position, Selection, TextEdit } from "@tecode/api";
-import { charToVisualColumn, type LineReader } from "./movement";
+import { charToVisualColumn, normalizeTabSize, type LineReader } from "./movement";
 import { comparePositions, dropOverlapping, transformPosition } from "./positionTransform";
 import { collapsedSelection } from "./selectionMerge";
 import { nextGraphemeEnd, previousGraphemeStart } from "./wordBoundary";
@@ -91,13 +91,16 @@ export function buildDeleteEdit(reader: LineReader, selection: Selection): TextE
 
 /**
  * Enter/auto-indent at `selection` (Req 11.1): inserts a newline followed
- * by a copy of the CURRENT line's leading whitespace (the line the caret is
- * on, read via `reader.getLine` — `tecode.editor.getLine` in practice),
- * regardless of where on that line the caret sits, and regardless of
- * whether `selection` also has a range to replace.
+ * by a copy of the CURRENT line's leading whitespace (the line the edit
+ * actually starts on — `selection.start`, not `selection.active`, since a
+ * non-collapsed selection's `active` can be its BACKWARD end, on a
+ * different line than where the edit is applied; read via `reader.getLine`
+ * — `tecode.editor.getLine` in practice), regardless of where on that line
+ * the caret sits, and regardless of whether `selection` also has a range to
+ * replace.
  */
 export function buildNewlineEdit(reader: LineReader, selection: Selection): TextEdit {
-  const currentLine = reader.getLine(selection.active.line);
+  const currentLine = reader.getLine(selection.start.line);
   const indent = /^[ \t]*/.exec(currentLine)![0]!;
   return buildInsertEdit(selection, `\n${indent}`);
 }
@@ -107,9 +110,12 @@ export function buildNewlineEdit(reader: LineReader, selection: Selection): Text
  * `tabSize`-wide stop (this task's tab-stop algorithm) when `insertSpaces`
  * is true, or a literal `"\t"` otherwise — replacing the selection's range
  * if it has one, exactly like {@link buildInsertEdit}. The stop is computed
- * from the CURSOR's own visual column (`movement.ts`'s `charToVisualColumn`),
- * not the start of the line, so Tab still advances a properly-indented
- * amount when the caret isn't at column 0.
+ * from the EDIT's own starting visual column — `selection.start`, not
+ * `selection.active` (which, for a BACKWARD non-collapsed selection, is
+ * `range.start`'s far edge on document order, not where the edit begins) —
+ * via `movement.ts`'s `charToVisualColumn`, not the start of the line, so
+ * Tab still advances a properly-indented amount when the caret isn't at
+ * column 0.
  */
 export function buildTabEdit(
   reader: LineReader,
@@ -120,27 +126,29 @@ export function buildTabEdit(
   if (!insertSpaces) {
     return buildInsertEdit(selection, "\t");
   }
-  const line = reader.getLine(selection.active.line);
-  const column = charToVisualColumn(line, selection.active.character, tabSize);
-  const size = Number.isFinite(tabSize) && Math.trunc(tabSize) >= 1 ? Math.trunc(tabSize) : 4;
+  const line = reader.getLine(selection.start.line);
+  const column = charToVisualColumn(line, selection.start.character, tabSize);
+  const size = normalizeTabSize(tabSize);
   const spacesNeeded = size - (column % size);
   return buildInsertEdit(selection, " ".repeat(spacesNeeded));
 }
 
 /**
  * Shift+Tab ("outdent") at `selection` (Req 11.1): removes up to one
- * `tabSize`-wide unit of the CURRENT LINE's leading whitespace (VS Code's
- * "remove one indentation level" convention — not the character to the
- * selection's own left). `undefined` when the line has no leading
- * whitespace to remove.
+ * `tabSize`-wide unit of the EDIT's starting line's leading whitespace
+ * (`selection.start.line`, not `selection.active.line` — a BACKWARD
+ * non-collapsed selection's `active` can be on a different line than where
+ * the edit applies; VS Code's "remove one indentation level" convention —
+ * not the character to the selection's own left). `undefined` when the line
+ * has no leading whitespace to remove.
  */
 export function buildOutdentEdit(
   reader: LineReader,
   selection: Selection,
   tabSize: number,
 ): TextEdit | undefined {
-  const size = Number.isFinite(tabSize) && Math.trunc(tabSize) >= 1 ? Math.trunc(tabSize) : 4;
-  const line = reader.getLine(selection.active.line);
+  const size = normalizeTabSize(tabSize);
+  const line = reader.getLine(selection.start.line);
   const leading = /^[ \t]*/.exec(line)![0]!;
   if (leading.length === 0) return undefined;
 
@@ -152,8 +160,8 @@ export function buildOutdentEdit(
   }
   return {
     range: {
-      start: { line: selection.active.line, character: 0 },
-      end: { line: selection.active.line, character: index },
+      start: { line: selection.start.line, character: 0 },
+      end: { line: selection.start.line, character: index },
     },
     newText: "",
   };

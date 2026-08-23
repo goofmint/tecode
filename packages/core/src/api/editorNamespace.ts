@@ -29,6 +29,37 @@ function originPosition(): Position {
   return { line: 0, character: 0 };
 }
 
+/** A fresh, independent copy of `position` — no shared references back into
+ * whatever object it came from. */
+function clonePosition(position: Position): Position {
+  return { line: position.line, character: position.character };
+}
+
+/**
+ * A fresh, independent deep copy of `selection` (Finding 2 / this API's
+ * mutability boundary — Req 10.1's "extensions must not be able to reach
+ * into host state"): `Selection`/`Position` are plain mutable objects, so
+ * handing an extension the SAME object `EditorSessionService` holds would
+ * let it mutate `EditorState` in place — `selection.start.character = 0`,
+ * say — bypassing `setState` entirely and skipping every change
+ * notification that's supposed to fire on a real cursor move. Every read
+ * that surfaces a `Selection` (or a `Position` nested inside one) MUST run
+ * it through this first; `setSelections` must clone on the way IN for the
+ * same reason, in case the extension keeps its own reference to the array
+ * it just handed over and mutates it afterward. Exported so `create.ts`'s
+ * `window.activeEditor.selections` — which reads through this same
+ * `editorSession` state — reuses the identical copy, rather than
+ * re-implementing it.
+ */
+export function cloneSelection(selection: Selection): Selection {
+  return {
+    start: clonePosition(selection.start),
+    end: clonePosition(selection.end),
+    anchor: clonePosition(selection.anchor),
+    active: clonePosition(selection.active),
+  };
+}
+
 /** Dependencies for {@link createEditorNamespace}. */
 export interface EditorNamespaceDeps {
   /** Where a no-active-editor action reports (design.md §12, §14) —
@@ -70,14 +101,15 @@ export function createEditorNamespace(deps: EditorNamespaceDeps): EditorNamespac
     get selections(): readonly Selection[] {
       const document = activeDocument();
       if (!document) return [];
-      return editorSession.getState(document.uri).selections;
+      return editorSession.getState(document.uri).selections.map(cloneSelection);
     },
 
     get cursor(): Position {
       const document = activeDocument();
       if (!document) return originPosition();
       const selections = editorSession.getState(document.uri).selections;
-      return selections[0]?.active ?? originPosition();
+      const active = selections[0]?.active;
+      return active ? clonePosition(active) : originPosition();
     },
 
     revealLine(line: number): void {
@@ -153,7 +185,7 @@ export function createEditorNamespace(deps: EditorNamespaceDeps): EditorNamespac
       // TSDoc in `@tecode/api`) rather than clearing the caret entirely.
       if (selections.length === 0) return;
       const state = editorSession.getState(document.uri);
-      editorSession.setState(document.uri, { ...state, selections: [...selections] });
+      editorSession.setState(document.uri, { ...state, selections: selections.map(cloneSelection) });
     },
   };
 }

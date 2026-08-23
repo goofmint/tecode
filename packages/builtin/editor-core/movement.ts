@@ -25,8 +25,10 @@ export interface LineReader {
  * integer, defaulting to 4 — matches `@tecode/core`'s `ui/cellWidth.ts`'s
  * own normalization policy (a bad config value is a display concern, not
  * worth crashing a movement command over). Duplicated locally (`editor-core`
- * cannot import `@tecode/core` — the ESLint layering rule). */
-function normalizeTabSize(tabSize: number): number {
+ * cannot import `@tecode/core` — the ESLint layering rule). Exported so
+ * `editing.ts`'s Tab/Shift+Tab commands share this one normalization instead
+ * of re-implementing it. */
+export function normalizeTabSize(tabSize: number): number {
   const truncated = Number.isFinite(tabSize) ? Math.trunc(tabSize) : 0;
   return truncated >= 1 ? truncated : 4;
 }

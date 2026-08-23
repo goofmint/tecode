@@ -80,6 +80,36 @@ describe("transformPosition — tracking range.end (this module's TSDoc)", () =>
   test("an unrelated cursor below a multi-line insert shifts down by the added line count", () => {
     expect(transformPosition(pos(2, 0), [edit(1, 0, 1, 0, "a\nb\n")])).toEqual(pos(4, 0));
   });
+
+  describe("multiple same-line multi-line edits (Finding 1 regression — negative character bug)", () => {
+    // "abcdefgh", cursors (0,2) and (0,5), Enter at both -> two collapsed
+    // "\n" inserts. Cursor1's own edit is the containing/tracked edit at
+    // (0,2); cursor2's tracked point (0,5) must run through BOTH edits.
+    const plainEdits = [edit(0, 2, 0, 2, "\n"), edit(0, 5, 0, 5, "\n")];
+
+    test("second cursor lands at (2, 0), not (2, -2)", () => {
+      expect(transformPosition(pos(0, 5), plainEdits)).toEqual(pos(2, 0));
+    });
+
+    test("input order does not change the result", () => {
+      const reversed = [...plainEdits].reverse();
+      expect(transformPosition(pos(0, 5), reversed)).toEqual(pos(2, 0));
+    });
+
+    // "  abcdef", cursors (0,4) and (0,6), Enter with auto-indent "  " at
+    // both -> two "\n  " inserts. Cursor2's tracked point (0,6) must land
+    // past the SECOND inserted indent, at (2, 2), not (2, 0).
+    const indentedEdits = [edit(0, 4, 0, 4, "\n  "), edit(0, 6, 0, 6, "\n  ")];
+
+    test("second cursor with auto-indent lands at (2, 2), not (2, 0)", () => {
+      expect(transformPosition(pos(0, 6), indentedEdits)).toEqual(pos(2, 2));
+    });
+
+    test("input order does not change the indented result", () => {
+      const reversed = [...indentedEdits].reverse();
+      expect(transformPosition(pos(0, 6), reversed)).toEqual(pos(2, 2));
+    });
+  });
 });
 
 describe("dropOverlapping (this module's TSDoc)", () => {
