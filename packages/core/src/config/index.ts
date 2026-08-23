@@ -16,6 +16,7 @@ export {
 } from "./service";
 export {
   CORE_CONFIGURATION,
+  DEFAULT_COLOR_THEME_ID,
   registerCoreConfiguration,
   type CoreConfigRegistrar,
 } from "./coreDefaults";

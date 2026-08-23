@@ -20,7 +20,22 @@
  */
 
 import type { ConfigurationContribution, Disposable } from "@tecode/api";
-import { BASE_THEME_ID } from "../ui/themeRegistry";
+
+/**
+ * `themes-default`'s Dark Modern theme id (Task 2.7, Req 7.5, 11.4) — the
+ * `workbench.colorTheme` default below. DUPLICATED here as a literal
+ * string, rather than importing `packages/builtin/themes-default/
+ * manifest.ts`'s own `DARK_MODERN_THEME_ID` export, because `core` cannot
+ * depend on `builtin` (one-directional layering — the same constraint
+ * `packages/cli/src/extensionRecords.ts`'s `ColorDepth` type duplication
+ * follows for `core`/`cli`, that module's TSDoc). Keep this string in sync
+ * with `themes-default/manifest.ts`'s `DARK_MODERN_THEME_ID` by hand;
+ * `packages/cli/src/main.test.ts`/`themesDefaultStartup.test.ts` assert
+ * against the real built-in manifest's id, not this literal, so a drift
+ * between the two fails a test rather than silently resolving to the
+ * base palette.
+ */
+export const DEFAULT_COLOR_THEME_ID = "tecode.dark-modern";
 
 /** The narrow slice of `ConfigService` {@link registerCoreConfiguration}
  * needs — the same shape as `host/registration.ts`'s `ConfigRegistrar`,
@@ -38,10 +53,15 @@ export interface CoreConfigRegistrar {
  * editor-core's indent commands (Task 2.3); `editor.insertSpaces` picks
  * what those same commands' Tab key inserts — spaces up to the next
  * `editor.tabSize` stop when `true` (the default, matching most editors),
- * a literal `"\t"` otherwise; `workbench.colorTheme` (Task 2.6) selects the
- * active theme by id (`ThemeRegistry`'s ids), defaulting to the built-in
- * base palette's id ({@link BASE_THEME_ID}) so a fresh install with no
- * `settings.json` entry still resolves to a real, always-present theme. */
+ * a literal `"\t"` otherwise; `workbench.colorTheme` (Task 2.6, 2.7)
+ * selects the active theme by id (`ThemeRegistry`'s ids), defaulting to
+ * `themes-default`'s Dark Modern theme ({@link DEFAULT_COLOR_THEME_ID}) —
+ * loaded synchronously, pre-first-frame, from an embedded asset
+ * (`packages/cli/src/main.ts`'s sync-phase theme wiring, design.md §3) —
+ * rather than `ThemeRegistry`'s bare `BASE_THEME_ID` fallback palette, so
+ * a fresh install with no `settings.json` entry still resolves to a real,
+ * always-present, VS-Code-equivalent theme (Req 11.4) from the very first
+ * frame. */
 export const CORE_CONFIGURATION: ConfigurationContribution = {
   title: "Editor",
   properties: {
@@ -62,7 +82,7 @@ export const CORE_CONFIGURATION: ConfigurationContribution = {
     },
     "workbench.colorTheme": {
       type: "string",
-      default: BASE_THEME_ID,
+      default: DEFAULT_COLOR_THEME_ID,
       description: "The id of the active color theme.",
     },
   },

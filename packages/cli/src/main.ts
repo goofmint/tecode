@@ -42,17 +42,64 @@ import {
   type HostLog,
   type LayoutStateService,
   type LoadExtensionsResult,
+  type PendingThemeContribution,
   type SlotRegistry,
   type StatusSink,
   type ThemeRegistry,
   type ThemeService,
 } from "@tecode/core";
-import { builtinManifests } from "@tecode/builtin";
+import { builtinManifests, builtinThemeAssets } from "@tecode/builtin";
 import { resolveStartupTarget, type StartupTarget } from "./argv";
 import { buildExtensionDirMap, buildExtensionRecords } from "./extensionRecords";
 import { createKeymapState, type KeymapState } from "./keymapState";
 import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./renderShell";
+import { createBuiltinThemeAssetsFs } from "./themeAssetsFs";
 import { detectTerminalCapabilities } from "./terminalCapabilities";
+
+/**
+ * Every built-in manifest's own `<builtin>/<id>` synthetic directory (Req
+ * 11.4, design.md §3) — matches `discovery.ts`'s
+ * `sourcePath: \`<builtin>/${extensionId}\`` for `extensionId ===
+ * manifest.id` (`extensionRecords.ts`'s `resolveExtensionDir` derives the
+ * SAME string once discovery has actually run; this helper exists because
+ * {@link buildAssemblyRoot}'s sync-phase built-in theme pre-load, below,
+ * runs strictly BEFORE discovery does, so it has no `LoadedExtension` to
+ * derive that directory from yet).
+ */
+export function builtinExtensionDir(manifestId: string): string {
+  return `<builtin>/${manifestId}`;
+}
+
+/**
+ * Build the `PendingThemeContribution[]`/`extensionId -> directory` pair
+ * {@link ThemeRegistry.loadContributions} needs to pre-load every built-in
+ * manifest's `contributes.themes` entries SYNCHRONOUSLY, ahead of
+ * discovery (Req 11.4, design.md §3's "build the theme from the
+ * configured theme's cached JSON... themes-default's JSON files are
+ * embedded assets, so no extension activation is needed to paint").
+ * `loadExtensions`'s own `pendingThemes` (the deferred-phase equivalent,
+ * `host/registration.ts`) covers the exact same entries again once
+ * discovery has actually run — a harmless re-registration
+ * (`themeRegistry.ts`'s per-id generation guard: "later registrations
+ * win", never a duplicate `list()` entry) that also picks up any
+ * `user`/`workspace` theme extension this sync-phase pass cannot see yet.
+ */
+export function collectBuiltinPendingThemes(manifests: readonly Manifest[]): {
+  pending: PendingThemeContribution[];
+  extensionDirs: Record<string, string>;
+} {
+  const pending: PendingThemeContribution[] = [];
+  const extensionDirs: Record<string, string> = {};
+  for (const manifest of manifests) {
+    const themes = manifest.contributes.themes ?? [];
+    if (themes.length === 0) continue;
+    extensionDirs[manifest.id] = builtinExtensionDir(manifest.id);
+    for (const theme of themes) {
+      pending.push({ extensionId: manifest.id, theme });
+    }
+  }
+  return { pending, extensionDirs };
+}
 
 /**
  * Every core service {@link buildAssemblyRoot} wires together, plus the
@@ -88,6 +135,23 @@ export interface AssemblyRoot {
    * {@link runDeferredPhase} feeds `loadExtensions`'s `pendingThemes` into
    * it once discovery has run. */
   themeRegistry: ThemeRegistry;
+  /**
+   * Settles once every BUILT-IN manifest's `contributes.themes` entries
+   * (Task 2.7, Req 11.4) — today, `themes-default`'s Dark Modern/Light
+   * Modern — have finished loading into {@link themeRegistry} (this
+   * function's `collectBuiltinPendingThemes`/`ThemeRegistry.
+   * loadContributions`, served from `@tecode/builtin`'s embedded
+   * `builtinThemeAssets` rather than a real file read — `themeAssetsFs.ts`'s
+   * TSDoc). `runTecode` awaits this, strictly BEFORE `applyConfiguredTheme`
+   * and `renderShell`, so the configured `workbench.colorTheme` default
+   * (`config/coreDefaults.ts`'s `DEFAULT_COLOR_THEME_ID`) is genuinely
+   * active for the very first frame — with zero extensions discovered,
+   * registered, or activated yet (design.md §3's "no extension activation
+   * is needed to paint"). Never rejects: `ThemeRegistry.loadContributions`
+   * itself never throws (a failed individual load just falls back to the
+   * base palette for that theme and reports through `log`/`sink`).
+   */
+  themesReadyPromise: Promise<void>;
   /** The live theme service (Task 2.6, Req 7.3, 7.5, `ui/themeService.ts`)
    * — `theme.select`'s preview/commit/revert target, `tecode.themes`'s real
    * backing (`api` above), and `renderShell.tsx`'s `ShellRenderDeps.
@@ -248,22 +312,47 @@ export function buildAssemblyRoot(
   });
   const layoutState = createLayoutStateService({ log, sink });
 
-  // Sync-phase theme construction (Req 7.4, design.md §3, §9): color-depth
-  // detection is synchronous env-var sniffing (`terminalCapabilities.ts`'s
-  // TSDoc), so it can run right here, ahead of `createThemeRegistry`, with
-  // no risk to the first-frame budget. `themeRegistry` seeds the built-in
-  // base theme synchronously (already quantized for `colorDepth` if less
-  // than truecolor) — `theme` below is a snapshot of it for
-  // `renderShell.tsx`'s static `ShellRenderDeps.theme` fallback (this
-  // function's `AssemblyRoot.theme` TSDoc). `themeService` starts on
-  // {@link BASE_THEME_ID} — the ACTUAL configured `workbench.colorTheme`
-  // is applied once `config.ready` settles (`runTecode`, `ui/
+  // Sync-phase theme construction (Req 7.4, 11.4, design.md §3, §9):
+  // color-depth detection is synchronous env-var sniffing
+  // (`terminalCapabilities.ts`'s TSDoc), so it can run right here, ahead of
+  // `createThemeRegistry`, with no risk to the first-frame budget.
+  // `themeRegistry` seeds the built-in base theme synchronously (already
+  // quantized for `colorDepth` if less than truecolor) — `theme` below is a
+  // snapshot of it for `renderShell.tsx`'s static `ShellRenderDeps.theme`
+  // fallback (this function's `AssemblyRoot.theme` TSDoc). `themeService`
+  // starts on {@link BASE_THEME_ID} — the ACTUAL configured
+  // `workbench.colorTheme` is applied once BOTH `config.ready` AND
+  // `themesReadyPromise` (below) settle (`runTecode`, `ui/
   // themeConfigSync.ts`'s TSDoc explains why that can't happen
   // synchronously here). `themeSettingsWriter` backs `theme.select`'s
   // commit persistence (Req 7.5).
+  //
+  // `fs: createBuiltinThemeAssetsFs(builtinThemeAssets)` (Task 2.7) wires
+  // EVERY load this registry ever performs — this pre-load AND the deferred
+  // phase's `loadContributions` — through the embedded-asset overlay, so a
+  // built-in theme's synthetic `<builtin>/<id>` path resolves identically
+  // in dev and a compiled binary (`themeAssetsFs.ts`'s TSDoc) instead of
+  // failing to a real (nonexistent) `fs.readFile` and silently falling
+  // back to the base palette.
+  //
+  // `themesReadyPromise` kicks off every built-in manifest's
+  // `contributes.themes` entries RIGHT NOW, synchronously — before
+  // discovery has even run — so `runTecode` can await just this one
+  // promise (not the full deferred phase) ahead of `applyConfiguredTheme`/
+  // `renderShell` and have the configured default (Dark Modern) genuinely
+  // active for the first frame, with zero extensions discovered or
+  // activated yet (`collectBuiltinPendingThemes`'s TSDoc).
   const { colorDepth } = detectTerminalCapabilities();
-  const themeRegistry = createThemeRegistry({ colorDepth, log, sink });
+  const themeRegistry = createThemeRegistry({
+    colorDepth,
+    log,
+    sink,
+    fs: createBuiltinThemeAssetsFs(builtinThemeAssets),
+  });
   const theme = themeRegistry.get(BASE_THEME_ID)!.theme;
+  const { pending: builtinPendingThemes, extensionDirs: builtinThemeDirs } =
+    collectBuiltinPendingThemes(builtinManifests);
+  const themesReadyPromise = themeRegistry.loadContributions(builtinPendingThemes, builtinThemeDirs);
   const themeSettingsWriter = createThemeSettingsWriter({ log, sink });
   const themeService = createThemeService({
     registry: themeRegistry,
@@ -364,6 +453,7 @@ export function buildAssemblyRoot(
     layoutState,
     theme,
     themeRegistry,
+    themesReadyPromise,
     themeService,
     themeConfigSync,
     themeSelectCommand,
@@ -587,13 +677,24 @@ export async function runTecode(
   await root.config.ready;
   emitVerboseStep(startedAt, "config-ready");
 
-  // Apply the ACTUAL configured `workbench.colorTheme` now that
-  // `config.ready` has settled (Req 7.5) — `buildAssemblyRoot`'s
-  // `themeService` started on `BASE_THEME_ID` because config wasn't ready
-  // yet at that point (`AssemblyRoot.themeService`'s TSDoc, `ui/
-  // themeConfigSync.ts`'s TSDoc). A safe no-op if the configured id is
-  // still unknown (e.g. it names an extension-contributed theme —
-  // `runDeferredPhase` retries this once `loadContributions` settles).
+  // Task 2.7, Req 11.4: wait for the built-in themes' sync-phase pre-load
+  // (`buildAssemblyRoot`'s `themesReadyPromise`) to settle BEFORE applying
+  // the configured theme — otherwise the default `workbench.colorTheme`
+  // (Dark Modern) would still be unknown to `themeRegistry` at this point
+  // and `applyConfiguredTheme` below would no-op, leaving `BASE_THEME_ID`
+  // active for the first frame instead. Never rejects (`AssemblyRoot.
+  // themesReadyPromise`'s TSDoc), so no try/catch is needed here.
+  await root.themesReadyPromise;
+  emitVerboseStep(startedAt, "themes-ready");
+
+  // Apply the ACTUAL configured `workbench.colorTheme` now that both
+  // `config.ready` AND `themesReadyPromise` have settled (Req 7.5, 11.4) —
+  // `buildAssemblyRoot`'s `themeService` started on `BASE_THEME_ID` because
+  // neither was ready yet at that point (`AssemblyRoot.themeService`'s
+  // TSDoc, `ui/themeConfigSync.ts`'s TSDoc). A safe no-op if the configured
+  // id is STILL unknown (e.g. it names a `user`/`workspace` extension's
+  // theme — `runDeferredPhase` retries this once discovery's own
+  // `loadContributions` settles).
   applyConfiguredTheme(root.config, root.themeService);
 
   wireProcessExit(root);

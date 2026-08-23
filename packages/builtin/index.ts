@@ -22,14 +22,38 @@
  * in sync.
  *
  * Every other `packages/builtin/*` package (`command-palette`, `explorer`,
- * `keybindings-editor`, `languages-basic`, `statusbar`, `themes-default`)
- * is still a placeholder with no `manifest.ts` — each is its own later
- * task (tasks.md's Phase 2/3 built-in tasks).
+ * `keybindings-editor`, `languages-basic`, `statusbar`) is still a
+ * placeholder with no `manifest.ts` — each is its own later task
+ * (tasks.md's Phase 2/3 built-in tasks). `themes-default` (Task 2.7, Req
+ * 11.4) is the second one wired in here.
+ *
+ * **`builtinThemeAssets`** (Task 2.7, design.md §3): the embedded-JSON
+ * counterpart to `builtinModules` above, for a built-in's
+ * `contributes.themes` files specifically — see
+ * `themes-default/assets.ts`'s TSDoc for the full "why" (a built-in has no
+ * real directory for `ThemeRegistry`'s normal `fs.readFile` to resolve
+ * against) and `packages/cli/src/themeAssetsFs.ts` for how this map is
+ * spliced into `ThemeRegistry`'s filesystem seam. Aggregated the same way
+ * `builtinManifests`/`builtinModules` are — one object literal per
+ * built-in, spread together here — so adding a built-in with its own theme
+ * assets later is "add its manifest, its module, AND its asset map" at
+ * this one composition point, not a fourth wiring site to keep in sync.
  */
 
 import type { ExtensionContext, Manifest } from "@tecode/api";
 import * as editorCoreModule from "./editor-core/index";
 import editorCoreManifest from "./editor-core/manifest";
+import * as themesDefaultModule from "./themes-default/index";
+import themesDefaultManifest, {
+  DARK_MODERN_THEME_ID,
+  LIGHT_MODERN_THEME_ID,
+} from "./themes-default/manifest";
+import { builtinThemeAssets as themesDefaultAssets } from "./themes-default/assets";
+
+// Re-exported so callers outside this package (`packages/cli`'s tests,
+// mainly) can reference the real built-in theme ids without a package
+// subpath import into `themes-default/manifest.ts` directly.
+export { DARK_MODERN_THEME_ID, LIGHT_MODERN_THEME_ID };
 
 /**
  * The `activate(ctx)`/`deactivate()` shape a built-in's `index.ts` exports
@@ -46,7 +70,7 @@ interface BuiltinExtensionModule {
 
 /** Every built-in extension's manifest, compiled in as a static import
  * (this module's TSDoc). */
-export const builtinManifests: Manifest[] = [editorCoreManifest];
+export const builtinManifests: Manifest[] = [editorCoreManifest, themesDefaultManifest];
 
 /** Every built-in extension's real implementation module, keyed by
  * `manifest.id` (this module's TSDoc's `builtinModules`) — what
@@ -54,4 +78,13 @@ export const builtinManifests: Manifest[] = [editorCoreManifest];
  * of a dynamic `import()`. */
 export const builtinModules: Record<string, BuiltinExtensionModule> = {
   [editorCoreManifest.id]: editorCoreModule,
+  [themesDefaultManifest.id]: themesDefaultModule,
+};
+
+/** Every built-in extension's embedded theme JSON assets, keyed by the
+ * synthetic `<builtin>/<id>/<path>` `ThemeRegistry` resolves a manifest
+ * theme's `path` to (this module's TSDoc's `builtinThemeAssets`). Only
+ * `themes-default` contributes any today. */
+export const builtinThemeAssets: Record<string, string> = {
+  ...themesDefaultAssets,
 };
