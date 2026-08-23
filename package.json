@@ -6,7 +6,8 @@
   ],
   "scripts": {
     "test": "bun test",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "cli": "bun packages/cli/src/main.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",

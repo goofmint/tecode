@@ -5,6 +5,7 @@ export {
   createHostLog,
   createNoopStatusSink,
   discover,
+  getUserConfigDir,
   getUserExtensionsDir,
   getWorkspaceExtensionsDir,
   HOST_PLACEHOLDER,

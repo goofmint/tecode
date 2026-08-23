@@ -9,6 +9,13 @@
   },
   "dependencies": {
     "@tecode/api": "workspace:*",
-    "@tecode/core": "workspace:*"
+    "@tecode/builtin": "workspace:*",
+    "@tecode/core": "workspace:*",
+    "@opentui/core": "^0.1.107",
+    "@opentui/react": "^0.1.107",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0"
   }
 }

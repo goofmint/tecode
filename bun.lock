@@ -30,8 +30,15 @@
         "tecode": "src/main.ts",
       },
       "dependencies": {
+        "@opentui/core": "^0.1.107",
+        "@opentui/react": "^0.1.107",
         "@tecode/api": "workspace:*",
+        "@tecode/builtin": "workspace:*",
         "@tecode/core": "workspace:*",
+        "react": "^19.0.0",
+      },
+      "devDependencies": {
+        "@types/react": "^19.0.0",
       },
     },
     "packages/core": {
