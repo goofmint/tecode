@@ -7,7 +7,8 @@
   "scripts": {
     "test": "bun test",
     "lint": "eslint .",
-    "cli": "bun packages/cli/src/main.ts"
+    "cli": "bun packages/cli/src/main.ts",
+    "bench": "bun test packages/cli/src/typingBenchmark.test.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",

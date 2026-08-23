@@ -217,8 +217,6 @@ export {
   createLanguageRegistry,
   createWebTreeSitterParserBackend,
   PLAINTEXT_LANGUAGE_ID,
-  utf16OffsetToUtf8Byte,
-  utf8ByteOffsetToUtf16,
   type AssetResolver,
   type AssetResolverDeps,
   type AssetResolverFs,
@@ -233,6 +231,7 @@ export {
   type ParserLanguageHandle,
   type ParserPoint,
   type ParserQuery,
+  type ParserRange,
   type ParserTree,
   type WebTreeSitterParserBackendDeps,
 } from "./languages/index";

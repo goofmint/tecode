@@ -5,27 +5,43 @@
  * adapter interface between `highlightService.ts` and whatever actually
  * runs tree-sitter — parser runtime init, grammar loading
  * (`Language.load(bytes)`-style), highlight-query compilation from `.scm`
- * text, incremental `tree.edit()` + re-parse, and capture extraction.
+ * text, incremental `tree.edit()` + re-parse, capture extraction (whole
+ * document or range-restricted), and changed-range reporting.
  *
- * **UTF-16 in, UTF-8 hidden inside** (this task's plan: "add a UTF-16→UTF-8
- * byte offset helper if the backend needs byte offsets"): every offset/
- * position this interface exposes — {@link ParserEditDescriptor},
- * {@link ParserCapture} — is in the SAME terms `@tecode/api`'s `Position`
- * and `buffer/lineBuffer.ts`'s `offsetAt`/`positionAt` already use: 0-based
- * UTF-16 code-unit offsets and `{ line, character }`-shaped points (named
- * `row`/`column` here to match tree-sitter's own vocabulary). Real
- * tree-sitter — `web-tree-sitter`'s WASM binding — operates on UTF-8 BYTE
- * offsets internally (its own `.d.ts`: "Parse a slice of UTF8 text", every
- * `Node`/`Edit` field documented as "the byte index/offset"). Rather than
- * leak that detail into `highlightService.ts` (which would then need its
- * own byte-conversion logic ANYWHERE it touches a capture or builds an
- * edit), the conversion is isolated entirely inside
- * {@link createWebTreeSitterParserBackend} — the one module the task's plan
- * calls for ("keep it isolated in this one module") — via
- * {@link utf16OffsetToUtf8Byte}/{@link utf8ByteOffsetToUtf16}. A mock test
- * backend (`highlightService.test.ts`) never needs these at all: it can
- * treat "index"/"position" as whatever unit it likes, since nothing outside
- * this module interprets them.
+ * **Coordinate space: UTF-16 code units, end to end** (Req 13.1 finding,
+ * recorded here because it CORRECTS this module's earlier design): every
+ * offset/position this interface exposes — {@link ParserEditDescriptor},
+ * {@link ParserCapture}, {@link ParserRange} — is in the SAME terms
+ * `@tecode/api`'s `Position` and `buffer/lineBuffer.ts`'s
+ * `offsetAt`/`positionAt` already use: 0-based UTF-16 code-unit offsets and
+ * `{ line, character }`-shaped points (named `row`/`column` here to match
+ * tree-sitter's own vocabulary). Crucially, `web-tree-sitter`'s JS-facing
+ * API is ALSO in UTF-16 code units, despite its `.d.ts` documenting every
+ * index as "the byte offset": its WASM glue parses JS strings as
+ * `TSInputEncodingUTF16LE` and converts every internal byte offset at the
+ * boundary (`lib/tree-sitter.c`'s `code_unit_to_byte`/`byte_to_code_unit`
+ * — applied to node indexes, point columns, edit fields, and
+ * `getChangedRanges` results alike; every UTF-16LE code unit is exactly 2
+ * bytes, so the conversion is exact). Verified empirically in this repo:
+ * parsing `const café = "😀"; …` puts the `café` identifier capture at
+ * code-unit offsets 6-10 (UTF-8 bytes would be 6-11) and the emoji string
+ * at 13-17. This module therefore passes offsets/points STRAIGHT THROUGH —
+ * an earlier revision converted everything to UTF-8 bytes
+ * (`utf16OffsetToUtf8Byte` and friends, now removed), which happened to
+ * work for pure-ASCII documents (where the two spaces coincide) but was
+ * wrong for any multi-byte document AND cost an O(document) offset-index
+ * build on every `captures()` call.
+ *
+ * **One `web-tree-sitter@0.25.10` bug shapes the ranged-query wiring**:
+ * `QueryOptions.startIndex`/`endIndex` are fed to
+ * `ts_query_cursor_set_byte_range` WITHOUT the code-unit conversion the
+ * glue applies everywhere else (`lib/tree-sitter.c`'s
+ * `ts_query_matches_wasm`/`ts_query_captures_wasm`), so index-restricted
+ * queries silently restrict to HALF the intended range.
+ * `QueryOptions.startPosition`/`endPosition` ARE converted correctly, so
+ * {@link createWebTreeSitterParserBackend} restricts ranged `captures()`
+ * calls by POSITION only (a {@link ParserRange} carries both forms; mock
+ * backends in tests are free to use the index form).
  *
  * **Production wiring choice**: `web-tree-sitter@0.25.10` is a peer
  * dependency of `@opentui/core` (its own `package.json`) but was not
@@ -37,7 +53,6 @@
  * `Query`/`Tree` with no native-binding errors).
  */
 
-import { Buffer } from "node:buffer";
 import { Language, Parser, Query, type Node as TSNode, type Tree as TSTree } from "web-tree-sitter";
 
 /** A row/column point, in UTF-16 terms (this module's TSDoc) — `row` is a
@@ -57,8 +72,8 @@ export interface ParserPoint {
  * (rather than a separate `newEndIndex`/`newEndPosition` the caller would
  * have to compute) is what lets `highlightService.ts` build this straight
  * from a `TextEdit`'s own `range`/`newText`, and lets
- * {@link createWebTreeSitterParserBackend} derive the post-edit byte
- * offset/position itself from `insertedText`'s own byte length — nothing
+ * {@link createWebTreeSitterParserBackend} derive the post-edit end
+ * offset/position itself via {@link computeInsertedEndPoint} — nothing
  * else needs the OLD tree's post-edit state to already be known. */
 export interface ParserEditDescriptor {
   /** UTF-16 offset where the edit starts, into the text the tree currently
@@ -71,6 +86,24 @@ export interface ParserEditDescriptor {
   insertedText: string;
   startPosition: ParserPoint;
   oldEndPosition: ParserPoint;
+}
+
+/** A half-open range `[start, end)` into a tree's current text, in UTF-16
+ * terms (this module's TSDoc), described BOTH as code-unit offsets and as
+ * points — the same dual shape as real tree-sitter's own `Range` struct.
+ * Both forms MUST describe the same two locations; which form a backend
+ * consumes is its own business ({@link createWebTreeSitterParserBackend}
+ * restricts queries by position only, because of the
+ * `startIndex`-conversion bug this module's TSDoc records; the hand-rolled
+ * mock backends in tests filter by offset). Used to restrict a
+ * {@link ParserQuery.captures} call and to report
+ * {@link ParserBackend.changedRanges} (Req 13.1: per-keystroke highlight
+ * cost proportional to the edit, not the document). */
+export interface ParserRange {
+  startIndex: number;
+  endIndex: number;
+  startPosition: ParserPoint;
+  endPosition: ParserPoint;
 }
 
 /** One syntax-highlight capture, in UTF-16 terms (this module's TSDoc) —
@@ -89,7 +122,7 @@ export interface ParserCapture {
  * {@link edit} (incremental) + a fresh {@link ParserBackend.parse} call
  * (this module's TSDoc). Opaque to `highlightService.ts` beyond this one
  * method — everything else (captures, node access) goes through
- * {@link ParserQuery.captures}. */
+ * {@link ParserQuery.captures}/{@link ParserBackend.changedRanges}. */
 export interface ParserTree {
   /** Apply one text edit's effect to this tree's internal node offsets
    * (real tree-sitter's `Tree#edit`) — MUST be followed by a
@@ -98,6 +131,24 @@ export interface ParserTree {
    * after an edit has undefined capture results (mirrors real
    * tree-sitter's own contract). */
   edit(edit: ParserEditDescriptor): void;
+  /** Free this tree's underlying resources NOW rather than waiting on GC
+   * (Req 13.1 finding: `web-tree-sitter@0.25.10`'s `Tree#delete` frees WASM
+   * heap memory immediately, so `highlightService.ts` calls this on every
+   * tree a re-parse replaces, on document close, and on service `dispose`
+   * — relying on GC/`FinalizationRegistry` instead would let memory grow
+   * unboundedly under per-keystroke re-parses of a long-lived document).
+   * MUST be idempotent — a second call is a documented no-op, matching
+   * this codebase's Disposable convention (real tree-sitter's own
+   * `Tree#delete` already tolerates a double call by zeroing its internal
+   * handle first, so this is a belt-and-braces guarantee, not a
+   * workaround for something otherwise unsafe).
+   *
+   * OPTIONAL: a backend without it (every hand-rolled mock in this
+   * module's/`highlightService.ts`'s tests) simply means nothing is freed
+   * early — correct, just relies on GC, which is fine for a test's
+   * short-lived in-memory objects. `highlightService.ts` always calls this
+   * as `tree.dispose?.()`. */
+  dispose?(): void;
 }
 
 /** A compiled highlight query, bound to one {@link ParserLanguageHandle}
@@ -105,9 +156,21 @@ export interface ParserTree {
  * for a different language than the tree it's given throws, matching
  * `web-tree-sitter`'s own behavior). */
 export interface ParserQuery {
-  /** Every capture in `tree`, in tree/document order (this module's
-   * TSDoc). */
-  captures(tree: ParserTree): ParserCapture[];
+  /** Every capture in `tree`, in tree/document order (this module's TSDoc).
+   *
+   * `range`, when given, restricts the query to `range`'s neighborhood
+   * (real tree-sitter's query-cursor range restriction): the result is
+   * guaranteed to include EVERY capture intersecting `range` — including
+   * ones that merely START before it and extend into it (verified
+   * empirically against `web-tree-sitter@0.25.10`: a template-literal
+   * `string` capture spanning the range's start is returned) — but is a
+   * SUPERSET, not an exact filter: tree-sitter may also return nearby
+   * captures entirely outside `range` (also observed empirically), so a
+   * caller must clamp what it does with the results to the region it asked
+   * about (`highlightService.ts`'s ranged recompute does exactly that).
+   * Captures keep the same relative (tree/document) order as an unranged
+   * call. */
+  captures(tree: ParserTree, range?: ParserRange): ParserCapture[];
 }
 
 /** An opaque, backend-defined handle to one loaded grammar — passed back
@@ -134,38 +197,23 @@ export interface ParserBackend {
    * {@link ParserTree.edit} (real tree-sitter's incremental reparse
    * contract) — omitted for a document's first parse. */
   parse(language: ParserLanguageHandle, text: string, oldTree?: ParserTree): ParserTree;
-}
-
-/**
- * The UTF-16 -> UTF-8 byte-offset conversion {@link createWebTreeSitterParserBackend}
- * needs (this module's TSDoc). `utf16Offset` is clamped to `[0,
- * text.length]`. Pure and independently testable without any WASM runtime.
- */
-export function utf16OffsetToUtf8Byte(text: string, utf16Offset: number): number {
-  const clamped = Math.max(0, Math.min(utf16Offset, text.length));
-  return Buffer.byteLength(text.slice(0, clamped), "utf8");
-}
-
-/**
- * The inverse of {@link utf16OffsetToUtf8Byte}: the UTF-16 code-unit offset
- * whose UTF-8 byte-encoding prefix length is `byteOffset` into `text`.
- * Iterates by Unicode code point (`for...of` over a string yields one code
- * point per step, correctly grouping surrogate pairs) so astral characters
- * (e.g. emoji) round-trip correctly. Assumes `byteOffset` lands on a code
- * point boundary — guaranteed for any offset tree-sitter itself reports,
- * since it only ever parses valid UTF-8. Out-of-range input clamps to
- * `text.length`.
- */
-export function utf8ByteOffsetToUtf16(text: string, byteOffset: number): number {
-  const target = Math.max(0, byteOffset);
-  let utf16Index = 0;
-  let byteCount = 0;
-  for (const ch of text) {
-    if (byteCount >= target) break;
-    byteCount += Buffer.byteLength(ch, "utf8");
-    utf16Index += ch.length;
-  }
-  return utf16Index;
+  /** The ranges whose syntactic structure changed between `oldTree` (the
+   * tree that was passed to {@link parse} as its `oldTree`, AFTER its
+   * {@link ParserTree.edit} calls) and `newTree` (that `parse` call's
+   * result) — real tree-sitter's `Tree#getChangedRanges`, with both ends
+   * of each range expressed in the NEW text's coordinates (both trees are
+   * aligned to it once the edits have been applied). This is what lets
+   * `highlightService.ts` catch cascading recolors — an edit whose
+   * highlight effect extends far beyond the edited lines (e.g. opening an
+   * unterminated template literal recolors the rest of the file) — and
+   * widen its ranged recompute accordingly (Req 13.1). Note the converse
+   * does NOT hold: an edit that only stretches a single token (typing
+   * inside an identifier or literal) can yield NO changed ranges at all
+   * (observed empirically), which is why the service always unions these
+   * with the edit's own dirty range. OPTIONAL: a backend without it (e.g.
+   * a minimal test mock) simply causes the service to fall back to a
+   * full-document recompute on every edit — correct, just slow. */
+  changedRanges?(oldTree: ParserTree, newTree: ParserTree): ParserRange[];
 }
 
 /** Split `text` into lines the same way `buffer/lineBuffer.ts`'s
@@ -177,196 +225,78 @@ function splitLines(text: string): string[] {
   return text.split(/\r\n|\n/);
 }
 
-/** The tree-sitter (byte-based) `Point` for a UTF-16 `ParserPoint` into
- * `text`'s pre-split `lines` — extracts line `point.row` and measures its
- * UTF-8 byte length up to `point.column` UTF-16 units in. Takes the
- * already-split `lines` array (rather than `text` itself) so a caller with
- * several points to convert against the SAME text (`wrapTree.edit`, below)
- * splits it exactly once. */
-function toBytePoint(lines: readonly string[], point: ParserPoint): { row: number; column: number } {
-  const lineText = lines[point.row] ?? "";
-  const col = Math.max(0, Math.min(point.column, lineText.length));
-  return { row: point.row, column: Buffer.byteLength(lineText.slice(0, col), "utf8") };
-}
-
-/** The tree-sitter (byte-based) `Point` immediately after `insertedText`
- * has been spliced in starting at `startPoint` (both in `lines`' terms,
- * `lines` being the PRE-edit source `startPoint` was resolved against). */
-function computeNewEndBytePoint(
-  lines: readonly string[],
-  startPoint: ParserPoint,
-  insertedText: string,
-): { row: number; column: number } {
-  const startBytePoint = toBytePoint(lines, startPoint);
+/**
+ * The {@link ParserPoint} immediately after `insertedText` has been
+ * spliced in starting at `startPoint` — the `newEndPosition` a
+ * {@link ParserTree.edit} call must hand real tree-sitter, derived here so
+ * callers only ever describe an edit by its start + inserted text
+ * ({@link ParserEditDescriptor}'s TSDoc). Pure UTF-16 arithmetic (this
+ * module's TSDoc: no byte conversion exists anywhere in this space).
+ * Exported for testing only — nothing outside this module has any other
+ * reason to import it.
+ */
+export function computeInsertedEndPoint(startPoint: ParserPoint, insertedText: string): ParserPoint {
   const parts = splitLines(insertedText);
   if (parts.length === 1) {
-    return { row: startBytePoint.row, column: startBytePoint.column + Buffer.byteLength(insertedText, "utf8") };
+    return { row: startPoint.row, column: startPoint.column + insertedText.length };
   }
-  const lastPart = parts[parts.length - 1]!;
-  return { row: startBytePoint.row + parts.length - 1, column: Buffer.byteLength(lastPart, "utf8") };
+  return { row: startPoint.row + parts.length - 1, column: parts[parts.length - 1]!.length };
 }
 
-/**
- * A one-pass-built offset index over one document text (Finding: "per
- * `captures()` invocation, build ONE offset index... then resolve each
- * capture's start/end via binary search over the line tables + a
- * within-line scan only"). Parallel arrays, one entry per line:
- * `lines[i]` is line `i`'s own text (no line-break characters, matching
- * {@link splitLines}); `utf16LineStarts[i]`/`utf8LineByteStarts[i]` are
- * that line's starting offset in UTF-16 code units / UTF-8 bytes into the
- * WHOLE document. Both start-offset arrays are strictly increasing, so a
- * target offset's line is found by binary search rather than a linear scan
- * from the document start — the fix for `toParserCapture`'s old O(n) per
- * conversion (four conversions per capture, `captures()` mapping over every
- * capture, made highlighting an open document O(n^2) in its length).
- *
- * Exported (alongside {@link buildTextIndex}/{@link resolveByteOffset})
- * purely so `parserBackend.test.ts` can differentially test the indexed
- * path against {@link utf16OffsetToUtf8Byte}/{@link utf8ByteOffsetToUtf16}
- * on multi-byte content, the same "exported for testing, otherwise
- * module-private" treatment those two already get (this module's TSDoc for
- * them) — nothing outside this module has any other reason to import it.
- */
-export interface TextIndex {
-  lines: readonly string[];
-  utf16LineStarts: readonly number[];
-  utf8LineByteStarts: readonly number[];
-}
-
-/** Build a {@link TextIndex} for `text` in one pass: `\n`/`\r\n` are the
- * only line-break bytes tree-sitter/`lineBuffer.ts` recognize here, and
- * both are pure ASCII, so a break's UTF-16 length (`match[0].length`, 1 or
- * 2) equals its UTF-8 byte length — no separate byte-measuring pass over
- * the breaks themselves is needed. */
-export function buildTextIndex(text: string): TextIndex {
-  const lines: string[] = [];
-  const utf16LineStarts: number[] = [0];
-  const utf8LineByteStarts: number[] = [0];
-  const breakRe = /\r\n|\n/g;
-  let lineStartUtf16 = 0;
-  let byteOffset = 0;
-  let match: RegExpExecArray | null;
-  while ((match = breakRe.exec(text))) {
-    const lineText = text.slice(lineStartUtf16, match.index);
-    lines.push(lineText);
-    byteOffset += Buffer.byteLength(lineText, "utf8") + match[0].length;
-    lineStartUtf16 = match.index + match[0].length;
-    utf16LineStarts.push(lineStartUtf16);
-    utf8LineByteStarts.push(byteOffset);
-  }
-  lines.push(text.slice(lineStartUtf16));
-  return { lines, utf16LineStarts, utf8LineByteStarts };
-}
-
-/** The last line index `i` with `starts[i] <= target` (binary search over
- * the strictly-increasing `starts` — {@link TextIndex.utf8LineByteStarts}).
- * `starts` always has at least one entry (`[0]`), so this never runs on an
- * empty array. */
-function findLineForOffset(starts: readonly number[], target: number): number {
-  let lo = 0;
-  let hi = starts.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (starts[mid]! <= target) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
-}
-
-/** The UTF-16 code-unit offset, within one line's own text, whose UTF-8
- * byte-encoding prefix length is `byteCol` — the same code-point iteration
- * {@link utf8ByteOffsetToUtf16} uses, scoped to a single line (the
- * "within-line scan only" the index above exists to make possible) rather
- * than the whole document. */
-function byteColumnToUtf16Column(lineText: string, byteCol: number): number {
-  let utf16Index = 0;
-  let byteCount = 0;
-  for (const ch of lineText) {
-    if (byteCount >= byteCol) break;
-    byteCount += Buffer.byteLength(ch, "utf8");
-    utf16Index += ch.length;
-  }
-  return utf16Index;
-}
-
-/** Resolve one UTF-8 `byteOffset` (a tree-sitter node's `startIndex`/
- * `endIndex`) against `index` into BOTH its UTF-16 offset and its `{ row,
- * column }` point in a single binary search + within-line scan — the two
- * results {@link toParserCapture} needs are computed together here so
- * neither is derived twice (the old code called `utf8ByteOffsetToUtf16`
- * once for the offset and again, redundantly, inside
- * `utf16OffsetToPoint`). Exported for testing only (see {@link TextIndex}'s
- * TSDoc). */
-export function resolveByteOffset(index: TextIndex, byteOffset: number): { utf16Offset: number; point: ParserPoint } {
-  const target = Math.max(0, byteOffset);
-  const row = findLineForOffset(index.utf8LineByteStarts, target);
-  const lineText = index.lines[row] ?? "";
-  const maxLineBytes = Buffer.byteLength(lineText, "utf8");
-  const byteCol = Math.max(0, Math.min(target - index.utf8LineByteStarts[row]!, maxLineBytes));
-  const column = byteColumnToUtf16Column(lineText, byteCol);
-  return { utf16Offset: index.utf16LineStarts[row]! + column, point: { row, column } };
-}
-
-/** {@link ParserTree} plus the (mutable, edit-updated) text it currently
- * reflects — the state {@link createWebTreeSitterParserBackend}'s `edit`/
- * `parse`/`captures` all close over. */
+/** {@link ParserTree} plus the underlying `web-tree-sitter` tree it wraps —
+ * the state {@link createWebTreeSitterParserBackend}'s `edit`/`parse`/
+ * `captures`/`changedRanges` all close over. (An earlier revision also
+ * carried the tree's source text plus lazily-built line/offset indexes for
+ * UTF-8 byte conversion — all removed with the conversion layer itself,
+ * this module's TSDoc.) */
 interface TreeState {
   tsTree: TSTree;
-  /** The text this tree was last built FROM (the argument to the `parse()`
-   * call that produced `tsTree`) — `edit()` needs this to convert its
-   * UTF-16 offsets/points to tree-sitter's byte terms (this module's
-   * TSDoc); never mutated by `edit()` itself (a stale post-edit-pre-reparse
-   * tree is documented as unqueryable, {@link ParserTree.edit}'s TSDoc), so
-   * every `edit()` call in a batch converts against the SAME pre-batch
-   * text, which is exactly correct as long as the caller applies a batch's
-   * edits bottom-up against pre-batch offsets (`highlightService.ts`'s own
-   * TSDoc explains why that holds). */
-  text: string;
-  /** `text` split into lines, lazily computed and cached the first time
-   * `edit()` needs it, then reused by every further `edit()` call in the
-   * same batch — `text` is never mutated after this `TreeState` is built
-   * (a fresh one is created per {@link ParserBackend.parse} call, this
-   * field's own TSDoc above), so a cached split is valid for this state's
-   * entire lifetime; no invalidation beyond that is needed. Fixes
-   * `wrapTree.edit`'s old 3x-`splitLines`(whole document)-per-edit cost. */
-  lines?: readonly string[];
-}
-
-/** `state.lines`, computing (and caching on `state`) it on first use. */
-function getCachedLines(state: TreeState): readonly string[] {
-  if (!state.lines) state.lines = splitLines(state.text);
-  return state.lines;
 }
 
 function wrapTree(state: TreeState): ParserTree & { readonly state: TreeState } {
+  // Own idempotency guard (rather than relying solely on real
+  // tree-sitter's internal handle-zeroing, verified empirically against
+  // `web-tree-sitter@0.25.10`'s `Tree#delete`/`ts_tree_delete`: the JS
+  // wrapper sets its handle to 0 before the native call, and the native
+  // `ts_tree_delete` itself early-returns on a null pointer — so a second
+  // `.delete()` on the SAME underlying tree is already a safe no-op today)
+  // — this flag makes that guarantee explicit and local rather than
+  // depending on an unspecified detail of a dependency (this interface's
+  // TSDoc's "MUST be idempotent").
+  let disposed = false;
   return {
     state,
     edit(edit: ParserEditDescriptor): void {
-      const startByte = utf16OffsetToUtf8Byte(state.text, edit.startIndex);
-      const oldEndByte = utf16OffsetToUtf8Byte(state.text, edit.oldEndIndex);
-      const insertedByteLength = Buffer.byteLength(edit.insertedText, "utf8");
-      const lines = getCachedLines(state);
+      // Offsets and points pass straight through — `web-tree-sitter`'s
+      // JS-facing `Edit` fields are UTF-16 code units (this module's
+      // TSDoc), the exact space `ParserEditDescriptor` is specified in.
       state.tsTree.edit({
-        startIndex: startByte,
-        oldEndIndex: oldEndByte,
-        newEndIndex: startByte + insertedByteLength,
-        startPosition: toBytePoint(lines, edit.startPosition),
-        oldEndPosition: toBytePoint(lines, edit.oldEndPosition),
-        newEndPosition: computeNewEndBytePoint(lines, edit.startPosition, edit.insertedText),
+        startIndex: edit.startIndex,
+        oldEndIndex: edit.oldEndIndex,
+        newEndIndex: edit.startIndex + edit.insertedText.length,
+        startPosition: edit.startPosition,
+        oldEndPosition: edit.oldEndPosition,
+        newEndPosition: computeInsertedEndPoint(edit.startPosition, edit.insertedText),
       });
+    },
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      state.tsTree.delete();
     },
   };
 }
 
-function toParserCapture(index: TextIndex, name: string, node: TSNode): ParserCapture {
-  const start = resolveByteOffset(index, node.startIndex);
-  const end = resolveByteOffset(index, node.endIndex);
+function toParserCapture(name: string, node: TSNode): ParserCapture {
+  // Direct field mapping — node indexes/point columns are already UTF-16
+  // code units (this module's TSDoc), so no per-capture conversion (and no
+  // O(document) offset index to build) exists on this path at all.
   return {
     name,
-    startIndex: start.utf16Offset,
-    endIndex: end.utf16Offset,
-    startPosition: start.point,
-    endPosition: end.point,
+    startIndex: node.startIndex,
+    endIndex: node.endIndex,
+    startPosition: { row: node.startPosition.row, column: node.startPosition.column },
+    endPosition: { row: node.endPosition.row, column: node.endPosition.column },
   };
 }
 
@@ -442,16 +372,39 @@ export function createWebTreeSitterParserBackend(deps: WebTreeSitterParserBacken
   function compileQuery(language: ParserLanguageHandle, querySource: string): ParserQuery {
     const query = new Query(language as Language, querySource);
     return {
-      captures(tree: ParserTree): ParserCapture[] {
+      captures(tree: ParserTree, range?: ParserRange): ParserCapture[] {
         const state = (tree as ReturnType<typeof wrapTree>).state;
-        const raw = query.captures(state.tsTree.rootNode);
-        // One offset index per `captures()` call (this module's
-        // `TextIndex` TSDoc) — shared by every capture below, rather than
-        // each capture re-scanning the whole document from its start.
-        const index = buildTextIndex(state.text);
-        return raw.map((c) => toParserCapture(index, c.name, c.node));
+        // Range restriction by POSITION only — `QueryOptions.startIndex`/
+        // `endIndex` hit the code-unit-conversion bug this module's TSDoc
+        // records (they'd restrict to half the intended range), while
+        // `startPosition`/`endPosition` are converted correctly by the
+        // glue.
+        const raw = range
+          ? query.captures(state.tsTree.rootNode, {
+              startPosition: range.startPosition,
+              endPosition: range.endPosition,
+            })
+          : query.captures(state.tsTree.rootNode);
+        return raw.map((c) => toParserCapture(c.name, c.node));
       },
     };
+  }
+
+  function changedRanges(oldTree: ParserTree, newTree: ParserTree): ParserRange[] {
+    const oldState = (oldTree as ReturnType<typeof wrapTree>).state;
+    const newState = (newTree as ReturnType<typeof wrapTree>).state;
+    // Per real tree-sitter's contract (`Tree#getChangedRanges`'s own docs:
+    // "call it on the old tree that was passed to parse, and pass the new
+    // tree that was returned"). The glue converts each reported range's
+    // offsets and point columns to UTF-16 code units on the way out
+    // (`lib/tree-sitter.c`'s `unmarshal_range` path — this module's TSDoc),
+    // so the fields map straight through.
+    return oldState.tsTree.getChangedRanges(newState.tsTree).map((r) => ({
+      startIndex: r.startIndex,
+      endIndex: r.endIndex,
+      startPosition: { row: r.startPosition.row, column: r.startPosition.column },
+      endPosition: { row: r.endPosition.row, column: r.endPosition.column },
+    }));
   }
 
   function getOrCreateParser(language: Language): Parser {
@@ -480,8 +433,8 @@ export function createWebTreeSitterParserBackend(deps: WebTreeSitterParserBacken
       // confusing downstream crash.
       throw new Error("web-tree-sitter: parse() returned null");
     }
-    return wrapTree({ tsTree, text });
+    return wrapTree({ tsTree });
   }
 
-  return { init, loadLanguage, compileQuery, parse };
+  return { init, loadLanguage, compileQuery, parse, changedRanges };
 }

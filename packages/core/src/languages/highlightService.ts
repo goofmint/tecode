@@ -49,6 +49,25 @@
  * changed, but the RESULT is defined to be identical to a fresh parse of
  * the same text (this module's differential test).
  *
+ * **Ranged span recompute** (Req 13.1's 16ms typing budget): after the
+ * incremental re-parse, spans are recomputed ONLY for the affected line
+ * range — the edits' own lines UNIONed with tree-sitter's
+ * `changedRanges(oldTree, newTree)` (which catches cascading recolors,
+ * e.g. an unterminated template literal recoloring the rest of the file),
+ * expanded to whole lines — via a range-restricted `query.captures()`
+ * call, and spliced into the cached per-line map (untouched lines keep
+ * their cached spans, shifted by the batch's line delta where lines were
+ * inserted/deleted). See {@link spliceLineSpans} for the full mechanics
+ * and trap analysis. The initial parse on document open still runs the
+ * full-document pass; so does any edit on a backend without
+ * `changedRanges` (every hand-rolled minimal mock in this module's
+ * tests). Differential guarantee, enforced by tests at both the mock
+ * level (`highlightService.test.ts`) and against the real
+ * grammar/backend (`packages/cli`'s
+ * `highlightIncremental.e2e.test.ts`): after ANY edit, every line's
+ * `getSpansForLine` result is identical to a fresh full recompute of the
+ * same final text.
+ *
  * **Failure degradation** (design.md §14's "Grammar WASM fails to load ->
  * Language degrades to `plaintext`, one-time warning"): a `warnedLanguages`
  * `Set<languageId>` — the first grammar/`.scm`-query load failure for a
@@ -62,7 +81,7 @@
 import type { Disposable, DocumentChangeEvent, Event, Listener, TextEdit, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
-import { createLineBuffer } from "../buffer/lineBuffer";
+import { createLineBuffer, type LineBuffer } from "../buffer/lineBuffer";
 import { comparePositions } from "../editor/positionTransform";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import type { AssetResolver } from "./assetResolver";
@@ -262,30 +281,235 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     return load;
   }
 
-  /** Recompute `state.lineSpans` from `tree`'s current captures — called
-   * after every (re)parse. Multi-line captures are split per-line
-   * (`buffer/lineBuffer.ts`'s `positionAt` already gives `{ line,
-   * character }` boundaries; a capture spanning lines N..M contributes one
-   * `HighlightSpan` to each). */
+  /** Per-line start offset table for one `recomputeLineSpans` call —
+   * `starts[i]` is line `i`'s own UTF-16 offset into `buf.getText()`.
+   * Built in one O(line count) pass over `buf` so every capture below
+   * resolves its line via {@link findLineForOffset}'s O(log line count)
+   * binary search instead of `LineBuffer.positionAt`'s O(line count) linear
+   * scan from the document start (this module's Finding, below). Mirrors
+   * `lineBuffer.ts`'s own `positionAtIn`: each line separator counts as
+   * exactly one UTF-16 code unit, matching `buf`'s hardcoded `"\n"` `eol`
+   * (`recomputeLineSpans`'s own `createLineBuffer(text || "\n", "\n")`
+   * below) regardless of the document's real line endings — so `starts`
+   * reproduces the exact same (CRLF-naive) offset math `buf.positionAt`
+   * always has, not a stricter one. */
+  function buildLineStarts(buf: LineBuffer): number[] {
+    const starts: number[] = new Array(buf.lineCount);
+    starts[0] = 0;
+    for (let i = 1; i < buf.lineCount; i++) {
+      starts[i] = starts[i - 1]! + buf.getLine(i - 1).length + 1;
+    }
+    return starts;
+  }
+
+  /** The last line index `i` with `lineStarts[i] <= offset` — binary search
+   * over the strictly-increasing table {@link buildLineStarts} produces
+   * (same technique as `parserBackend.ts`'s own `findLineForOffset` over
+   * its byte-offset index). `lineStarts` always has at least one entry
+   * (`[0]`, line 0 always exists), so this never runs on an empty array. */
+  function findLineForOffset(lineStarts: readonly number[], offset: number): number {
+    let lo = 0;
+    let hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid]! <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  /** `character - lineStart`, clamped into `[0, lineLength]` — matches
+   * `lineBuffer.ts`'s `positionAtIn`'s own clamping (an offset can only
+   * ever land at or before a line's own EOL character, never past it). */
+  function clampColumn(character: number, lineLength: number): number {
+    return Math.max(0, Math.min(character, lineLength));
+  }
+
+  /**
+   * Recompute `state.lineSpans` from `tree`'s current captures — called
+   * after every (re)parse. Multi-line captures are split per-line (a
+   * capture spanning lines N..M contributes one `HighlightSpan` to each).
+   *
+   * **Finding (measured on a 10,000-line file, `typingBenchmark.test.ts`):**
+   * this used to call `LineBuffer.positionAt` — `lineBuffer.ts`'s
+   * `positionAtIn`, an O(line count) linear scan from line 0 — TWICE per
+   * capture. A generated 10,000-line file produces ~60,000 captures per
+   * keystroke, so that was ~60,000 × 2 × O(10,000) ≈ 1.2 billion scan steps
+   * per keystroke (median ≈ 7.0-7.6s, p95 ≈ 7.2-8.2s against a 16ms
+   * target), even though `query.captures()` itself and tree-sitter's
+   * incremental `parse()` were both already cheap (~350-400ms and ~4-5ms
+   * respectively). The fix: build the {@link buildLineStarts} offset table
+   * ONCE per recompute (O(line count) total, not per capture) and resolve
+   * each capture's line via {@link findLineForOffset}'s O(log line count)
+   * binary search instead. (A later fix went further still: edits no
+   * longer take this full pass at all — see {@link spliceLineSpans} — so
+   * this function now runs only for a document's initial parse and for
+   * backends without `changedRanges`.)
+   *
+   * **Why not just use `capture.startPosition`/`endPosition` directly**
+   * (`ParserCapture` already carries `{ row, column }` points computed by
+   * the real backend): those points are resolved against tree-sitter's own
+   * `\r\n|\n`-aware line split, not against `buf`'s hardcoded single-UTF-16-
+   * unit `"\n"` `eol` assumption above — using them directly would give a
+   * DIFFERENT (arguably more correct, but different) answer for CRLF
+   * documents than this function has always returned, and every hand-rolled
+   * mock `ParserBackend` in `highlightService.test.ts` fabricates
+   * placeholder positions it never bothered to keep accurate (since nothing
+   * read them before). Resolving purely from `capture.startIndex`/
+   * `endIndex` against `buf`'s own offset table keeps this function's
+   * output bit-for-bit identical to before, for both real and mock
+   * backends.
+   */
   function recomputeLineSpans(state: DocState, assets: LanguageAssets, text: string): void {
     const buf = createLineBuffer(text || "\n", "\n");
+    const lineStarts = buildLineStarts(buf);
     const captures = assets.query.captures(state.tree!);
     const lineSpans = new Map<number, HighlightSpan[]>();
     for (const capture of captures) {
-      const start = buf.positionAt(capture.startIndex);
-      const end = buf.positionAt(capture.endIndex);
-      for (let line = start.line; line <= end.line; line++) {
-        const lineLength = buf.getLine(line).length;
-        const startCol = line === start.line ? start.character : 0;
-        const endCol = line === end.line ? end.character : lineLength;
-        if (endCol <= startCol) continue;
-        const existing = lineSpans.get(line);
-        const span: HighlightSpan = { startCol, endCol, capture: capture.name };
-        if (existing) existing.push(span);
-        else lineSpans.set(line, [span]);
-      }
+      appendCaptureSpans(lineSpans, capture, lineStarts, buf, 0, buf.lineCount - 1);
     }
     state.lineSpans = lineSpans;
+  }
+
+  /** Split one capture into per-line {@link HighlightSpan}s and append them
+   * to `lineSpans` — but ONLY for the capture's lines within `[fromLine,
+   * toLine]`. The full recompute ({@link recomputeLineSpans}) passes the
+   * whole document as the window; the ranged recompute
+   * ({@link spliceLineSpans}) passes just its dirty line range, which is
+   * both what makes it cheap AND what makes tree-sitter's superset-shaped
+   * ranged query results safe (`ParserQuery.captures`'s TSDoc: a ranged
+   * query returns every capture INTERSECTING the range — including ones
+   * starting before it — and possibly extra captures outside it entirely;
+   * clamping the written lines to the dirty window means an intersecting
+   * capture updates exactly its dirty lines while its untouched lines keep
+   * their cached spans, and an entirely-outside capture writes nothing).
+   * Extracted from `recomputeLineSpans`'s old inline body so both paths
+   * share one bit-for-bit identical span computation (the differential
+   * tests' baseline requirement). */
+  function appendCaptureSpans(
+    lineSpans: Map<number, HighlightSpan[]>,
+    capture: { name: string; startIndex: number; endIndex: number },
+    lineStarts: readonly number[],
+    buf: LineBuffer,
+    fromLine: number,
+    toLine: number,
+  ): void {
+    const startLine = findLineForOffset(lineStarts, capture.startIndex);
+    const endLine = findLineForOffset(lineStarts, capture.endIndex);
+    const from = Math.max(startLine, fromLine);
+    const to = Math.min(endLine, toLine);
+    for (let line = from; line <= to; line++) {
+      const lineLength = buf.getLine(line).length;
+      const startCol = line === startLine ? clampColumn(capture.startIndex - lineStarts[startLine]!, lineLength) : 0;
+      const endCol = line === endLine ? clampColumn(capture.endIndex - lineStarts[endLine]!, lineLength) : lineLength;
+      if (endCol <= startCol) continue;
+      const existing = lineSpans.get(line);
+      const span: HighlightSpan = { startCol, endCol, capture: capture.name };
+      if (existing) existing.push(span);
+      else lineSpans.set(line, [span]);
+    }
+  }
+
+  /**
+   * The ranged, per-edit replacement for a full {@link recomputeLineSpans}
+   * pass (Req 13.1: per-keystroke highlight cost proportional to the EDIT,
+   * not the document — measured, the full pass's `query.captures()` over
+   * ~60,000 captures was ~350-400ms per keystroke on a 10,000-line file,
+   * see `typingBenchmark.test.ts`): recompute spans ONLY for the dirty
+   * line range, splicing the result into the cached per-line map. `false`
+   * when the ranged path can't run (backend without
+   * {@link ParserBackend.changedRanges}, no cached spans yet, or an empty
+   * edit batch) — the caller then falls back to the full pass.
+   *
+   * **The dirty range** (in NEW-text line numbers) is the UNION of:
+   *
+   * 1. The edits' own extent: from the topmost edit's start line (identical
+   *    in old and new coordinates — every other edit in the batch is
+   *    strictly below it, and edits below a line never renumber it) down to
+   *    the bottommost edit's OLD end line shifted by the batch's total line
+   *    delta (lines below every edit shift by exactly that total).
+   * 2. Tree-sitter's own changed ranges between the edited old tree and the
+   *    re-parsed new tree ({@link ParserBackend.changedRanges}) — the
+   *    robust catch for captures whose extent GROWS beyond the edited lines
+   *    (the classic trap: typing the opening backtick of an unterminated
+   *    template literal recolors the rest of the file; the edit itself is
+   *    one character, but the changed ranges cover everything recolored).
+   *
+   * ...expanded to whole lines (the recompute always covers full lines, so
+   * `getSpansForLine` output for a dirty line is complete, not partial).
+   *
+   * **Line-shift bookkeeping**: cached spans for lines ABOVE the dirty
+   * range keep their keys; lines BELOW it (old line > the dirty range's
+   * old-coordinate end) shift by the batch's line delta; dirty lines are
+   * dropped and rebuilt from a ranged `captures()` call. When the delta is
+   * 0 (the plain-character-typing steady state) the existing map is
+   * updated IN PLACE — deleting just the dirty keys — instead of copying
+   * all ~O(line count) entries (measured ~3.7ms per copy on a 10,000-line
+   * file, a fifth of the whole 16ms budget).
+   */
+  function spliceLineSpans(
+    state: DocState,
+    assets: LanguageAssets,
+    text: string,
+    sortedEdits: readonly TextEdit[],
+    oldLineCount: number,
+    oldTree: ParserTree,
+  ): boolean {
+    const previous = state.lineSpans;
+    if (!backend.changedRanges || !previous || sortedEdits.length === 0) return false;
+
+    const buf = createLineBuffer(text || "\n", "\n");
+    const lineStarts = buildLineStarts(buf);
+    const lineDelta = buf.lineCount - oldLineCount;
+
+    let dirtyStart = Number.MAX_SAFE_INTEGER;
+    let editsOldEnd = -1;
+    for (const edit of sortedEdits) {
+      dirtyStart = Math.min(dirtyStart, edit.range.start.line);
+      editsOldEnd = Math.max(editsOldEnd, edit.range.end.line);
+    }
+    let dirtyEnd = Math.max(dirtyStart, editsOldEnd + lineDelta);
+
+    for (const range of backend.changedRanges(oldTree, state.tree!)) {
+      dirtyStart = Math.min(dirtyStart, findLineForOffset(lineStarts, range.startIndex));
+      dirtyEnd = Math.max(dirtyEnd, findLineForOffset(lineStarts, range.endIndex));
+    }
+    dirtyStart = Math.max(0, Math.min(dirtyStart, buf.lineCount - 1));
+    dirtyEnd = Math.max(dirtyStart, Math.min(dirtyEnd, buf.lineCount - 1));
+    // The dirty range's bottom in OLD line numbers — the last old line
+    // whose cached spans must be dropped rather than kept/shifted.
+    const dirtyEndOld = dirtyEnd - lineDelta;
+
+    let next: Map<number, HighlightSpan[]>;
+    if (lineDelta === 0) {
+      // In-place: only the dirty keys change (this function's TSDoc).
+      next = previous;
+      for (let line = dirtyStart; line <= dirtyEnd; line++) next.delete(line);
+    } else {
+      next = new Map<number, HighlightSpan[]>();
+      for (const [line, spans] of previous) {
+        if (line < dirtyStart) next.set(line, spans);
+        else if (line > dirtyEndOld) next.set(line + lineDelta, spans);
+        // Lines within [dirtyStart, dirtyEndOld] are dropped — rebuilt below.
+      }
+    }
+
+    // Both `ParserRange` forms describe the same whole-line window
+    // (`parserBackend.ts`'s `ParserRange` TSDoc: offsets for backends that
+    // filter by offset — the test mocks — and points for the real backend,
+    // which restricts by position only).
+    const dirtyEndLineLength = buf.getLine(dirtyEnd).length;
+    const captures = assets.query.captures(state.tree!, {
+      startIndex: lineStarts[dirtyStart]!,
+      endIndex: lineStarts[dirtyEnd]! + dirtyEndLineLength,
+      startPosition: { row: dirtyStart, column: 0 },
+      endPosition: { row: dirtyEnd, column: dirtyEndLineLength },
+    });
+    for (const capture of captures) {
+      appendCaptureSpans(next, capture, lineStarts, buf, dirtyStart, dirtyEnd);
+    }
+    state.lineSpans = next;
+    return true;
   }
 
   /** Run a full (non-incremental) parse for `document` against `assets` —
@@ -329,7 +553,35 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
         oldEndPosition: { row: edit.range.end.line, column: edit.range.end.character },
       });
     }
-    parseDocument(uri, document, state, assets);
+
+    // Re-parse incrementally, then recompute spans for ONLY the dirty line
+    // range when the backend supports it ({@link spliceLineSpans}), falling
+    // back to the full-document pass otherwise — the initial parse on
+    // document open always takes the full pass ({@link parseDocument}).
+    const oldTree = state.tree;
+    const text = document.getText();
+    state.tree = backend.parse(assets.language, text, oldTree);
+    state.lastText = text;
+    try {
+      if (!spliceLineSpans(state, assets, text, sortedEdits, oldBuffer.lineCount, oldTree)) {
+        recomputeLineSpans(state, assets, text);
+      }
+    } finally {
+      // Dispose the OLD tree now that both the ranged splice (which still
+      // needs it, for `backend.changedRanges(oldTree, state.tree!)`) and
+      // the full-recompute fallback have run — in `finally` so a thrown
+      // exception from either path can never leak it (Req 13.1 finding:
+      // `web-tree-sitter`'s `Tree#delete` frees WASM memory immediately;
+      // relying on GC alone lets it grow unboundedly under per-keystroke
+      // re-parses). `backend.parse` above always hands back a NEW tree
+      // object distinct from `oldTree` (real tree-sitter's own `parse`
+      // never mutates/reuses the old tree in place — only `oldTree.edit()`
+      // does, which already happened above), so this never disposes the
+      // tree `state.tree` still points at; the equality guard exists only
+      // for a hypothetical backend/mock that reused the same object.
+      if (oldTree !== state.tree) oldTree.dispose?.();
+    }
+    fireChange();
   }
 
   function attachDocument(document: CoreDocument): void {
@@ -364,6 +616,10 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     const state = states.get(uri);
     if (!state) return;
     state.documentSub?.dispose();
+    // Free this document's tree immediately rather than waiting on GC
+    // (this module's TSDoc / `parserBackend.ts`'s `ParserTree.dispose`
+    // TSDoc, Req 13.1 finding).
+    state.tree?.dispose?.();
     states.delete(uri);
   }
 
@@ -402,7 +658,11 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     disposed = true;
     openSub.dispose();
     closeSub.dispose();
-    for (const state of states.values()) state.documentSub?.dispose();
+    for (const state of states.values()) {
+      state.documentSub?.dispose();
+      // Same "free now, don't wait on GC" reasoning as `detachDocument`.
+      state.tree?.dispose?.();
+    }
     states.clear();
     listeners.clear();
   }
