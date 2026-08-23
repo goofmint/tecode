@@ -370,6 +370,36 @@ function toParserCapture(index: TextIndex, name: string, node: TSNode): ParserCa
   };
 }
 
+/** Dependencies for {@link createWebTreeSitterParserBackend}. */
+export interface WebTreeSitterParserBackendDeps {
+  /**
+   * `web-tree-sitter`'s OWN Emscripten-compiled runtime wasm
+   * (`node_modules/web-tree-sitter/tree-sitter.wasm` — the tree-sitter C
+   * library itself, distinct from any grammar's `.wasm`), pre-supplied as
+   * raw bytes so `Parser.init()` never needs to resolve a `tree-sitter.wasm`
+   * path off the real filesystem. Bytes (not a path/`locateFile` callback)
+   * because that's deterministic under Bun (`NOTICE.md`'s "Compiled-mode
+   * finding for Task 4.4"): a relocated-path callback still has to resolve
+   * to something readable, which is exactly what fails inside a `bun build
+   * --compile` binary (`/$bunfs/root/tree-sitter.wasm` `ENOENT`) — bytes
+   * sidestep the lookup entirely, in BOTH `bun run` and a compiled binary.
+   * A thunk (not just `Uint8Array`) so a caller can defer the actual read
+   * (`Bun.file(path).bytes()`) until `init()` is first called, matching
+   * `assets.ts`'s own "only read what's actually used" shape — resolved at
+   * most once, the first time {@link ParserBackend.init} runs (this
+   * function's `init`'s own in-flight-promise caching already guarantees
+   * that). Omitted entirely (the pre-existing behavior): `Parser.init()`
+   * runs with no module options, which resolves `tree-sitter.wasm` from
+   * `node_modules` under plain `bun run`/`bun test` but fails inside a
+   * compiled binary — `packages/cli`'s composition root is the one place
+   * that supplies this, embedding `web-tree-sitter/tree-sitter.wasm` the
+   * same way `languages-basic/assets.ts` embeds grammar wasms (`@tecode/
+   * core` cannot carry the asset itself — it has no bundler-visible file to
+   * embed from its own package).
+   */
+  runtimeWasm?: Uint8Array | (() => Promise<Uint8Array>);
+}
+
 /**
  * The production {@link ParserBackend} (Req 8.1, design.md §10), delegating
  * to `web-tree-sitter` (this module's TSDoc for the wiring choice). Every
@@ -379,12 +409,29 @@ function toParserCapture(index: TextIndex, name: string, node: TSNode): ParserCa
  * codebase's host is single-threaded — while different languages need
  * their own).
  */
-export function createWebTreeSitterParserBackend(): ParserBackend {
+export function createWebTreeSitterParserBackend(deps: WebTreeSitterParserBackendDeps = {}): ParserBackend {
+  const { runtimeWasm } = deps;
   let initPromise: Promise<void> | undefined;
   const parsersByLanguage = new Map<Language, Parser>();
 
   function init(): Promise<void> {
-    if (!initPromise) initPromise = Parser.init();
+    if (!initPromise) {
+      initPromise = (async () => {
+        if (!runtimeWasm) {
+          await Parser.init();
+          return;
+        }
+        // `web-tree-sitter`'s own `.d.ts` types `Parser.init`'s parameter as
+        // an ambient `EmscriptenModule` this codebase pulls in no type
+        // package for; `wasmBinary` is real, documented Emscripten-module
+        // config (`web-tree-sitter`'s compiled glue reads `Module
+        // ["wasmBinary"]` directly, this module's TSDoc) that the narrowed
+        // local type below is enough to invoke it with.
+        const wasmBinary = typeof runtimeWasm === "function" ? await runtimeWasm() : runtimeWasm;
+        const initWithWasmBinary = Parser.init as (moduleOptions?: { wasmBinary: Uint8Array }) => Promise<void>;
+        await initWithWasmBinary({ wasmBinary });
+      })();
+    }
     return initPromise;
   }
 

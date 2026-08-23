@@ -13,7 +13,8 @@
     "@tecode/core": "workspace:*",
     "@opentui/core": "^0.1.107",
     "@opentui/react": "^0.1.107",
-    "react": "^19.0.0"
+    "react": "^19.0.0",
+    "web-tree-sitter": "0.25.10"
   },
   "devDependencies": {
     "@types/react": "^19.0.0"

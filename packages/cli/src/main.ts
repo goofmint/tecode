@@ -24,6 +24,7 @@ import {
   createThemeRegistry,
   createThemeService,
   createThemeSettingsWriter,
+  createWebTreeSitterParserBackend,
   loadExtensions,
   pathToUri,
   registerCoreConfiguration,
@@ -66,6 +67,19 @@ import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
 import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./renderShell";
 import { createBuiltinThemeAssetsFs } from "./themeAssetsFs";
 import { detectTerminalCapabilities } from "./terminalCapabilities";
+// `web-tree-sitter`'s OWN Emscripten runtime wasm (Finding 4, NOTICE.md's
+// "Compiled-mode finding for Task 4.4") — distinct from any grammar's
+// `.wasm` and needed by `Parser.init()` itself, BEFORE any grammar loads.
+// Embedded with Bun's `"file"` loader exactly like `languages-basic/
+// assets.ts` embeds grammar wasms: `path` is a real filesystem path under
+// `bun run`, a `/$bunfs/...` virtual path once `bun build --compile`d, and
+// `Bun.file(path).bytes()` reads the right bytes back either way. This has
+// to live here, not in `@tecode/core` — `core` has no bundler-visible
+// `.wasm` file of its own to embed (it depends on `web-tree-sitter` as an
+// ordinary npm package, not a vendored asset), and `packages/cli` is the
+// one composition root allowed to reach into `web-tree-sitter` directly for
+// this.
+import treeSitterRuntimeWasmPath from "web-tree-sitter/tree-sitter.wasm" with { type: "file" };
 
 /**
  * Every built-in manifest's own `<builtin>/<id>` synthetic directory (Req
@@ -348,6 +362,17 @@ export function buildAssemblyRoot(
     languageRegistry,
     assetResolver: createAssetResolver({
       fs: createBuiltinLanguageAssetsFs(builtinLanguageGrammarAssets, builtinLanguageQueryAssets),
+    }),
+    // `backend`'s `runtimeWasm` (Finding 4, `parserBackend.ts`'s
+    // `WebTreeSitterParserBackendDeps`): supplies `web-tree-sitter`'s own
+    // runtime wasm as pre-embedded bytes so `Parser.init()` never tries (and
+    // fails, inside a `bun build --compile` binary) to resolve
+    // `tree-sitter.wasm` off a real filesystem path. A thunk, read lazily —
+    // `getOrLoadLanguageAssets`'s own per-language cache means this can only
+    // ever actually run once, on the first document of any registered
+    // language.
+    backend: createWebTreeSitterParserBackend({
+      runtimeWasm: () => Bun.file(treeSitterRuntimeWasmPath).bytes(),
     }),
     log,
     sink,

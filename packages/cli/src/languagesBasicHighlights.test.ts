@@ -187,9 +187,9 @@ describe("golden-span highlighting (Req 8.4, real grammar + real query per langu
     ]);
   });
 
-  test("rust: fn keyword, function name, builtin type, comment", async () => {
+  test("rust: fn keyword, function name, builtin type, comment, all-caps constant", async () => {
     const { language, query } = await loadRealLanguage(backend, "rust");
-    const source = "fn add(a: i32, b: i32) -> i32 {\n    // sum\n    a + b\n}\n";
+    const source = "const MAX_SIZE: i32 = 100;\nfn add(a: i32, b: i32) -> i32 {\n    // sum\n    a + b\n}\n";
     const tree = backend.parse(language, source);
     const captures = query.captures(tree);
     assertCapturesContain(captures, source, [
@@ -197,6 +197,10 @@ describe("golden-span highlighting (Req 8.4, real grammar + real query per langu
       { name: "function", text: "add" },
       { name: "type.builtin", text: "i32" },
       { name: "comment", text: "// sum" },
+      // Finding 2 regression check: the `@constant` regex had a stray
+      // trailing `'` (`"^[A-Z][A-Z\\d_]+$'"`) that made it never match any
+      // real all-caps identifier — `MAX_SIZE` must now be captured.
+      { name: "constant", text: "MAX_SIZE" },
     ]);
   });
 
@@ -250,16 +254,32 @@ describe("golden-span highlighting (Req 8.4, real grammar + real query per langu
     ]);
   });
 
-  test("toml: comment, string value, number", async () => {
+  test("toml: comment, string value, number, array, dotted key — @property on keys only", async () => {
     const { language, query } = await loadRealLanguage(backend, "toml");
-    const source = '# config\nname = "tecode"\ncount = 3\n';
+    const source = '# config\nname = "tecode"\ncount = 3\nlist = [1, 2]\nowner.name = "Alice"\n';
     const tree = backend.parse(language, source);
     const captures = query.captures(tree);
     assertCapturesContain(captures, source, [
       { name: "comment", text: "# config" },
       { name: "string", text: '"tecode"' },
       { name: "number", text: "3" },
+      { name: "property", text: "name" },
+      { name: "property", text: "count" },
+      { name: "property", text: "list" },
+      // Dotted key: both components are keys, so both are `@property`.
+      { name: "property", text: "owner" },
     ]);
+    // Finding 3 regression check: `@property` used to attach to the WHOLE
+    // `pair` node (key + "=" + value), so a pair's value wrongly picked up
+    // a `property` capture too. Assert no `property` capture ever covers a
+    // value's text (number, array, or quoted string).
+    const propertyTexts = captures
+      .filter((c) => c.name === "property")
+      .map((c) => source.slice(c.startIndex, c.endIndex));
+    expect(propertyTexts).not.toContain("3");
+    expect(propertyTexts).not.toContain("[1, 2]");
+    expect(propertyTexts).not.toContain('"tecode"');
+    expect(propertyTexts).not.toContain('"Alice"');
   });
 
   test("bash: comment, function-position command, string", async () => {
@@ -312,6 +332,7 @@ describe("golden-span highlighting (Req 8.4, real grammar + real query per langu
       attribute: false,
       tag: false,
       boolean: false,
+      constant: false,
     };
     for (const [name, expectResolves] of Object.entries(usedInThisFile)) {
       const prefix = name.split(".")[0]!;

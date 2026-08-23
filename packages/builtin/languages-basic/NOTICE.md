@@ -173,40 +173,41 @@ text, no further read). **Verified working in both modes**:
   throwaway `bun build --compile` smoke test using a real grammar wasm
   (deleting the source file afterward to prove it wasn't reading off disk).
 
-## Compiled-mode finding for Task 4.4: `web-tree-sitter`'s own runtime wasm does not resolve inside a `bun build --compile` binary
+## Compiled-mode finding for Task 4.4 — RESOLVED: `web-tree-sitter`'s own runtime wasm is now embedded
 
 Smoke-testing this task's whole `packages/cli/src/main.ts` through
 `bun build --compile` and opening a recognized-extension file (e.g. a
-`.ts` file) surfaces:
+`.ts` file) used to surface:
 
-```
+```text
 failed to asynchronously prepare wasm: Error: ENOENT: no such file or directory, open '/$bunfs/root/tree-sitter.wasm'
 Aborted(Error: ENOENT: no such file or directory, open '/$bunfs/root/tree-sitter.wasm')
 ```
 
-This is **not** one of `languages-basic`'s own vendored grammar/query
-assets (those load correctly, per the previous section) — it is
+This was **not** one of `languages-basic`'s own vendored grammar/query
+assets (those load correctly, per the previous section) — it was
 `web-tree-sitter`'s own Emscripten-compiled RUNTIME wasm
 (`node_modules/web-tree-sitter/tree-sitter.wasm`, the tree-sitter C library
 itself, loaded once by `Parser.init()` before any grammar can load), which
-`parserBackend.ts`'s `createWebTreeSitterParserBackend` (Task 2.8, merged
-before this task) calls with no arguments:
-`Parser.init()`. `web-tree-sitter`'s `Parser.init(moduleOptions?)` accepts
-Emscripten module options including a `locateFile` callback specifically
-so a bundler/embedder can point it at a relocated runtime wasm file — this
-is exactly the "if the production backend needs a locateFile/runtime-bytes
-seam to work under `bun build --compile`, note it" case this task's brief
-anticipated. **Confirmed impact is narrow**: it only surfaces once a
-document of a REAL registered language is opened (an async, caught
-rejection inside `highlightService.ts`'s `getOrLoadLanguageAssets`, which
-does not crash the process — `TECODE_HEADLESS=1 <compiled-binary>
-<workspace>` on a directory with no matched-extension initial file still
-exits 0 with `loaded: 3` and no crash); it only reproduces in a
-`bun build --compile` binary, never under `bun run` (dev mode resolves
-`web-tree-sitter`'s runtime wasm from `node_modules` normally). Fixing it
-requires a `locateFile`/pre-embedded-runtime-bytes change to
-`packages/core/src/languages/parserBackend.ts` (Task 2.8's file) plus
-`packages/cli`'s Task 4.4 build step — intentionally **not** made by this
-task (Task 2.9 is the language pack itself; Task 4.4's own scope is
-"asset-URI indirection verified in compiled mode" for exactly this class of
-issue). Left here as the concrete repro Task 4.4 needs.
+`parserBackend.ts`'s `createWebTreeSitterParserBackend` (Task 2.8) used to
+call with no arguments: `Parser.init()`.
+
+**Fixed** (a code-review follow-up on this task): `createWebTreeSitterParserBackend`
+now takes an optional `runtimeWasm?: Uint8Array | (() => Promise<Uint8Array>)`
+dependency (`parserBackend.ts`'s `WebTreeSitterParserBackendDeps`) and, when
+given, calls `Parser.init({ wasmBinary })` with the resolved bytes instead of
+letting Emscripten's `locateFile` machinery look for a `tree-sitter.wasm`
+path on disk — bytes, not a relocated path, since that's what stays
+deterministic under Bun in both dev and compiled mode. `packages/cli`'s
+composition root (`main.ts`) supplies those bytes: it embeds
+`web-tree-sitter/tree-sitter.wasm` the exact same way this package's own
+`assets.ts` embeds grammar wasms (`import path from "web-tree-sitter/
+tree-sitter.wasm" with { type: "file" }` + `Bun.file(path).bytes()`), since
+`@tecode/core` has no bundler-visible asset file of its own to embed for
+this — `web-tree-sitter` is an ordinary npm dependency there, not a vendored
+asset. Verified in both modes: `TECODE_HEADLESS=1 bun packages/cli/src/
+main.ts <dir-with-a-.ts-file>` (dev) and a `bun build --compile` binary run
+the same way both exit 0 with no `tree-sitter.wasm` ENOENT/`Aborted` on
+stderr and `loaded: 3`; the SAME compiled-binary smoke rebuilt from the
+pre-fix code reproduces the exact `ENOENT`/`Aborted` output above, confirming
+this is what fixed it.
