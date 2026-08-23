@@ -131,6 +131,24 @@ export interface ParserTree {
    * after an edit has undefined capture results (mirrors real
    * tree-sitter's own contract). */
   edit(edit: ParserEditDescriptor): void;
+  /** Free this tree's underlying resources NOW rather than waiting on GC
+   * (Req 13.1 finding: `web-tree-sitter@0.25.10`'s `Tree#delete` frees WASM
+   * heap memory immediately, so `highlightService.ts` calls this on every
+   * tree a re-parse replaces, on document close, and on service `dispose`
+   * — relying on GC/`FinalizationRegistry` instead would let memory grow
+   * unboundedly under per-keystroke re-parses of a long-lived document).
+   * MUST be idempotent — a second call is a documented no-op, matching
+   * this codebase's Disposable convention (real tree-sitter's own
+   * `Tree#delete` already tolerates a double call by zeroing its internal
+   * handle first, so this is a belt-and-braces guarantee, not a
+   * workaround for something otherwise unsafe).
+   *
+   * OPTIONAL: a backend without it (every hand-rolled mock in this
+   * module's/`highlightService.ts`'s tests) simply means nothing is freed
+   * early — correct, just relies on GC, which is fine for a test's
+   * short-lived in-memory objects. `highlightService.ts` always calls this
+   * as `tree.dispose?.()`. */
+  dispose?(): void;
 }
 
 /** A compiled highlight query, bound to one {@link ParserLanguageHandle}
@@ -236,6 +254,16 @@ interface TreeState {
 }
 
 function wrapTree(state: TreeState): ParserTree & { readonly state: TreeState } {
+  // Own idempotency guard (rather than relying solely on real
+  // tree-sitter's internal handle-zeroing, verified empirically against
+  // `web-tree-sitter@0.25.10`'s `Tree#delete`/`ts_tree_delete`: the JS
+  // wrapper sets its handle to 0 before the native call, and the native
+  // `ts_tree_delete` itself early-returns on a null pointer — so a second
+  // `.delete()` on the SAME underlying tree is already a safe no-op today)
+  // — this flag makes that guarantee explicit and local rather than
+  // depending on an unspecified detail of a dependency (this interface's
+  // TSDoc's "MUST be idempotent").
+  let disposed = false;
   return {
     state,
     edit(edit: ParserEditDescriptor): void {
@@ -250,6 +278,11 @@ function wrapTree(state: TreeState): ParserTree & { readonly state: TreeState } 
         oldEndPosition: edit.oldEndPosition,
         newEndPosition: computeInsertedEndPoint(edit.startPosition, edit.insertedText),
       });
+    },
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      state.tsTree.delete();
     },
   };
 }

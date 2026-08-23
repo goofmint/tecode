@@ -369,6 +369,127 @@ describe("createHighlightService — incremental edits (Req 8.1, design.md §10)
   });
 });
 
+/** A hand-rolled mock backend (house convention: no mock libraries) whose
+ * `parse()` result carries a real, counting `dispose()` — everything else
+ * behaves like {@link createMockBackend} (tokenize-based captures, no
+ * `changedRanges`, so every edit takes the full-recompute path). Lets a
+ * test assert exactly which trees `highlightService.ts` disposes and when
+ * (Req 13.1 finding: deterministic `ParserTree` disposal), and that a tree
+ * already disposed is never disposed a second time. */
+interface DisposalTrackingMockBackend extends ParserBackend {
+  /** Every tree `parse()` has produced, in creation order — each entry's
+   * own `disposeCount` is mutated in place as `dispose()` is (or isn't)
+   * called on it. */
+  trees: Array<{ tree: ParserTree; disposeCount: number }>;
+}
+
+function createDisposalTrackingMockBackend(): DisposalTrackingMockBackend {
+  const trees: Array<{ tree: ParserTree; disposeCount: number }> = [];
+  const backend = {
+    trees,
+    async init() {},
+    async loadLanguage(bytes: Uint8Array): Promise<ParserLanguageHandle> {
+      return { bytes };
+    },
+    compileQuery() {
+      return {
+        captures(tree: ParserTree) {
+          return tokenize((tree as unknown as { text: string }).text);
+        },
+      };
+    },
+    parse(_language: ParserLanguageHandle, text: string): ParserTree {
+      const entry = { tree: undefined as unknown as ParserTree, disposeCount: 0 };
+      entry.tree = {
+        text,
+        edit() {},
+        dispose() {
+          entry.disposeCount += 1;
+        },
+      } as unknown as ParserTree;
+      trees.push(entry);
+      return entry.tree;
+    },
+  };
+  return backend as DisposalTrackingMockBackend;
+}
+
+describe("createHighlightService — deterministic ParserTree disposal (Req 13.1 finding)", () => {
+  test("an incremental re-parse disposes the OLD tree exactly once, leaving the new tree undisposed", async () => {
+    const fakeDocs = createFakeDocuments();
+    const backend = createDisposalTrackingMockBackend();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///a.ts", "typescript", "let x = 1;");
+    fakeDocs.open(document);
+    await tick();
+    expect(backend.trees).toHaveLength(1); // the initial full parse
+
+    document.applyEdits([
+      { range: { start: { line: 0, character: 4 }, end: { line: 0, character: 5 } }, newText: "count" },
+    ]);
+    expect(backend.trees).toHaveLength(2); // the re-parse produced a second tree
+    expect(backend.trees[0]!.disposeCount).toBe(1); // the OLD tree was disposed...
+    expect(backend.trees[1]!.disposeCount).toBe(0); // ...but the tree now in use was not
+
+    // A second edit disposes the (now-old) second tree, and only it.
+    document.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "z" },
+    ]);
+    expect(backend.trees).toHaveLength(3);
+    expect(backend.trees[0]!.disposeCount).toBe(1);
+    expect(backend.trees[1]!.disposeCount).toBe(1);
+    expect(backend.trees[2]!.disposeCount).toBe(0);
+    expect(service.getSpansForLine(document.uri, 0)).not.toEqual([]); // still fully functional
+  });
+
+  test("closing a document disposes its current tree exactly once", async () => {
+    const fakeDocs = createFakeDocuments();
+    const backend = createDisposalTrackingMockBackend();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///a.ts", "typescript", "let x = 1;");
+    fakeDocs.open(document);
+    await tick();
+    expect(backend.trees).toHaveLength(1);
+    expect(backend.trees[0]!.disposeCount).toBe(0);
+
+    fakeDocs.close(document);
+    expect(backend.trees[0]!.disposeCount).toBe(1);
+    expect(service.getSpansForLine(document.uri, 0)).toEqual([]); // untracked once closed
+
+    // Re-closing the same, already-untracked uri is a no-op
+    // (`detachDocument`'s own `if (!state) return;` guard) — confirms this
+    // isn't relying on the service happening to double-dispose harmlessly.
+    fakeDocs.close(document);
+    expect(backend.trees[0]!.disposeCount).toBe(1);
+  });
+
+  test("service dispose() disposes every tracked document's current tree exactly once", async () => {
+    const fakeDocs = createFakeDocuments();
+    const backend = createDisposalTrackingMockBackend();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const documentA = createTestDocument("file:///a.ts", "typescript", "let x = 1;");
+    const documentB = createTestDocument("file:///b.ts", "typescript", "let y = 2;");
+    fakeDocs.open(documentA);
+    fakeDocs.open(documentB);
+    await tick();
+    expect(backend.trees).toHaveLength(2);
+    expect(backend.trees.every((t) => t.disposeCount === 0)).toBe(true);
+
+    service.dispose();
+    expect(backend.trees.every((t) => t.disposeCount === 1)).toBe(true);
+
+    // Idempotent: a second `dispose()` call never double-disposes anything.
+    expect(() => service.dispose()).not.toThrow();
+    expect(backend.trees.every((t) => t.disposeCount === 1)).toBe(true);
+  });
+});
+
 /** `tokenize`, plus multi-line `"comment"` captures over every
  * `/* ... *``/` region (an unterminated `/*` runs to the end of the text) —
  * a hand-rolled stand-in for a real grammar's multi-line constructs

@@ -562,8 +562,24 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     const text = document.getText();
     state.tree = backend.parse(assets.language, text, oldTree);
     state.lastText = text;
-    if (!spliceLineSpans(state, assets, text, sortedEdits, oldBuffer.lineCount, oldTree)) {
-      recomputeLineSpans(state, assets, text);
+    try {
+      if (!spliceLineSpans(state, assets, text, sortedEdits, oldBuffer.lineCount, oldTree)) {
+        recomputeLineSpans(state, assets, text);
+      }
+    } finally {
+      // Dispose the OLD tree now that both the ranged splice (which still
+      // needs it, for `backend.changedRanges(oldTree, state.tree!)`) and
+      // the full-recompute fallback have run — in `finally` so a thrown
+      // exception from either path can never leak it (Req 13.1 finding:
+      // `web-tree-sitter`'s `Tree#delete` frees WASM memory immediately;
+      // relying on GC alone lets it grow unboundedly under per-keystroke
+      // re-parses). `backend.parse` above always hands back a NEW tree
+      // object distinct from `oldTree` (real tree-sitter's own `parse`
+      // never mutates/reuses the old tree in place — only `oldTree.edit()`
+      // does, which already happened above), so this never disposes the
+      // tree `state.tree` still points at; the equality guard exists only
+      // for a hypothetical backend/mock that reused the same object.
+      if (oldTree !== state.tree) oldTree.dispose?.();
     }
     fireChange();
   }
@@ -600,6 +616,10 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     const state = states.get(uri);
     if (!state) return;
     state.documentSub?.dispose();
+    // Free this document's tree immediately rather than waiting on GC
+    // (this module's TSDoc / `parserBackend.ts`'s `ParserTree.dispose`
+    // TSDoc, Req 13.1 finding).
+    state.tree?.dispose?.();
     states.delete(uri);
   }
 
@@ -638,7 +658,11 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     disposed = true;
     openSub.dispose();
     closeSub.dispose();
-    for (const state of states.values()) state.documentSub?.dispose();
+    for (const state of states.values()) {
+      state.documentSub?.dispose();
+      // Same "free now, don't wait on GC" reasoning as `detachDocument`.
+      state.tree?.dispose?.();
+    }
     states.clear();
     listeners.clear();
   }

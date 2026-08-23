@@ -108,6 +108,15 @@ describe("End-to-end editing scenario (Task 2.10, Req 13.1, design.md §15, §16
 
       // --- Step 1: open the file through the real DocumentManager (real
       // fs read, real language-registry resolution) ---
+      // Subscribe BEFORE opening the document, matching
+      // `typingBenchmark.test.ts`'s own fix for this same race: the
+      // highlight pipeline's first-parse `onDidChange` fires as soon as the
+      // open attaches the document, so subscribing first can never miss it
+      // — whereas subscribing later (after the intermediate `renderOnce()`
+      // below) races a WARM web-tree-sitter runtime whose now-fast first
+      // parse can settle during those awaits and leave the later
+      // subscription waiting for an event that already fired.
+      const highlightReady = waitForHighlightChange(root.highlightService);
       const document = await root.documents.openDocument(pathToUri(filePath));
       expect(document.languageId).toBe("typescript"); // real languages-basic .ts mapping
       expect(document.dirty).toBe(false);
@@ -141,7 +150,7 @@ describe("End-to-end editing scenario (Task 2.10, Req 13.1, design.md §15, §16
       // --- Step 2: a genuine highlighted render appears (real
       // web-tree-sitter TypeScript grammar + real Dark Modern theme) ---
       await act(async () => {
-        await waitForHighlightChange(root.highlightService);
+        await highlightReady;
       });
       await act(async () => {
         await renderOnce();
@@ -212,6 +221,15 @@ describe("End-to-end editing scenario (Task 2.10, Req 13.1, design.md §15, §16
 
       // --- Step 4: type through the real key-routing pipeline at both
       // cursors (this module's TSDoc: exactly one keystroke) ---
+      // Both selections above are non-collapsed (each spans a whole "value"
+      // word, active-anchored at its end) — typing still produces
+      // "value!" at each, not a replacement, because `inputRouter.ts`
+      // documents selection-replace-on-type as explicitly out of scope for
+      // this MVP: its `insert` case always edits the empty range
+      // `{ start: active, end: active }`, ignoring the selection's other
+      // end entirely. This assertion is therefore exercising real,
+      // intentional pipeline behavior, not an accident of an
+      // unimplemented feature silently no-op'ing.
       act(() => {
         sendKey(root, keyOf({ name: "!", sequence: "!" }));
       });
