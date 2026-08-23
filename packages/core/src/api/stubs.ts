@@ -19,11 +19,11 @@
  *   hardcoded base palette (design.md §12's own note that `ThemeProvider`
  *   starts with "a hardcoded base palette for now", Task 1.14) until a real
  *   theme loader can resolve one.
- * - `ui.registerView` is likewise a real, disposable registration with no
- *   renderer behind it yet (the UI shell's slot registry, Task 1.14);
- *   `List`/`Tree`/`Input`/`Tabs` are inert placeholder components (no
- *   dependency on React here — `@tecode/api`'s `ComponentType` is
- *   deliberately framework-agnostic, design.md §12).
+ * - `ui` is no longer stubbed here as of Task 1.14: `tecode.ui.registerView`
+ *   delegates to the real `ui/slotRegistry.ts` (a live, rendered slot
+ *   registry, not just a disposable-returning placeholder), and `List`/
+ *   `Tree`/`Input`/`Tabs` are the real OpenTUI/React components in
+ *   `ui/components.ts` — see `create.ts` for the wiring.
  *
  * None of this throws: every method here follows the same never-throw
  * discipline as the rest of core (`registry.ts`, `documentManager.ts`,
@@ -32,7 +32,6 @@
  */
 
 import type {
-  ComponentType,
   Disposable,
   EditorNamespace,
   LanguageContribution,
@@ -40,12 +39,10 @@ import type {
   Position,
   ResolvedTheme,
   RGB,
-  SlotId,
   StatusBarItem,
   ThemeContribution,
   ThemesNamespace,
   UiColorKey,
-  UiNamespace,
   WindowNamespace,
 } from "@tecode/api";
 import type { StatusSink } from "../host/errors";
@@ -265,51 +262,6 @@ export function createEditorStub(deps: { sink: StatusSink }): EditorNamespace {
     applyEdits() {
       notifyNoActiveEditor("apply edits");
     },
-  };
-}
-
-/** An inert placeholder `ComponentType` — `@tecode/api` has no dependency
- * on React (or any UI framework, design.md §12), and no renderer exists
- * yet to give `List`/`Tree`/`Input`/`Tabs` real behavior. */
-const notImplementedComponent: ComponentType = () => undefined;
-
-/** One registered `ui.registerView` call. */
-export interface RegisteredView {
-  slot: SlotId;
-  id: string;
-  component: ComponentType;
-}
-
-/** {@link createUiStub}'s return type — see {@link WindowStub}'s TSDoc for
- * why a stub factory returns more than its `@tecode/api` namespace type. */
-export interface UiStub extends UiNamespace {
-  /** Every currently-registered view; an entry is gone once its
-   * `Disposable` has been disposed. */
-  registeredViews(): readonly RegisteredView[];
-}
-
-/**
- * Build the `tecode.ui` stub (Req 10.1, 6.3). `registerView` is a real,
- * disposable registration (the UI shell's slot registry, Task 1.14, is the
- * eventual consumer); `useTheme` reads whatever `getTheme` currently
- * returns, so it stays in sync with `tecode.themes.current` without this
- * module depending on `themes.ts` directly (the two are wired together in
- * `create.ts`).
- */
-export function createUiStub(deps: { getTheme: () => ResolvedTheme }): UiStub {
-  const views = createRegistrySet<RegisteredView>();
-  return {
-    registerView(slot: SlotId, id: string, component: ComponentType) {
-      return views.register({ slot, id, component });
-    },
-    useTheme() {
-      return deps.getTheme();
-    },
-    List: notImplementedComponent,
-    Tree: notImplementedComponent,
-    Input: notImplementedComponent,
-    Tabs: notImplementedComponent,
-    registeredViews: views.entries,
   };
 }
 

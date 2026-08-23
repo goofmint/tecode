@@ -5,6 +5,7 @@ import {
   getUserConfigDir,
   getUserExtensionsDir,
   getUserKeybindingsPath,
+  getUserLayoutStatePath,
   getUserSettingsPath,
   getWorkspaceExtensionsDir,
   getWorkspaceSettingsPath,
@@ -81,5 +82,9 @@ describe("derived file paths", () => {
     expect(getWorkspaceExtensionsDir("/home/user/project")).toBe(
       join("/home/user/project", ".tecode", "extensions"),
     );
+  });
+
+  test("getUserLayoutStatePath appends state.json to the config dir", () => {
+    expect(getUserLayoutStatePath()).toBe(join(getUserConfigDir(), "state.json"));
   });
 });

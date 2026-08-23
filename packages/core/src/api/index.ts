@@ -12,12 +12,9 @@ export {
   createEditorStub,
   createLanguagesStub,
   createThemesStub,
-  createUiStub,
   createWindowStub,
   type LanguagesStub,
-  type RegisteredView,
   type ThemesStub,
-  type UiStub,
   type WindowStub,
 } from "./stubs";
 export { registerTecodeAlias } from "./alias";

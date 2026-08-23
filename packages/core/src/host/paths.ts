@@ -35,6 +35,14 @@ export function getUserKeybindingsPath(): string {
   return join(getUserConfigDir(), "keybindings.json");
 }
 
+/** Path to the user-level `state.json` — persisted UI layout state (sidebar
+ * width/visibility, panel height/visibility, active view — Req 6.4,
+ * design.md §8.2: "Layout state ... persists to `~/.config/tecode/state.json`
+ * on change (debounced) and on exit"). */
+export function getUserLayoutStatePath(): string {
+  return join(getUserConfigDir(), "state.json");
+}
+
 /** Path to a workspace's `.tecode/settings.json`, overlaid on top of user
  * settings when the workspace declares one (Req 9.2). `workspaceRoot` is
  * the workspace's root directory (an absolute path). */
