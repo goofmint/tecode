@@ -81,6 +81,20 @@ describe("computeMatches (Req 11.1)", () => {
       expect(matches).toEqual([{ start: { line: 0, character: 2 }, end: { line: 0, character: 5 } }]);
     });
 
+    test("non-BMP letters case-fold: \"\\u{10428}\" (Deseret small) matches \"\\u{10400}\" (Deseret capital) over its full 0..2 surrogate-pair range", () => {
+      // Both forms are one code point / TWO UTF-16 units, so their fold is
+      // same-length and DOES apply (this fold iterates code points, not
+      // units — per-unit iteration would split the surrogate pair and
+      // never match; CodeRabbit finding on PR #59 round 2).
+      expect("\u{10400}".toLowerCase()).toBe("\u{10428}"); // Sanity-check the premise.
+      const matches = computeMatches(readerOf(["\u{10400}"]), "\u{10428}", false);
+      expect(matches).toEqual([{ start: { line: 0, character: 0 }, end: { line: 0, character: 2 } }]);
+      // And the reported range replaces exactly the matched pair.
+      const [match] = matches;
+      const edit = buildReplaceEdit(match!, "X");
+      expect(edit).toEqual({ range: match!, newText: "X" });
+    });
+
     test("replaceCurrent-style usage: the reported range replaces exactly the matched text, not a shifted span", () => {
       const lineText = "İx";
       const matches = computeMatches(readerOf([lineText]), "x", false);

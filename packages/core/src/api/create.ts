@@ -116,19 +116,22 @@ export interface CreateTecodeApiDeps {
    * handlers... Find/replace state is per-editor, rendered as a...
    * inline widget"). Narrowed to the 9 actions `FindNamespace` declares —
    * `editor-core`'s find/replace commands delegate straight through them.
-   * Optional, and ALSO requires `editorSession` above to be supplied
-   * (`create.ts`'s `findNamespace` construction) — a `FindService` is
-   * built around its own `editorSession` reference (`findService.ts`'s
-   * `FindServiceDeps.editorSession`), which need not be the same instance
-   * passed here, so `editorSession`'s presence is not itself proof that
-   * this `findService` is safe to wire through. A caller that omits either
-   * (every test that predates this task, and any future caller with
-   * genuinely no find/replace UI to back it) gets `createFindStub()`'s
-   * inert no-op surface instead of a breaking change to the namespace
-   * shape.
+   * Optional, and ALSO requires `editorSession` above to be supplied AND
+   * to be the very session this service is bound to (`create.ts`'s
+   * `findNamespace` construction compares `findService.session` against
+   * `editorSession` by identity) — a `FindService` is built around its own
+   * `editorSession` reference (`findService.ts`'s
+   * `FindServiceDeps.editorSession`), and one bound to a DIFFERENT session
+   * would let `api.editor.find.replaceAll()` mutate documents
+   * `window.activeEditor` never reports. A caller that omits either, or
+   * passes a mismatched pair (every test that predates this task, and any
+   * future caller with genuinely no find/replace UI to back it), gets
+   * `createFindStub()`'s inert no-op surface instead of a breaking change
+   * to the namespace shape.
    */
   findService?: Pick<
     FindService,
+    | "session"
     | "open"
     | "close"
     | "setQuery"
@@ -232,20 +235,22 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
   // when supplied, so freezing it below has no wrapper closures to make —
   // `undefined` otherwise, which both `createEditorNamespace`/
   // `createEditorStub` default to `createFindStub()`'s inert surface
-  // (`CreateTecodeApiDeps.findService`'s TSDoc). Gated on BOTH
-  // `deps.editorSession` AND `deps.findService` (CodeRabbit finding on PR
-  // #59) — a `FindService` is built around its OWN `editorSession`
-  // reference (`findService.ts`'s `FindServiceDeps.editorSession`), which
-  // need not be this call's `deps.editorSession` at all. Wiring the real
-  // find methods through while `deps.editorSession` is absent would let
+  // (`CreateTecodeApiDeps.findService`'s TSDoc). Gated on `deps.
+  // editorSession`, `deps.findService`, AND their sessions being the SAME
+  // instance (CodeRabbit findings on PR #59) — a `FindService` is built
+  // around its OWN `editorSession` reference (`findService.ts`'s
+  // `FindServiceDeps.editorSession`, surfaced as `findService.session`
+  // exactly for this identity check). Wiring the real find methods
+  // through against a different (or absent) session would let
   // `api.editor.find.replaceAll()` mutate a document via that other
   // session while `window.activeEditor`/`tecode.editor` (both driven only
-  // by `deps.editorSession`) still report "no active editor" — breaking
-  // the no-active-editor no-op contract `createEditorStub`'s TSDoc
-  // documents. Without `deps.editorSession`, `findNamespace` stays
-  // `undefined` and the editor stub falls back to `createFindStub()`'s
-  // fully inert surface, matching every other no-`editorSession` behavior.
-  const findNamespace: FindNamespace | undefined = deps.editorSession && deps.findService
+  // by `deps.editorSession`) report a different active document or none
+  // at all — breaking the no-active-editor no-op contract
+  // `createEditorStub`'s TSDoc documents. On any mismatch, `findNamespace`
+  // stays `undefined` and the editor namespace falls back to
+  // `createFindStub()`'s fully inert surface.
+  const findNamespace: FindNamespace | undefined =
+    deps.editorSession && deps.findService && deps.findService.session === deps.editorSession
     ? Object.freeze({
         open: deps.findService.open,
         close: deps.findService.close,

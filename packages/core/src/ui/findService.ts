@@ -87,6 +87,13 @@ export interface FindServiceDeps {
  * `api/create.ts` wires this service's methods straight through as that
  * namespace (this module's TSDoc). */
 export interface FindService {
+  /** The exact `editorSession` reference this service was built around —
+   * an identity token, not an API to call. `api/create.ts` compares it
+   * against its own `editorSession` dep before wiring the real
+   * `tecode.editor.find` through: a `FindService` bound to a DIFFERENT
+   * session would search/replace documents `window.activeEditor` never
+   * reports (CodeRabbit finding on PR #59). */
+  readonly session: FindServiceDeps["editorSession"];
   open(): void;
   close(): void;
   setQuery(query: string): void;
@@ -350,6 +357,7 @@ export function createFindService(deps: FindServiceDeps): FindService {
   }
 
   return {
+    session: editorSession,
     open,
     close,
     setQuery,

@@ -57,11 +57,12 @@ import type { Range, TextEdit } from "@tecode/api";
  * position as in `text` — so `indexOf`'s result on the folded string is
  * always a valid, correct index into the original.
  *
- * **Documented limitation**: a character whose case fold is not exactly
- * one UTF-16 unit (`"İ"`/U+0130 is the canonical example — others exist,
- * e.g. German `"ß"` uppercases to `"SS"` in some contexts, though
+ * **Documented limitation**: a character whose case fold CHANGES its
+ * UTF-16 length (`"İ"`/U+0130 → `"i̇"` is the canonical example — others
+ * exist, e.g. German `"ß"` uppercases to `"SS"` in some contexts, though
  * `toLowerCase` never expands it) simply does not case-fold here; it is
- * compared literally instead. Both the haystack (a document line) and the
+ * compared literally instead. Same-length folds — including non-BMP
+ * surrogate pairs like Deseret `"\u{10400}"` → `"\u{10428}"` — DO fold. Both the haystack (a document line) and the
  * needle (the query) are folded through this SAME function, so a query
  * containing such a character still matches an identical literal
  * occurrence — it only fails to match the character's OTHER case, which is
@@ -69,10 +70,15 @@ import type { Range, TextEdit } from "@tecode/api";
  */
 function foldForMatch(text: string): string {
   let folded = "";
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i] as string; // `i < text.length` guarantees a unit here.
+  // Iterate CODE POINTS (not UTF-16 units): a surrogate pair like
+  // "\u{10400}" is one `ch` of length 2 here, and its lowercase
+  // "\u{10428}" is also length 2 — accepting any same-length fold keeps
+  // the length invariant above while still case-folding non-BMP letters
+  // (CodeRabbit finding on PR #59: per-unit iteration split surrogate
+  // pairs, so Deseret capital/small letters never matched).
+  for (const ch of text) {
     const lower = ch.toLowerCase();
-    folded += lower.length === 1 ? lower : ch;
+    folded += lower.length === ch.length ? lower : ch;
   }
   return folded;
 }

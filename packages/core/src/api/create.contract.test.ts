@@ -640,4 +640,60 @@ describe("createTecodeApi — real editor.find backing via a FindService (Req 11
     expect(api.editor.getLine(0)).toBe("");
     expect(otherDocument.getLine(0)).toBe("foo bar foo baz foo");
   });
+
+  test("a findService bound to a DIFFERENT editorSession is inert — find/replace never reaches the other session's document (CodeRabbit PR #59 round 2)", async () => {
+    // Both deps are supplied here, but the `FindService` was built around
+    // session B while `deps.editorSession` is session A. `window.
+    // activeEditor` reports A's document; wiring the find methods through
+    // would let `replaceAll()` mutate B's document instead. `create.ts`
+    // compares `findService.session` against `deps.editorSession` by
+    // identity and falls back to the inert stub on mismatch.
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-find-mismatch-"));
+    const filePathA = join(dir, "a.txt");
+    const filePathB = join(dir, "b.txt");
+    await writeFile(filePathA, "alpha foo alpha", "utf8");
+    await writeFile(filePathB, "foo bar foo baz foo", "utf8");
+    const uriA = pathToUri(filePathA);
+    const uriB = pathToUri(filePathB);
+
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const documents = createDocumentManager({ log, sink });
+    const otherDocuments = createDocumentManager({ log, sink });
+    const fs = createFileSystem({ log });
+    config = createConfigService({ log, sink, workspaceRoot: dir });
+    await config.ready;
+    const context = createContextService();
+    // Session A backs the API; session B backs the FindService.
+    const editorSession = createEditorSessionService({ documents });
+    const otherEditorSession = createEditorSessionService({ documents: otherDocuments });
+    const findService = createFindService({ editorSession: otherEditorSession });
+
+    const api = createTecodeApi({
+      commands,
+      documents,
+      fs,
+      rootUri: pathToUri(dir),
+      config,
+      context,
+      sink,
+      editorSession,
+      findService,
+    });
+
+    const documentA = await documents.openDocument(uriA);
+    const documentB = await otherDocuments.openDocument(uriB);
+    expect(api.window.activeEditor?.document.uri).toBe(documentA.uri);
+
+    api.editor.find.open();
+    api.editor.find.setQuery("foo");
+    api.editor.find.setReplaceQuery("X");
+    api.editor.find.replaceAll();
+
+    // The mismatch fell back to the inert stub: NEITHER session's document
+    // changed, and A (the API's active document) is exactly as written.
+    expect(documentA.getLine(0)).toBe("alpha foo alpha");
+    expect(documentB.getLine(0)).toBe("foo bar foo baz foo");
+  });
 });
