@@ -347,6 +347,49 @@ describe("createFindService — active-editor switch resubscription (Req 11.1)",
     expect(editorSession.getState(documentA.uri).find!.matches.length).toBe(1);
   });
 
+  test("switching BACK to a document recomputes its stale matches (CodeRabbit PR #59 Finding 3)", () => {
+    // Open find on A, switch to B, edit A while it's inactive (nobody is
+    // subscribed to A's `onDidChange`, so A's `matches` go stale), switch
+    // back to A — `replaceCurrent()` must act on the REFRESHED ranges, not
+    // the stale ones computed before the switch-away.
+    const documentA = createTestDocument("foo bar foo", "file:///a.txt");
+    const documentB = createTestDocument("unrelated", "file:///b.txt");
+    const editorSession = createFakeEditorSession(documentA);
+    const service = createFindService({ editorSession });
+
+    service.open();
+    service.setQuery("foo");
+    expect(editorSession.getState(documentA.uri).find!.matches).toEqual([
+      { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
+      { start: { line: 0, character: 8 }, end: { line: 0, character: 11 } },
+    ]);
+
+    editorSession.setActive(documentB);
+
+    // Edited through the document API directly while A is inactive — no
+    // subscription is watching A right now.
+    documentA.applyEdits([{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: "baz" }]);
+    expect(documentA.getLine(0)).toBe("baz bar foo");
+
+    editorSession.setActive(documentA);
+    // The switch-back must have recomputed A's matches against its CURRENT
+    // text: only one "foo" remains, and its offset shifted from 8 to 8
+    // (unchanged length replacement here, but recomputed nonetheless) —
+    // stale matches would still report two matches including the one that
+    // no longer exists at [0,3).
+    expect(editorSession.getState(documentA.uri).find!.matches).toEqual([
+      { start: { line: 0, character: 8 }, end: { line: 0, character: 11 } },
+    ]);
+    expect(editorSession.getState(documentA.uri).find!.activeMatchIndex).toBe(0);
+
+    service.setReplaceQuery("X");
+    service.replaceCurrent();
+    // Replaces the SURVIVING match at its refreshed range — a stale range
+    // (e.g. the old [0,3) or an out-of-bounds index) would corrupt the
+    // buffer or replace the wrong text entirely.
+    expect(documentA.getLine(0)).toBe("baz bar X");
+  });
+
   test("dispose() stops the document subscription", () => {
     const { document, editorSession, service } = harness("foo bar");
     service.open();

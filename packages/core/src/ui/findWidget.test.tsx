@@ -130,3 +130,89 @@ describe("FindWidget — opens focused (Req 11.1)", () => {
     expect(context.get<boolean>("findWidgetFocus")).toBe(true);
   });
 });
+
+describe("FindWidget — findWidgetFocus stays true across query/replace focus moves (CodeRabbit PR #59 Finding 4)", () => {
+  test("focusing the replace input keeps findWidgetFocus true (both inputs share the context key)", async () => {
+    const context = createContextService();
+    const find = findStateOf({ isOpen: true });
+
+    const { renderOnce, renderer } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <FindWidget find={find} findService={noopFindService()} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 80, height: 3 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // The mount effect already focused the query input (the test above).
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+
+    const replaceInput = findInputByPlaceholder(renderer.root, "Replace");
+    expect(replaceInput).toBeDefined();
+
+    // Moving OpenTUI's real single-focus pointer onto the replace input:
+    // `Renderable.focus()` synchronously blurs whatever was previously
+    // focused (the query input) BEFORE the replace input's own `focused`
+    // event fires (this module's TSDoc's "findWidgetFocus context key —
+    // BOTH inputs report into it"). Before Finding 4's fix, only the query
+    // input tracked the key, so this transition would have left
+    // `findWidgetFocus` stuck `false` — disabling `return`/`shift+return`/
+    // `escape` for as long as focus stayed in the replace field.
+    replaceInput!.focus();
+
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+  });
+
+  test("blurring the replace input (with nothing else focused) clears findWidgetFocus", async () => {
+    const context = createContextService();
+    const find = findStateOf({ isOpen: true });
+
+    const { renderOnce, renderer } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <FindWidget find={find} findService={noopFindService()} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 80, height: 3 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const replaceInput = findInputByPlaceholder(renderer.root, "Replace");
+    replaceInput!.focus();
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+
+    replaceInput!.blur();
+    expect(context.get<boolean>("findWidgetFocus")).toBe(false);
+  });
+});
+
+/** Depth-first search for an OpenTUI `<input>` renderable by its
+ * `placeholder` text — used only by the tests above to drive the real
+ * query/replace `Renderable.focus()`/`.blur()` without `FindWidget`
+ * exposing test-only refs on its public props (matches `shell.test.tsx`'s
+ * `findAllFocusable`/`findTabSelect` idiom for the same reason). */
+function findInputByPlaceholder(
+  node: unknown,
+  placeholder: string,
+): { focus(): void; blur(): void } | undefined {
+  const candidate = node as {
+    placeholder?: string;
+    focus?: () => void;
+    blur?: () => void;
+    getChildren?: () => unknown[];
+  };
+  if (candidate?.placeholder === placeholder && candidate.focus && candidate.blur) {
+    return candidate as { focus(): void; blur(): void };
+  }
+  for (const child of candidate?.getChildren?.() ?? []) {
+    const found = findInputByPlaceholder(child, placeholder);
+    if (found) return found;
+  }
+  return undefined;
+}

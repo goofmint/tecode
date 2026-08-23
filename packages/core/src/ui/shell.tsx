@@ -375,6 +375,31 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
     }
     wasFindOpenRef.current = isFindOpen;
   }, [isFindOpen]);
+  // Stable identity across every render (CodeRabbit finding on PR #59) — a
+  // fresh inline arrow here would give `EditorView`'s own `textPlaneRef`
+  // `useCallback` (`editorView.tsx`, deps include `onTextPlaneNode`) a new
+  // function identity on every `EditorArea` re-render, and React detaches/
+  // reattaches a `ref` callback (calling the OLD one with `null`, then the
+  // NEW one with the node) whenever ITS OWN identity changes — even though
+  // the underlying OpenTUI node never actually changed. `editorView.tsx`'s
+  // `textPlaneRef` also carries `useFocusTracking("editorTextFocus")`
+  // (`contextFocusRef`): detaching a node `useFocusTracking` currently
+  // believes is focused force-reports `editorTextFocus` FALSE (`focus.tsx`'s
+  // "detaching a still-focused node" fix, from this same PR) — so an
+  // `editorSession.setState`-driven re-render while the user is mid-typing
+  // in the buffer would spuriously blur it, discarding every keystroke that
+  // arrives before the immediately-following re-render re-attaches (and
+  // still never refocuses, since the node's OWN `_focused` flag never
+  // changed — no new `FOCUSED` event fires to flip `useFocusTracking`'s
+  // tracked state back). An empty-deps `useCallback` (this closes only over
+  // the ref, never over any per-render value) keeps the SAME function
+  // identity for `EditorArea`'s whole lifetime, so `EditorView`'s ref only
+  // ever attaches/detaches on a REAL mount/unmount (e.g. switching the
+  // active document, `key={props.activeDocument.uri}` below), never on an
+  // unrelated re-render.
+  const handleTextPlaneNode = useCallback((node: FocusableNode | null) => {
+    textPlaneNodeRef.current = node;
+  }, []);
 
   return (
     <box
@@ -400,9 +425,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
             document={props.activeDocument}
             state={props.activeEditorState}
             config={props.config}
-            onTextPlaneNode={(node) => {
-              textPlaneNodeRef.current = node;
-            }}
+            onTextPlaneNode={handleTextPlaneNode}
           />
         ) : (
           <text fg={toColorInput(theme.colors["editor.foreground"])}>

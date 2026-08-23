@@ -41,18 +41,33 @@
  * edge-triggered imperative `.focus()` back onto `EditorView`'s text
  * plane — see its own TSDoc.
  *
- * **`findWidgetFocus` context key**: only the query input reports into
- * `useFocusTracking("findWidgetFocus")` — the SAME context key `editor-
- * core`'s `return`/`shift+return`/`escape` keybindings gate on
- * (`manifest.ts`). The replace input intentionally does NOT track a
- * separate context key: Tab (once a later task wires focus-cycling between
- * the two inputs) moves OpenTUI's own single-focus pointer between them,
- * but both inputs being part of the SAME find widget is what `when:
- * "findWidgetFocus"` is meant to mean here — a real per-input distinction
- * (e.g. "is Enter in the replace box also findNext, or should it replace
- * instead") is a nuance left for a later task; every stroke in this
- * widget behaves identically regardless of which of its two inputs holds
- * the OpenTUI focus pointer, for now.
+ * **`findWidgetFocus` context key — BOTH inputs report into it**
+ * (CodeRabbit finding on PR #59): the query AND replace inputs each call
+ * their OWN `useFocusTracking("findWidgetFocus")` ref, so focusing EITHER
+ * one reports the SAME context key `editor-core`'s `return`/`shift+return`/
+ * `escape` keybindings gate on (`manifest.ts`). An earlier version only
+ * wired the query input, which silently disabled all three bindings the
+ * moment focus moved to the replace box (Tab, or a mouse click) — `escape`
+ * included, so there was no keyboard way to close the widget from the
+ * replace field at all. Two independent `useFocusTracking` instances
+ * writing the same key is safe here specifically because OpenTUI's own
+ * single-focus bookkeeping (`Renderable.focus()`/`RenderableContext.
+ * focusRenderable`) blurs the PREVIOUSLY focused node synchronously,
+ * BEFORE the newly focused node's own `focused` event fires — so a
+ * query→replace focus move reports `false` then `true` back-to-back in
+ * the same synchronous call stack, with no `await`/scheduling boundary
+ * for anything to observe the transient `false` in between. (Each hook
+ * instance's own `attached` bookkeeping stays entirely independent since
+ * it tracks its OWN node, not a shared one — this is not the "two nodes
+ * sharing one `useFocusTracking` ref callback" case, which WOULD detach
+ * the first node's listeners entirely the moment the second node attaches;
+ * see {@link useFocusTracking}'s single-node-per-call-site contract.) Tab
+ * (once a later task wires focus-cycling between the two inputs) moves
+ * OpenTUI's own single-focus pointer between them; a real per-input
+ * distinction (e.g. "is Enter in the replace box also findNext, or should
+ * it replace instead") is a nuance left for a later task — every stroke in
+ * this widget behaves identically regardless of which of its two inputs
+ * holds the OpenTUI focus pointer, for now.
  */
 
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
@@ -97,8 +112,11 @@ function matchCountText(find: FindState): string {
 export function FindWidget(props: FindWidgetProps): ReactNode {
   const { find, findService } = props;
   const theme = useTheme();
-  // Only the query input tracks `findWidgetFocus` (this module's TSDoc).
+  // Both inputs track `findWidgetFocus` (this module's TSDoc) — two
+  // independent `useFocusTracking` instances, each attached to its own
+  // node, both writing the same context key.
   const queryFocusRef = useFocusTracking("findWidgetFocus");
+  const replaceFocusRef = useFocusTracking("findWidgetFocus");
   // The query input's own node, captured ALONGSIDE (not instead of)
   // `queryFocusRef` above (this module's TSDoc's "Ctrl+F opens focused") —
   // purely so the mount effect below has something to call `.focus()` on.
@@ -133,7 +151,12 @@ export function FindWidget(props: FindWidgetProps): ReactNode {
         {find.caseSensitive ? " [Aa] " : "  Aa  "}
       </text>
       <box style={{ width: 24 }}>
-        <Input value={find.replaceQuery} placeholder="Replace" onChange={findService.setReplaceQuery} />
+        <Input
+          value={find.replaceQuery}
+          placeholder="Replace"
+          onChange={findService.setReplaceQuery}
+          inputRef={replaceFocusRef}
+        />
       </box>
       <text fg={toColorInput(theme.colors["input.placeholderForeground"])}>{` ${matchCountText(find)} `}</text>
     </box>

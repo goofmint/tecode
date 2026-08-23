@@ -578,4 +578,66 @@ describe("createTecodeApi — real editor.find backing via a FindService (Req 11
     expect(() => api.editor.find.next()).not.toThrow();
     expect(() => api.editor.find.replaceAll()).not.toThrow();
   });
+
+  test("a findService with NO editorSession supplied is inert — no find/replace operation reaches a document (CodeRabbit PR #59 Finding 1)", async () => {
+    // A `FindService` is built around its OWN `editorSession` reference
+    // (`findService.ts`'s `FindServiceDeps.editorSession`) — it need not be
+    // the same instance `createTecodeApi` receives as `deps.editorSession`.
+    // Here `deps.editorSession` is omitted entirely, so `window.
+    // activeEditor`/`api.editor` report "no active editor" throughout; if
+    // `findNamespace` were still wired through (gated on `findService`
+    // alone), `replaceAll()` would silently mutate `otherDocuments`'s real
+    // document out from under that "no active editor" contract.
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-find-no-session-"));
+    const filePath = join(dir, "find.txt");
+    await writeFile(filePath, "foo bar foo baz foo", "utf8");
+    const uri = pathToUri(filePath);
+
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const documents = createDocumentManager({ log, sink });
+    const otherDocuments = createDocumentManager({ log, sink });
+    const fs = createFileSystem({ log });
+    config = createConfigService({ log, sink, workspaceRoot: dir });
+    await config.ready;
+    const context = createContextService();
+    // The FindService's own session, tracking `otherDocuments` — deliberately
+    // NOT passed to `createTecodeApi` as `deps.editorSession`.
+    const otherEditorSession = createEditorSessionService({ documents: otherDocuments });
+    const findService = createFindService({ editorSession: otherEditorSession });
+
+    const api = createTecodeApi({
+      commands,
+      documents,
+      fs,
+      rootUri: pathToUri(dir),
+      config,
+      context,
+      sink,
+      // No `editorSession` — only `findService`.
+      findService,
+    });
+
+    // `otherDocuments`/`otherEditorSession` open (and auto-activate) the
+    // SAME file `findService` would have something real to act on if it
+    // were wired through.
+    const otherDocument = await otherDocuments.openDocument(uri);
+    await api.workspace.openDocument(uri);
+
+    expect(api.window.activeEditor).toBeUndefined();
+    expect(Object.isFrozen(api.editor.find)).toBe(true);
+
+    api.editor.find.open();
+    api.editor.find.setQuery("foo");
+    api.editor.find.setReplaceQuery("X");
+    api.editor.find.next();
+    api.editor.find.replaceCurrent();
+    api.editor.find.replaceAll();
+
+    // Neither document was touched — `findNamespace` fell back to the
+    // fully inert stub because `deps.editorSession` was absent.
+    expect(api.editor.getLine(0)).toBe("");
+    expect(otherDocument.getLine(0)).toBe("foo bar foo baz foo");
+  });
 });

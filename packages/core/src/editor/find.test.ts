@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { Range } from "@tecode/api";
 import { buildReplaceAllEdits, buildReplaceEdit, computeMatches, type LineReader } from "./find";
 
 function readerOf(lines: string[]): LineReader {
@@ -59,6 +60,53 @@ describe("computeMatches (Req 11.1)", () => {
 
   test("no matches on an empty document", () => {
     expect(computeMatches(readerOf([""]), "foo", false)).toEqual([]);
+  });
+
+  describe("case-insensitive matching preserves UTF-16 offsets (CodeRabbit PR #59 Finding 2)", () => {
+    // U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE ("İ") lowercases to a
+    // TWO-UTF-16-unit string ("i" + a combining dot above,
+    // `"İ".toLowerCase() === "i̇"`) — a naive `lineText.toLowerCase()`
+    // shifts every index after it by one, corrupting the `Range`s this
+    // module reports. `computeMatches` must find "x" at its ORIGINAL index
+    // 1, not the shifted index 2 a whole-string `toLowerCase()` would
+    // produce.
+    test("finds \"x\" at its original position 1 in \"İx\", not the toLowerCase()-shifted position 2", () => {
+      expect("İx".toLowerCase()).toBe("i̇x"); // Sanity-check the premise.
+      const matches = computeMatches(readerOf(["İx"]), "x", false);
+      expect(matches).toEqual([{ start: { line: 0, character: 1 }, end: { line: 0, character: 2 } }]);
+    });
+
+    test("a query longer than one character around the offset-shifting character still lands correctly", () => {
+      const matches = computeMatches(readerOf(["aİxyz"]), "xyz", false);
+      expect(matches).toEqual([{ start: { line: 0, character: 2 }, end: { line: 0, character: 5 } }]);
+    });
+
+    test("replaceCurrent-style usage: the reported range replaces exactly the matched text, not a shifted span", () => {
+      const lineText = "İx";
+      const matches = computeMatches(readerOf([lineText]), "x", false);
+      const edit = buildReplaceEdit(matches[0] as Range, "Y");
+      // Applying the edit at the reported range must land on "x", not "İ" or
+      // a boundary between the two.
+      const before = lineText.slice(0, edit.range.start.character);
+      const replaced = lineText.slice(edit.range.start.character, edit.range.end.character);
+      const after = lineText.slice(edit.range.end.character);
+      expect(replaced).toBe("x");
+      expect(before + edit.newText + after).toBe("İY");
+    });
+
+    test("the query itself folds through the same length-preserving rule (a literal İ still matches a literal İ)", () => {
+      const matches = computeMatches(readerOf(["prefix İ suffix"]), "İ", false);
+      expect(matches).toEqual([{ start: { line: 0, character: 7 }, end: { line: 0, character: 8 } }]);
+    });
+
+    test("ordinary ASCII case-insensitivity is unaffected by the length-preserving fold", () => {
+      const matches = computeMatches(readerOf(["Foo FOO foo"]), "foo", false);
+      expect(matches).toEqual([
+        { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
+        { start: { line: 0, character: 4 }, end: { line: 0, character: 7 } },
+        { start: { line: 0, character: 8 }, end: { line: 0, character: 11 } },
+      ]);
+    });
   });
 });
 

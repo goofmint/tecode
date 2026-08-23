@@ -32,6 +32,51 @@
 
 import type { Range, TextEdit } from "@tecode/api";
 
+/**
+ * Case-fold `text` for {@link computeMatches}'s case-insensitive comparison
+ * WITHOUT changing its UTF-16 length (CodeRabbit finding on PR #59: plain
+ * `String.prototype.toLowerCase()` can change a string's length — e.g.
+ * `"İ".toLowerCase()` is `"i̇"`, a two-UTF-16-unit string, because U+0130
+ * LATIN CAPITAL LETTER I WITH DOT ABOVE case-folds to `i` + a COMBINING DOT
+ * ABOVE. Folding a whole line that way and reusing `indexOf`'s result index
+ * against the ORIGINAL line text corrupts every match/replace `Range` at or
+ * after that character — this module's `Range`s are handed straight to
+ * `ui/findService.ts` for highlighting and to {@link buildReplaceEdit}/
+ * {@link buildReplaceAllEdits} for replacement, so a wrong offset both
+ * highlights and edits the wrong span.
+ *
+ * The fix folds ONE UTF-16 CODE UNIT AT A TIME (indexed `text[i]`/
+ * `text.length`, not a `for...of` code-point iteration — a code point still
+ * has to fold to the SAME UTF-16-unit-COUNT it started with, and indexing
+ * per unit is what makes that check trivial: `text[i]` is always exactly
+ * one unit, so "did folding change the unit count" is just "is the folded
+ * result still one unit"), keeping the one-character result only when it
+ * is itself still exactly one UTF-16 unit long; otherwise the original
+ * character is kept UNFOLDED. This guarantees `foldForMatch(text).length
+ * === text.length`, with every index in the folded string meaning the same
+ * position as in `text` — so `indexOf`'s result on the folded string is
+ * always a valid, correct index into the original.
+ *
+ * **Documented limitation**: a character whose case fold is not exactly
+ * one UTF-16 unit (`"İ"`/U+0130 is the canonical example — others exist,
+ * e.g. German `"ß"` uppercases to `"SS"` in some contexts, though
+ * `toLowerCase` never expands it) simply does not case-fold here; it is
+ * compared literally instead. Both the haystack (a document line) and the
+ * needle (the query) are folded through this SAME function, so a query
+ * containing such a character still matches an identical literal
+ * occurrence — it only fails to match the character's OTHER case, which is
+ * the accepted trade-off for exact, never-corrupted offsets.
+ */
+function foldForMatch(text: string): string {
+  let folded = "";
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] as string; // `i < text.length` guarantees a unit here.
+    const lower = ch.toLowerCase();
+    folded += lower.length === 1 ? lower : ch;
+  }
+  return folded;
+}
+
 /** The minimal document-reading surface {@link computeMatches} needs —
  * matches `editor-core`'s own `LineReader` shape (`movement.ts`) and
  * `tecode.editor`'s `getLine`/`lineCount` pair, so a caller can pass either
@@ -48,8 +93,9 @@ export interface LineReader {
  * gap in every line would be both useless to a find widget and, worse, an
  * infinite loop if not special-cased (advancing zero characters past a
  * zero-length match never terminates the scan). `caseSensitive` controls an
- * exact vs. case-insensitive (`toLowerCase`-normalized) comparison; no
- * locale-aware or Unicode-normalizing comparison is attempted.
+ * exact vs. case-insensitive ({@link foldForMatch}-normalized, length- and
+ * offset-preserving — see its TSDoc) comparison; no locale-aware or
+ * Unicode-normalizing comparison is attempted.
  */
 export function computeMatches(
   lineReader: LineReader,
@@ -57,12 +103,12 @@ export function computeMatches(
   caseSensitive: boolean,
 ): Range[] {
   if (query.length === 0) return [];
-  const needle = caseSensitive ? query : query.toLowerCase();
+  const needle = caseSensitive ? query : foldForMatch(query);
   const matches: Range[] = [];
 
   for (let line = 0; line < lineReader.lineCount; line++) {
     const lineText = lineReader.getLine(line);
-    const haystack = caseSensitive ? lineText : lineText.toLowerCase();
+    const haystack = caseSensitive ? lineText : foldForMatch(lineText);
 
     let searchFrom = 0;
     while (searchFrom <= haystack.length - needle.length) {

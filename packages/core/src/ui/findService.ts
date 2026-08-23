@@ -198,7 +198,26 @@ export function createFindService(deps: FindServiceDeps): FindService {
   /** Point the live-recompute subscription (this module's TSDoc) at
    * `document`, detaching from whatever it was previously attached to.
    * A no-op if `document` is already the tracked one (including
-   * `undefined === undefined`, when there is still no active document). */
+   * `undefined === undefined`, when there is still no active document).
+   *
+   * **Catch-up recompute on switch-in** (CodeRabbit finding on PR #59): the
+   * live-recompute subscription only runs while `document` IS the tracked
+   * (active) one — an edit made to a document while it is inactive (e.g.
+   * another extension calling `document.applyEdits` directly, or a second
+   * editor view onto the same buffer) reaches no subscription at all, so
+   * that document's `FindState.matches` goes stale. Simply re-subscribing
+   * here is not enough: `matches` still holds whatever was computed before
+   * the document went inactive, and `replaceCurrent`/`replaceAll` would
+   * replace text at those STALE ranges against the document's now-current
+   * content. Recomputing immediately on switch-in — via the same
+   * buffer-change reclamp policy `document.onDidChange` itself drives
+   * (`reanchor: false`, this module's TSDoc's "Index policy") — closes
+   * that gap: `matches`/`activeMatchIndex` are always fresh by the time any
+   * caller can act on this newly-active document, whether or not it was
+   * ever edited while inactive. `recompute` is already a no-op when
+   * `document` has no `FindState` at all (nothing to catch up), so this
+   * costs nothing for a document find was never opened on.
+   */
   function retrackDocument(document: CoreDocument | undefined): void {
     if (document === trackedDocument) return;
     documentSub?.dispose();
@@ -206,6 +225,12 @@ export function createFindService(deps: FindServiceDeps): FindService {
     trackedDocument = document;
     if (document) {
       documentSub = document.onDidChange(() => recompute(document, false));
+      // `trackedDocument` is already reassigned above, so the
+      // `editorSession.onDidChange` this call to `recompute`/`writeFind`
+      // triggers (via `setState`) re-enters `retrackDocument` with the SAME
+      // `document` and hits the `document === trackedDocument` early return
+      // instead of looping.
+      recompute(document, false);
     }
   }
 
