@@ -104,4 +104,73 @@ describe("buildBracketEditBatch — multi-cursor (Req 6.6, 11.1)", () => {
     expect(edits).toHaveLength(2);
     expect(selections).toEqual([cursorAt(0, 1), cursorAt(1, 1)]);
   });
+
+  // "abcd", cursors at characters 1 and 3, typing "(". Hand-computed
+  // expectation: applying both pair-inserts to "abcd" yields "a()bc()d"
+  // (inserting at character 1 first: "a()bcd", then inserting at the
+  // SECOND cursor's ORIGINAL character 3, i.e. two characters further
+  // right than in the freshly-shifted buffer, landing right before the
+  // trailing "d": "a()bc()d"). The first cursor's own pair is untouched by
+  // the second cursor's insert (which lands entirely to its right), so it
+  // still lands at character 2, between its own parens. The second
+  // cursor's own insertion point shifts right by the first cursor's
+  // 2-character insertion (from 3 to 5), and its own pair then places its
+  // caret one further character in, between ITS OWN parens, at 6.
+  test("two same-line cursors each land inside their OWN pair, not shifted into the other's", () => {
+    const reader = readerOf(["abcd"]);
+    const { edits, selections } = buildBracketEditBatch(
+      reader,
+      [cursorAt(0, 1), cursorAt(0, 3)],
+      "(",
+      PAIRS,
+    );
+    expect(edits).toEqual([
+      { range: { start: pos(0, 1), end: pos(0, 1) }, newText: "()" },
+      { range: { start: pos(0, 3), end: pos(0, 3) }, newText: "()" },
+    ]);
+    expect(selections).toEqual([cursorAt(0, 2), cursorAt(0, 6)]);
+  });
+
+  // Same idea, but with the cursors in the opposite array order (second
+  // cursor to the LEFT of the first) — the fix must not depend on
+  // `selections` already being sorted by position.
+  test("two same-line cursors out of position order each still land inside their own pair", () => {
+    const reader = readerOf(["abcd"]);
+    const { edits, selections } = buildBracketEditBatch(
+      reader,
+      [cursorAt(0, 3), cursorAt(0, 1)],
+      "(",
+      PAIRS,
+    );
+    expect(edits).toEqual([
+      { range: { start: pos(0, 1), end: pos(0, 1) }, newText: "()" },
+      { range: { start: pos(0, 3), end: pos(0, 3) }, newText: "()" },
+    ]);
+    expect(selections).toEqual([cursorAt(0, 6), cursorAt(0, 2)]);
+  });
+
+  // Two same-line selection-wraps: "abcd" with "b" (chars 1-2) and "d"
+  // (chars 3-4) both selected, typing "(". Hand-computed: applying both
+  // wraps to "abcd" yields "a(b)c(d)" (open+close around "b" at 1/2, then
+  // open+close around "d" at 3/4, each shifted by however much text landed
+  // to its left). The first wrap is untouched by the second (which is
+  // entirely to its right): its selection lands at characters 2-3 (between
+  // its own parens). The second wrap shifts right by the first wrap's two
+  // inserted characters, landing at characters 6-7.
+  test("two same-line selection-wraps each keep their OWN wrapped text selected", () => {
+    const reader = readerOf(["abcd"]);
+    const { edits, selections } = buildBracketEditBatch(
+      reader,
+      [range(0, 1, 0, 2), range(0, 3, 0, 4)],
+      "(",
+      PAIRS,
+    );
+    expect(edits).toEqual([
+      { range: { start: pos(0, 1), end: pos(0, 1) }, newText: "(" },
+      { range: { start: pos(0, 2), end: pos(0, 2) }, newText: ")" },
+      { range: { start: pos(0, 3), end: pos(0, 3) }, newText: "(" },
+      { range: { start: pos(0, 4), end: pos(0, 4) }, newText: ")" },
+    ]);
+    expect(selections).toEqual([range(0, 2, 0, 3), range(0, 6, 0, 7)]);
+  });
 });

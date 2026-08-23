@@ -102,19 +102,35 @@ export interface Document {
    * the entry's inverse edits, fires exactly one `onDidChange` (like any
    * other mutation — Req 5.3), and moves the entry onto the redo stack.
    *
-   * Returns the selections that were active immediately BEFORE the
-   * original edit was made, so a caller (`editor.action.undo`) can restore
-   * the caret to where it was — `undefined` when the undo stack is empty
-   * (a documented no-op, matching every other boundary case in this API).
+   * The return value distinguishes two different situations, both arrays:
+   *
+   * - `undefined` means there was nothing to undo at all (the undo stack
+   *   is empty) — a documented no-op, matching every other boundary case
+   *   in this API. The caller should leave the current selections alone.
+   * - A (possibly empty) `Selection[]` means an entry WAS undone. A
+   *   non-empty array is the selections that were active immediately
+   *   BEFORE the original edit was made, so a caller (`editor.action.undo`)
+   *   can restore the caret to where it was. An EMPTY array means the
+   *   entry was recorded with no selection snapshot — every entry created
+   *   through this single-argument `applyEdits` (the only mutation path
+   *   this public interface exposes) falls in this bucket, since capturing
+   *   `selectionsBefore`/`selectionsAfter` is an internal-only extra the
+   *   core's own input router opts into for plain typing/backspace/delete,
+   *   not something this signature can express. An empty array is not "the
+   *   caret should move to nowhere" — the caller should leave the current
+   *   selections untouched, exactly as it would for `undefined`.
    */
   undo(): Selection[] | undefined;
 
   /**
    * The redo counterpart to {@link Document.undo}: re-applies the most
-   * recently undone entry and moves it back onto the undo stack. Returns
-   * the selections that were active immediately AFTER the original edit,
-   * for the caller to restore; `undefined` when the redo stack is empty
-   * (including whenever a fresh edit has cleared it — Req 5.4).
+   * recently undone entry and moves it back onto the undo stack. Same
+   * three-way return contract as {@link Document.undo}, mirrored for the
+   * redo direction: `undefined` means the redo stack was empty (including
+   * whenever a fresh edit has cleared it — Req 5.4); a non-empty array is
+   * the selections active immediately AFTER the original edit, for the
+   * caller to restore; an empty array means the entry carried no selection
+   * snapshot, and the caller should likewise leave the caret where it is.
    */
   redo(): Selection[] | undefined;
 

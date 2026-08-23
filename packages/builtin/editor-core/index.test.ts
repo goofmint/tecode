@@ -421,6 +421,26 @@ describe("editor-core activate() — undo/redo commands (Req 11.1, Task 2.4)", (
     await api.commands.execute("editor.action.undo");
     expect(lines).toEqual(["abc"]);
   });
+
+  // `@tecode/api`'s `Document.undo`/`redo` TSDoc: entries `editor-core`
+  // itself produces (via the public single-arg `applyEdits`, exactly what
+  // this fixture's fake `document.undo`/`redo` mirrors by returning `[]`)
+  // carry no selection snapshot. The handler must leave the caret exactly
+  // where the USER put it — not snap it to wherever the edit happened to
+  // land — for both `undo` and `redo`.
+  test("undo/redo leave the caret untouched when the undone/redone entry has no selection snapshot", async () => {
+    const { api, getSelections } = activateFixture([""]);
+    api.editor.setSelections([cursorAt(0, 0)]);
+
+    await api.commands.execute("editor.action.tab");
+    api.editor.setSelections([cursorAt(0, 2)]); // user moved the caret after typing
+    await api.commands.execute("editor.action.undo");
+    expect(getSelections()).toEqual([cursorAt(0, 2)]);
+
+    api.editor.setSelections([cursorAt(0, 0)]); // user moved it again before redoing
+    await api.commands.execute("editor.action.redo");
+    expect(getSelections()).toEqual([cursorAt(0, 0)]);
+  });
 });
 
 describe("editor-core activate() — addSelectionToNextFindMatch (ctrl+d, Req 11.1, Task 2.4)", () => {

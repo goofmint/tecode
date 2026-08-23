@@ -129,11 +129,21 @@ function wordRangeAt(line: string, character: number): { start: number; end: num
   if (graphemes.length === 0) return undefined;
 
   let index = graphemes.findIndex((g) => g.start <= character && character < g.end);
-  if (index === -1) {
-    // Exactly at a boundary (including end of line): prefer the grapheme
-    // immediately to the left, if any — "cursor right after a word" should
-    // still select that word, matching most editors' ctrl+d convention.
-    index = graphemes.findIndex((g) => g.end === character);
+  if (index === -1 || graphemes[index]!.cls !== "word") {
+    // Exactly at a boundary (including end of line), OR the grapheme under
+    // the cursor is not a word (e.g. whitespace immediately to the right):
+    // prefer the grapheme immediately to the LEFT, if it IS a word —
+    // "cursor right after a word" should still select that word, matching
+    // most editors' ctrl+d convention, even when the character to the
+    // right happens to be a real (non-word) grapheme rather than "nothing
+    // there" (`findIndex` returning -1). Only actually switches to it when
+    // that left grapheme is a word — otherwise the checks below correctly
+    // fall through to "no word here" (e.g. the cursor sits in the middle
+    // of a run of whitespace with no word on either immediate side).
+    const leftIndex = graphemes.findIndex((g) => g.end === character);
+    if (leftIndex !== -1 && graphemes[leftIndex]!.cls === "word") {
+      index = leftIndex;
+    }
   }
   if (index === -1 || graphemes[index]!.cls !== "word") return undefined;
 

@@ -662,6 +662,44 @@ describe("createDocument — undo/redo round-trip (Req 5.4)", () => {
     expect(doc.redo()).toBeUndefined();
   });
 
+  // `@tecode/api`'s `Document.undo`/`redo` TSDoc: `undefined` means "nothing
+  // to undo/redo" (empty stack), while an empty (but defined) array means
+  // "an entry WAS undone/redone, but it carries no selection snapshot" —
+  // exactly what every entry recorded through the public, single-argument
+  // `applyEdits` gets, since there is no `opts` on that signature to supply
+  // `selectionsBefore`/`selectionsAfter` through. The two must stay
+  // distinguishable so a caller (`editor-core`'s undo/redo command
+  // handlers) can tell "leave the caret, nothing happened" apart from
+  // "leave the caret, something happened but there's nothing to restore".
+  test("undo()/redo() return [] (not undefined) for an entry recorded via the public single-arg applyEdits", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "hello",
+      sink,
+      log,
+    });
+
+    // No `opts` — the only signature `@tecode/api`'s `Document` exposes.
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "x" },
+    ]);
+
+    const undone = doc.undo();
+    expect(undone).toEqual([]);
+    expect(undone).not.toBeUndefined();
+
+    const redone = doc.redo();
+    expect(redone).toEqual([]);
+    expect(redone).not.toBeUndefined();
+
+    // Once the stack is actually empty, the return value goes back to
+    // `undefined` — the two states never collapse into each other.
+    doc.undo();
+    expect(doc.undo()).toBeUndefined();
+  });
+
   test("undo()/redo() are silent no-ops on empty stacks", () => {
     const { log, sink } = baseDeps();
     const doc = createDocument({

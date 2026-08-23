@@ -34,6 +34,18 @@ describe("addSelectionToNextMatch (ctrl+d, Req 11.1)", () => {
     expect(addSelectionToNextMatch(reader, selections)).toEqual(selections);
   });
 
+  test("cursor immediately after a word, with whitespace to its right, still selects that word", () => {
+    const reader = readerOf(["foo bar"]);
+    const selections = [cursorAt(0, 3)]; // right after "foo", before the space
+    expect(addSelectionToNextMatch(reader, selections)).toEqual([range(0, 0, 0, 3)]);
+  });
+
+  test("cursor in whitespace not adjacent to any word is still a no-op", () => {
+    const reader = readerOf(["foo   bar"]);
+    const selections = [cursorAt(0, 4)]; // middle of the 3-space run, no word on either side
+    expect(addSelectionToNextMatch(reader, selections)).toEqual(selections);
+  });
+
   test("full sequence: word select -> next match -> wraparound -> all-matches no-op", () => {
     const reader = readerOf(["foo bar foo baz foo"]);
     let selections = [cursorAt(0, 9)]; // inside the middle "foo" (offsets 8-11)

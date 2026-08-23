@@ -313,11 +313,16 @@ export function activate(ctx: ExtensionContext): void {
       if (!editor) return;
       // `undefined` means the undo stack itself was empty — a documented
       // no-op (`@tecode/api`'s `Document.undo` TSDoc). An empty (but
-      // defined) array is still a valid result to write back — `tecode.
-      // editor.setSelections` already no-ops on it (its own TSDoc) —
-      // exactly matching plan's "skip when undefined".
+      // defined) array means an entry WAS undone but carried no selection
+      // snapshot — every entry `editor-core` itself produces is this case,
+      // since it only ever reaches `Document.applyEdits` through the
+      // public single-argument signature (no `selectionsBefore`/`After`
+      // opts to set). Leave the caret exactly where it is for both: an
+      // explicit length check here, rather than leaning on `tecode.editor.
+      // setSelections`'s own empty-array no-op, keeps that "don't move the
+      // caret" decision visible at the call site instead of implicit.
       const selections = editor.document.undo();
-      if (selections !== undefined) api.editor.setSelections(selections);
+      if (selections !== undefined && selections.length > 0) api.editor.setSelections(selections);
     }),
   );
 
@@ -325,8 +330,11 @@ export function activate(ctx: ExtensionContext): void {
     api.commands.register("editor.action.redo", () => {
       const editor = api.window.activeEditor;
       if (!editor) return;
+      // See `editor.action.undo`'s handler above: `undefined` (redo stack
+      // empty) and `[]` (entry redone but recorded no selection snapshot)
+      // both mean "leave the caret alone".
       const selections = editor.document.redo();
-      if (selections !== undefined) api.editor.setSelections(selections);
+      if (selections !== undefined && selections.length > 0) api.editor.setSelections(selections);
     }),
   );
 
