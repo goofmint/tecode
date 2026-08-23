@@ -55,6 +55,7 @@ import { Input, List, Tabs, Tree } from "../ui/components";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
 import type { ThemeRegistry } from "../ui/themeRegistry";
 import type { ThemeService } from "../ui/themeService";
+import type { LanguageRegistry } from "../languages/languageRegistry";
 import { cloneSelection, createEditorNamespace } from "./editorNamespace";
 import {
   createEditorStub,
@@ -163,6 +164,17 @@ export interface CreateTecodeApiDeps {
    * {@link CreateTecodeApiDeps.themeRegistry}'s TSDoc for the pairing
    * requirement. */
   themeService?: Pick<ThemeService, "get">;
+  /**
+   * Backs the REAL `tecode.languages` (Task 2.8, `languages/
+   * languageRegistry.ts`) — `register`/`getLanguage` delegate straight to
+   * the registry, and `getLanguageId` delegates to its
+   * `resolveLanguageId` (Req 8.3). Optional, single-dependency gating
+   * (unlike `themeRegistry`/`themeService`'s pairing — a `LanguageRegistry`
+   * needs no separate "current selection" service the way themes do): a
+   * caller that omits this (every test that predates this task) keeps
+   * `stubs.ts`'s `createLanguagesStub` exactly as before.
+   */
+  languageRegistry?: Pick<LanguageRegistry, "register" | "getLanguage" | "resolveLanguageId">;
 }
 
 /**
@@ -327,11 +339,14 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     Tabs,
   });
 
+  // Real backing (Task 2.8) when a `LanguageRegistry` is supplied;
+  // otherwise the exact same stub as before (`CreateTecodeApiDeps.
+  // languageRegistry`'s TSDoc).
   const languagesStub = createLanguagesStub();
   const languagesNamespace: LanguagesNamespace = Object.freeze({
-    register: languagesStub.register,
-    getLanguageId: languagesStub.getLanguageId,
-    getLanguage: languagesStub.getLanguage,
+    register: deps.languageRegistry ? deps.languageRegistry.register : languagesStub.register,
+    getLanguageId: deps.languageRegistry ? deps.languageRegistry.resolveLanguageId : languagesStub.getLanguageId,
+    getLanguage: deps.languageRegistry ? deps.languageRegistry.getLanguage : languagesStub.getLanguage,
   });
 
   return Object.freeze({

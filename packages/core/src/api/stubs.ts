@@ -333,13 +333,16 @@ export interface LanguagesStub extends LanguagesNamespace {
  * Build the `tecode.languages` stub (Req 8.2, 10.1). `register` is a real,
  * disposable registration; `getLanguageId` always reports `"plaintext"`
  * (Req 8.3's documented fallback) since matching a `Uri` against
- * registered contributions is the real language registry's job (Task
- * 2.8) — `DocumentManager.resolveLanguageId` already returns the same
- * stub value independently (`buffer/documentManager.ts`) until that lands.
- * `getLanguage` IS a real lookup by id over whatever has been registered
- * so far (Task 2.4) — unlike `getLanguageId`, matching a already-known id
- * against the registry needs no file-extension resolution logic, so there
- * is nothing here left to stub out.
+ * registered contributions needs the real language registry's extension
+ * map (`languages/languageRegistry.ts`'s `LanguageRegistry`, Task 2.8) —
+ * this stub stays in play only for a caller that does not supply
+ * `CreateTecodeApiDeps.languageRegistry` (`create.ts`'s gating), same as
+ * `DocumentManager.resolveLanguageId`'s own default
+ * (`buffer/documentManager.ts`). `getLanguage` IS a real lookup by id over
+ * whatever has been registered so far (Task 2.4) — unlike `getLanguageId`,
+ * matching a already-known id against the registry needs no
+ * file-extension resolution logic, so there is nothing here left to stub
+ * out.
  */
 export function createLanguagesStub(): LanguagesStub {
   const registrations = createRegistrySet<LanguageContribution>();
