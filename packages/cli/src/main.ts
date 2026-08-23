@@ -1,10 +1,13 @@
 import pkg from "../package.json";
-import type { FileSystem, Manifest, ResolvedTheme, Tecode } from "@tecode/api";
+import type { Disposable, FileSystem, Manifest, ResolvedTheme, Tecode } from "@tecode/api";
 import {
+  createChordStateMachine,
   createCommandRegistry,
   createConfigService,
   createContextService,
   createDocumentManager,
+  createEditorInputRouter,
+  createEditorSessionService,
   createExtensionHost,
   createFileSystem,
   createHostLog,
@@ -17,11 +20,16 @@ import {
   pathToUri,
   registerCoreConfiguration,
   registerTecodeAlias,
+  wireEditorLangIdContext,
+  type BindingTable,
+  type ChordStateMachine,
   type CommandRegistry,
   type ConfigService,
   type ContextService,
   type DiscoveryFs,
   type DocumentManager,
+  type EditorInputRouter,
+  type EditorSessionService,
   type ExtensionHost,
   type HostLog,
   type LayoutStateService,
@@ -64,6 +72,29 @@ export interface AssemblyRoot {
   /** The layered keybinding table, kept up to date across every startup
    * phase — see `keymapState.ts`'s TSDoc. */
   keymap: KeymapState;
+  /** The live two-stroke chord state machine (Req 4.4, design.md §6.1,
+   * §6.3), built once here against a small forwarding view over `keymap`
+   * (see this function's TSDoc's "Live keymap table view") so it always
+   * resolves strokes against the CURRENT binding table even though
+   * `keymap.getTable()` swaps to a new table object on every config/
+   * extension-registration change. */
+  chordMachine: ChordStateMachine;
+  /** Owns the active document uri and every open document's `EditorState`
+   * (Task 2.2, `ui/editorSession.ts`) — the seam shared between the
+   * rendered `Shell` (via `renderShell.tsx`'s `ShellRenderDeps`) and
+   * {@link editorInputRouter} below, which reads/writes it directly, from
+   * outside React. */
+  editorSession: EditorSessionService;
+  /** Turns a keymap-fallthrough key event into a multi-cursor
+   * `applyEdits` call (Req 4.6, 6.6, design.md §6.1, §8.3, Task 2.2) —
+   * wired into `renderShellToTerminal`'s real `renderer.keyInput` listener
+   * via `keyRouting.ts`'s `handleKeyEvent`. */
+  editorInputRouter: EditorInputRouter;
+  /** Keeps `context`'s `"editorLangId"` key in sync with
+   * {@link editorSession}'s active document (Req 4.6, `ui/editorLangId.ts`).
+   * Disposed alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  editorLangIdSync: Disposable;
   /**
    * Forward-reference box for the extension host (this module's TSDoc,
    * "Forward-referenced host wiring"): `undefined` until the deferred
@@ -105,6 +136,18 @@ export interface AssemblyRoot {
  * `loadModule()` closures (`extensionRecords.ts`) are the first (and only)
  * dynamic imports of extension code, always strictly after this function
  * returns.
+ *
+ * **Live keymap table view** (Req 4.4, design.md §6.1, Task 2.2):
+ * `ChordStateMachineDeps.table` (`@tecode/core`'s `chords.ts`) is typed as
+ * `Pick<BindingTable, "lookup" | "hasSequencePrefix">` — any object with
+ * those two methods, not a snapshot of one specific `BindingTable`
+ * instance. `keymap.getTable()` (`keymapState.ts`) swaps to a brand-new
+ * `BindingTable` object on every `setUserEntries`/`setExtensionEntries`
+ * call (config reload, extension discovery finishing), so `chordMachine`
+ * is built here against a small forwarding object whose `lookup`/
+ * `hasSequencePrefix` call `keymap.getTable()` fresh on every invocation —
+ * the chord machine therefore always resolves strokes against whichever
+ * table is current, with no changes needed to `chords.ts` itself.
  */
 export function buildAssemblyRoot(
   workspaceRoot: string = process.cwd(),
@@ -171,6 +214,28 @@ export function buildAssemblyRoot(
   // TSDoc).
   registerTecodeAlias(api);
 
+  // The live keymap table view (this function's TSDoc) — a thin forwarding
+  // object, not a snapshot, so `chordMachine` below always resolves
+  // against whichever `BindingTable` `keymap` currently holds.
+  const liveTable: Pick<BindingTable, "lookup" | "hasSequencePrefix"> = {
+    lookup: (stroke, get) => keymap.getTable().lookup(stroke, get),
+    hasSequencePrefix: (sequence, get) => keymap.getTable().hasSequencePrefix(sequence, get),
+  };
+  const chordMachine = createChordStateMachine({
+    table: liveTable,
+    execute: (commandId) => commands.execute(commandId),
+    getContext: (key) => context.get(key),
+    log,
+  });
+
+  // Task 2.2's shared editor state seam (Req 4.6, 6.6, design.md §6.1,
+  // §8.1, §8.3): `editorSession` is handed to both the rendered `Shell`
+  // (`renderShell.tsx`) and `editorInputRouter` below, so a keystroke
+  // routed outside React updates exactly what `Shell` renders.
+  const editorSession = createEditorSessionService({ documents });
+  const editorInputRouter = createEditorInputRouter({ context, editorSession });
+  const editorLangIdSync = wireEditorLangIdContext({ editorSession, context });
+
   return {
     log,
     sink,
@@ -185,6 +250,10 @@ export function buildAssemblyRoot(
     theme,
     workspaceRoot,
     keymap,
+    chordMachine,
+    editorSession,
+    editorInputRouter,
+    editorLangIdSync,
     hostRef,
   };
 }
@@ -315,6 +384,9 @@ function wireProcessExit(root: AssemblyRoot): void {
     shuttingDown = true;
     await root.layoutState.flush();
     root.config.dispose();
+    root.chordMachine.dispose();
+    root.editorSession.dispose();
+    root.editorLangIdSync.dispose();
     await root.hostRef.current?.disposeAll();
   };
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -385,6 +457,9 @@ export async function runTecode(
     theme: root.theme,
     documents: root.documents,
     config: root.config,
+    editorSession: root.editorSession,
+    chordMachine: root.chordMachine,
+    editorInputRouter: root.editorInputRouter,
   });
 
   const firstFrameMs = performance.now() - startedAt;
@@ -419,6 +494,9 @@ export async function runTecode(
     });
     await root.layoutState.flush();
     root.config.dispose();
+    root.chordMachine.dispose();
+    root.editorSession.dispose();
+    root.editorLangIdSync.dispose();
     await deferred.extensionHost.disposeAll();
     process.exit(0);
   }

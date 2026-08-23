@@ -91,6 +91,19 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     expect(root.keymap.getTable().entries().size).toBe(0);
     expect(root.hostRef.current).toBeUndefined();
 
+    // Task 2.2's key-routing wiring: the chord machine, editor session, and
+    // input router this task adds alongside Task 1.15's original wiring.
+    expect(root.chordMachine).toBeDefined();
+    expect(root.editorSession).toBeDefined();
+    expect(root.editorSession.getActiveDocumentUri()).toBeUndefined();
+    expect(root.editorInputRouter).toBeDefined();
+    expect(root.editorLangIdSync).toBeDefined();
+    // No active document yet, so editorLangId reads as unset.
+    expect(root.context.get("editorLangId")).toBeUndefined();
+    // A stroke with no bindings at all reports "passthrough" — proves the
+    // chord machine is live against `keymap`'s (currently empty) table.
+    expect(root.chordMachine.handleStroke("a")).toBe("passthrough");
+
     // buildAssemblyRoot's own TSDoc documents that registerTecodeAlias runs
     // as its last step; `create.contract.test.ts` is where the resulting
     // `"tecode"` module-alias resolution is exercised end-to-end (the one
@@ -98,6 +111,9 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     // stays focused on cli's composition wiring itself.
   } finally {
     root.config.dispose();
+    root.chordMachine.dispose();
+    root.editorSession.dispose();
+    root.editorLangIdSync.dispose();
     await rm(dir, { recursive: true, force: true });
   }
 });

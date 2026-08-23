@@ -85,3 +85,14 @@ export {
 } from "./editorState";
 
 export { cursorCellColumn, EditorView, type EditorViewProps } from "./editorView";
+
+export {
+  createEditorSessionService,
+  type EditorSessionService,
+  type EditorSessionServiceDeps,
+} from "./editorSession";
+
+export {
+  wireEditorLangIdContext,
+  type WireEditorLangIdContextDeps,
+} from "./editorLangId";

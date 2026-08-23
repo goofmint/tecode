@@ -56,6 +56,7 @@ import { uriToPath } from "../buffer/uri";
 import type { CommandRegistry } from "../commands/registry";
 import type { ConfigService } from "../config/service";
 import { RegisteredView, Tabs, type TabItem } from "./components";
+import type { EditorSessionService } from "./editorSession";
 import { createInitialEditorState, type EditorState } from "./editorState";
 import { EditorView } from "./editorView";
 import { useFocusTracking } from "./focus";
@@ -490,6 +491,35 @@ export interface ShellProps {
   /** Threaded through to `EditorView` for its `editor.lineNumbers` lookup
    * (Req 9.5). */
   config?: ConfigService;
+  /**
+   * Owns the active document uri and every open document's `EditorState`
+   * from outside this component (Task 2.2, `ui/editorSession.ts`'s TSDoc)
+   * — needed once something other than `Shell` itself (the editor input
+   * router, at the composition root, `packages/cli`) must read/write the
+   * same active-document/cursor state React does. When given, `Shell`
+   * defers to it entirely for both concerns and re-renders on its
+   * `onDidChange`; the local `useState`/`useRef` fallback below (Task 2.1's
+   * original, still-correct implementation) only runs when it is omitted,
+   * so an existing caller/test that never passes one keeps its exact prior
+   * behavior. */
+  editorSession?: EditorSessionService;
+}
+
+/** Re-renders the calling component whenever `session` reports a change
+ * (Task 2.2, `ui/editorSession.ts`) — same subscribe-then-force-render
+ * shape, including the same subscribe-after-render race fix, as
+ * {@link useSlotViews}/{@link useOpenDocuments} above. A no-op subscription
+ * when `session` is `undefined` (`Shell`'s Task 2.1 fallback path never
+ * needs this to fire). */
+function useEditorSessionVersion(session: EditorSessionService | undefined): void {
+  const [, forceRender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!session) return undefined;
+    const sub = session.onDidChange(() => forceRender());
+    // Closes the subscribe-after-render race — see useSlotViews's TSDoc.
+    forceRender();
+    return () => sub.dispose();
+  }, [session]);
 }
 
 /** The UI shell (Req 6.1-6.5, design.md §8.1): the top-level VS Code-style
@@ -499,51 +529,76 @@ export interface ShellProps {
 export function Shell(props: ShellProps): ReactNode {
   const [layout, updateLayout] = useLayoutState(props.layoutState);
   const pairs = useSidebarPairs(props.slotRegistry);
+  const editorSession = props.editorSession;
+  useEditorSessionVersion(editorSession);
 
   // Req 6.5, 6.6, design.md §8.1: tabs/active-tab/EditorState derived from
   // `props.documents` once it's given — see ShellProps' TSDoc for the
   // fallback when it isn't.
   const openDocuments = useOpenDocuments(props.documents);
-  const [activeDocumentUri, setActiveDocumentUri] = useState<Uri | undefined>(undefined);
-  const editorStatesRef = useRef<Map<Uri, EditorState>>(new Map());
+  // Task 2.1's original, component-local active-uri/EditorState tracking —
+  // used only when `props.editorSession` is not given (ShellProps' TSDoc on
+  // `editorSession`). Both hooks below still run unconditionally (Rules of
+  // Hooks); each simply no-ops when a session was provided, since the
+  // session already runs this exact policy itself (`ui/editorSession.ts`).
+  const [localActiveDocumentUri, setLocalActiveDocumentUri] = useState<Uri | undefined>(undefined);
+  const localEditorStatesRef = useRef<Map<Uri, EditorState>>(new Map());
 
   useEffect(() => {
+    if (editorSession) return;
     if (openDocuments.length === 0) {
-      setActiveDocumentUri(undefined);
+      setLocalActiveDocumentUri(undefined);
       return;
     }
-    setActiveDocumentUri((current) => {
+    setLocalActiveDocumentUri((current) => {
       // Keep the current active document if it's still open; otherwise
       // fall back to the first open one (covers both "nothing selected
       // yet" and "the active document just closed").
       if (current && openDocuments.some((d) => d.uri === current)) return current;
       return openDocuments[0]!.uri;
     });
-  }, [openDocuments]);
+  }, [openDocuments, editorSession]);
 
   useEffect(() => {
+    if (editorSession) return;
     // Drop retained EditorState for documents that are no longer open —
     // otherwise a long session's Map would grow forever across
     // open/close cycles.
     const openUris = new Set(openDocuments.map((d) => d.uri));
-    for (const uri of Array.from(editorStatesRef.current.keys())) {
-      if (!openUris.has(uri)) editorStatesRef.current.delete(uri);
+    for (const uri of Array.from(localEditorStatesRef.current.keys())) {
+      if (!openUris.has(uri)) localEditorStatesRef.current.delete(uri);
     }
-  }, [openDocuments]);
+  }, [openDocuments, editorSession]);
 
   function getOrCreateEditorState(uri: Uri): EditorState {
-    let state = editorStatesRef.current.get(uri);
+    if (editorSession) return editorSession.getState(uri);
+    let state = localEditorStatesRef.current.get(uri);
     if (!state) {
       state = createInitialEditorState(uri);
-      editorStatesRef.current.set(uri, state);
+      localEditorStatesRef.current.set(uri, state);
     }
     return state;
   }
 
+  const activeDocumentUri = editorSession ? editorSession.getActiveDocumentUri() : localActiveDocumentUri;
+  const setActiveDocumentUri = useCallback(
+    (uri: string) => {
+      if (editorSession) editorSession.setActiveDocumentUri(uri);
+      else setLocalActiveDocumentUri(uri);
+    },
+    [editorSession],
+  );
+
   const hasOpenDocuments = openDocuments.length > 0;
-  const activeDocument = activeDocumentUri
-    ? openDocuments.find((d) => d.uri === activeDocumentUri)
-    : undefined;
+  // With an `editorSession`, resolve the active document through the
+  // service itself — `ShellProps` allows `editorSession` without
+  // `documents`, and in that configuration `openDocuments` is empty even
+  // though the session knows the active document.
+  const activeDocument = editorSession
+    ? editorSession.getActiveDocument()
+    : activeDocumentUri
+      ? openDocuments.find((d) => d.uri === activeDocumentUri)
+      : undefined;
   const editorTabs: TabItem[] = hasOpenDocuments
     ? openDocuments.map((d) => ({ id: d.uri, label: basename(uriToPath(d.uri)) }))
     : (props.editorTabs ?? []);
