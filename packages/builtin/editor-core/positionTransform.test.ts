@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { Position, TextEdit } from "@tecode/api";
-import { comparePositions, dropOverlapping, transformPosition } from "./positionTransform";
+import type { Position, Selection, TextEdit } from "@tecode/api";
+import { comparePositions, dropOverlapping, transformPosition, transformSelection } from "./positionTransform";
 
 function pos(line: number, character: number): Position {
   return { line, character };
@@ -109,6 +109,30 @@ describe("transformPosition — tracking range.end (this module's TSDoc)", () =>
       const reversed = [...indentedEdits].reverse();
       expect(transformPosition(pos(0, 6), reversed)).toEqual(pos(2, 2));
     });
+  });
+});
+
+describe("transformSelection (Task 2.4's toggleLineComment)", () => {
+  function selection(startLine: number, startChar: number, endLine: number, endChar: number): Selection {
+    const start = pos(startLine, startChar);
+    const end = pos(endLine, endChar);
+    return { start, end, anchor: start, active: end };
+  }
+
+  test("a forward selection's both endpoints shift by an insert before it on the same line", () => {
+    const s = selection(0, 5, 0, 8);
+    expect(transformSelection(s, [edit(0, 0, 0, 0, "// ")])).toEqual(selection(0, 8, 0, 11));
+  });
+
+  test("a backward selection stays backward after the transform", () => {
+    const s: Selection = { start: pos(0, 5), end: pos(0, 8), anchor: pos(0, 8), active: pos(0, 5) };
+    const result = transformSelection(s, [edit(0, 0, 0, 0, "// ")]);
+    expect(result).toEqual({ start: pos(0, 8), end: pos(0, 11), anchor: pos(0, 11), active: pos(0, 8) });
+  });
+
+  test("an edit on a different line does not affect the selection", () => {
+    const s = selection(1, 0, 1, 5);
+    expect(transformSelection(s, [edit(0, 0, 0, 0, "// ")])).toEqual(s);
   });
 });
 

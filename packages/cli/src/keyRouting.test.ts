@@ -130,6 +130,174 @@ describe("handleKeyEvent (Task 2.2, design.md §6.1's full pipeline)", () => {
 
     chordMachine.dispose();
   });
+
+  test("editor-core's bracket keybinding ('(') is consumed by the REAL chord machine and never reaches the editor router (Task 2.4, no double-insertion)", () => {
+    // Verifies the stroke name `manifest.ts`'s TSDoc documents for typing
+    // "(": an unmodified printable keystroke is NEVER sent as a Kitty
+    // escape sequence (`@opentui/core`'s `CliRenderer` never requests the
+    // "report all keys as escape codes" flag), so on every terminal it
+    // arrives as the literal byte and `parseKeypress` reports `{ name:
+    // "(", ctrl: false, shift: false, ... }` — no `shift+` prefix, even
+    // though it's a shifted key on a US layout — so `keyEventToStroke`
+    // produces the canonical stroke `"("` itself, exactly what this
+    // manifest binds. Proof that the keybinding — not `editor/
+    // inputRouter.ts`'s plain-typing fallthrough — is `editor.action.
+    // typeOpenParen`'s sole source, so bracket auto-close never
+    // double-inserts.
+    const log = createHostLog();
+    const context = createContextService();
+    context.set("editorTextFocus", true);
+
+    const layers: KeymapLayers = {
+      defaults: [],
+      fallback: [],
+      extension: editorCoreManifest.contributes.keybindings ?? [],
+      user: [],
+    };
+    const table = createBindingTable(layers, { log });
+
+    const executed: string[] = [];
+    const chordMachine = createChordStateMachine({
+      table,
+      execute: (id) => {
+        executed.push(id);
+        return Promise.resolve(undefined);
+      },
+      getContext: (key) => context.get(key),
+      log,
+    });
+
+    let routed = false;
+    const deps: KeyRoutingDeps = {
+      chordMachine,
+      editorInputRouter: {
+        routeKeyEvent: () => {
+          routed = true;
+          return true;
+        },
+      },
+    };
+
+    handleKeyEvent(deps, keyOf({ name: "(", sequence: "(" }));
+
+    expect(executed).toEqual(["editor.action.typeOpenParen"]);
+    expect(routed).toBe(false);
+
+    chordMachine.dispose();
+  });
+});
+
+describe("editor-core's Task 2.4 keybindings — verified strokes (manifest.ts's TSDoc)", () => {
+  /** Build the real chord machine over `editor-core`'s manifest bindings
+   * and fire one key event through it, returning which command (if any)
+   * executed and whether the event reached the editor router — the same
+   * harness as this file's "Enter"/bracket tests above, factored out since
+   * this block exercises many strokes. */
+  function fireEditorCoreKeybinding(event: RoutableKeyEvent): { executed: string[]; routed: boolean } {
+    const log = createHostLog();
+    const context = createContextService();
+    context.set("editorTextFocus", true);
+
+    const layers: KeymapLayers = {
+      defaults: [],
+      fallback: [],
+      extension: editorCoreManifest.contributes.keybindings ?? [],
+      user: [],
+    };
+    const table = createBindingTable(layers, { log });
+
+    const executed: string[] = [];
+    const chordMachine = createChordStateMachine({
+      table,
+      execute: (id) => {
+        executed.push(id);
+        return Promise.resolve(undefined);
+      },
+      getContext: (key) => context.get(key),
+      log,
+    });
+
+    let routed = false;
+    handleKeyEvent(
+      { chordMachine, editorInputRouter: { routeKeyEvent: () => (routed = true) } },
+      event,
+    );
+    chordMachine.dispose();
+    return { executed, routed };
+  }
+
+  test("ctrl+/ on a Kitty-disambiguating terminal reaches toggleLineComment", () => {
+    // Verified Kitty CSI-u decode: `{ name: "/", ctrl: true }`.
+    const { executed } = fireEditorCoreKeybinding(keyOf({ name: "/", ctrl: true }));
+    expect(executed).toEqual(["editor.action.toggleLineComment"]);
+  });
+
+  test("ctrl+/ on a non-Kitty terminal (raw 0x1F -> name '_') also reaches toggleLineComment", () => {
+    // Verified legacy decode of the raw control byte 0x1F: `{ name: "_",
+    // ctrl: true }` — the dual `ctrl+_` binding this manifest declares
+    // specifically for this case.
+    const { executed } = fireEditorCoreKeybinding(keyOf({ name: "_", ctrl: true }));
+    expect(executed).toEqual(["editor.action.toggleLineComment"]);
+  });
+
+  test("alt+up (verified: option AND meta both set) reaches moveLinesUp", () => {
+    const { executed } = fireEditorCoreKeybinding(keyOf({ name: "up", option: true, meta: true }));
+    expect(executed).toEqual(["editor.action.moveLinesUp"]);
+  });
+
+  test("alt+down (verified: option AND meta both set) reaches moveLinesDown", () => {
+    const { executed } = fireEditorCoreKeybinding(keyOf({ name: "down", option: true, meta: true }));
+    expect(executed).toEqual(["editor.action.moveLinesDown"]);
+  });
+
+  test("shift+alt+down (verified: shift/option/meta all set) reaches duplicateLine, not moveLinesDown", () => {
+    const { executed } = fireEditorCoreKeybinding(
+      keyOf({ name: "down", shift: true, option: true, meta: true }),
+    );
+    expect(executed).toEqual(["editor.action.duplicateLine"]);
+  });
+
+  test("ctrl+z reaches undo; ctrl+y and ctrl+shift+z both reach redo", () => {
+    expect(fireEditorCoreKeybinding(keyOf({ name: "z", ctrl: true })).executed).toEqual([
+      "editor.action.undo",
+    ]);
+    expect(fireEditorCoreKeybinding(keyOf({ name: "y", ctrl: true })).executed).toEqual([
+      "editor.action.redo",
+    ]);
+    expect(fireEditorCoreKeybinding(keyOf({ name: "z", ctrl: true, shift: true })).executed).toEqual([
+      "editor.action.redo",
+    ]);
+  });
+
+  test("documented degraded mode: ctrl+shift+z on a non-Kitty terminal collides with ctrl+z (fires undo)", () => {
+    // A non-Kitty terminal cannot distinguish Ctrl+Shift+Z from Ctrl+Z (a
+    // raw control byte carries no case/shift information) — this
+    // manifest's TSDoc documents `redo`'s `ctrl+shift+z` binding as
+    // accepting this risk (mitigated by the always-safe `ctrl+y`
+    // alternate above) since an accidental undo is non-destructive. This
+    // test pins that documented, deliberate degraded behavior rather than
+    // silently reversing it later.
+    const { executed } = fireEditorCoreKeybinding(keyOf({ name: "z", ctrl: true, shift: false }));
+    expect(executed).toEqual(["editor.action.undo"]);
+  });
+
+  test("ctrl+d reaches addSelectionToNextFindMatch (no collision with duplicateLine's key)", () => {
+    const { executed } = fireEditorCoreKeybinding(keyOf({ name: "d", ctrl: true }));
+    expect(executed).toEqual(["editor.action.addSelectionToNextFindMatch"]);
+  });
+
+  test("ctrl+shift+k on a non-Kitty terminal (collapses to ctrl+k) safely does nothing — no command claims ctrl+k", () => {
+    const { executed, routed } = fireEditorCoreKeybinding(keyOf({ name: "k", ctrl: true, shift: false }));
+    expect(executed).toEqual([]);
+    // Not a printable/editable key either (ctrl held) — the editor router
+    // would not have inserted anything even if this had fallen through.
+    expect(routed).toBe(true);
+  });
+
+  test("ctrl+shift+k on a Kitty-disambiguating terminal reaches deleteLine", () => {
+    const { executed } = fireEditorCoreKeybinding(keyOf({ name: "k", ctrl: true, shift: true }));
+    expect(executed).toEqual(["editor.action.deleteLine"]);
+  });
 });
 
 /**

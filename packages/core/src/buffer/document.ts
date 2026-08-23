@@ -77,11 +77,17 @@ export interface CoreDocument extends Document {
    * bumps `version`, fires one `onDidChange`, and moves the
    * freshly-recomputed redo batch onto the redo stack. Returns the
    * entry's `selectionsBefore` so the caller can restore the caret;
-   * `undefined` on an empty undo stack (silent no-op).
+   * `undefined` on an empty undo stack (silent no-op). `selectionsBefore`
+   * defaults to `[]` (`ApplyEditsOptions`'s own TSDoc) for any entry
+   * recorded through the public, single-argument `Document.applyEdits` —
+   * see that interface's `undo`/`redo` TSDoc (`@tecode/api`) for why an
+   * empty array is a distinct, meaningful result from `undefined` here,
+   * not a second spelling of "nothing to undo".
    */
   undo(): Selection[] | undefined;
   /** The redo counterpart to {@link CoreDocument.undo}. Returns the
-   * entry's `selectionsAfter`; `undefined` on an empty redo stack. */
+   * entry's `selectionsAfter`; `undefined` on an empty redo stack. Same
+   * "`[]` means no snapshot was recorded" caveat as {@link CoreDocument.undo}. */
   redo(): Selection[] | undefined;
   /**
    * The document's full current text, joined with `eol` (design.md §7.2:

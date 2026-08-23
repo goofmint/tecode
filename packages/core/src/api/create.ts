@@ -231,6 +231,7 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
   const languagesNamespace: LanguagesNamespace = Object.freeze({
     register: languagesStub.register,
     getLanguageId: languagesStub.getLanguageId,
+    getLanguage: languagesStub.getLanguage,
   });
 
   return Object.freeze({
