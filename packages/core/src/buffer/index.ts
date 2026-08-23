@@ -35,3 +35,4 @@ export {
   type DocumentManagerFs,
 } from "./documentManager";
 export { pathToUri, uriToPath } from "./uri";
+export { createFileSystem, type FileSystemDeps } from "./fileSystem";

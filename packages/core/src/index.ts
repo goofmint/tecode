@@ -96,6 +96,8 @@ export {
   type UndoEntry,
   type UndoStack,
   type UndoStackDeps,
+  createFileSystem,
+  type FileSystemDeps,
 } from "./buffer/index";
 export { UI_PLACEHOLDER } from "./ui/index";
 export {
@@ -108,4 +110,19 @@ export {
   type JsoncParseResult,
   type JsoncSuccess,
 } from "./config/index";
-export { API_BUILDER_PLACEHOLDER } from "./api/index";
+export {
+  createBaseTheme,
+  createEditorStub,
+  createLanguagesStub,
+  createTecodeApi,
+  createThemesStub,
+  createUiStub,
+  createWindowStub,
+  registerTecodeAlias,
+  type CreateTecodeApiDeps,
+  type LanguagesStub,
+  type RegisteredView,
+  type ThemesStub,
+  type UiStub,
+  type WindowStub,
+} from "./api/index";
