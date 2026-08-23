@@ -53,10 +53,16 @@ import {
   type ThemeRegistry,
   type ThemeService,
 } from "@tecode/core";
-import { builtinManifests, builtinThemeAssets } from "@tecode/builtin";
+import {
+  builtinLanguageGrammarAssets,
+  builtinLanguageQueryAssets,
+  builtinManifests,
+  builtinThemeAssets,
+} from "@tecode/builtin";
 import { resolveStartupTarget, type StartupTarget } from "./argv";
 import { buildExtensionDirMap, buildExtensionRecords } from "./extensionRecords";
 import { createKeymapState, type KeymapState } from "./keymapState";
+import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
 import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./renderShell";
 import { createBuiltinThemeAssetsFs } from "./themeAssetsFs";
 import { detectTerminalCapabilities } from "./terminalCapabilities";
@@ -216,14 +222,18 @@ export interface AssemblyRoot {
   /** The syntax-highlighting pipeline (Task 2.8, Req 8.1-8.3, design.md
    * §10, `languages/highlightService.ts`) — built against `documents` and
    * `languageRegistry` above, with the production `web-tree-sitter`-backed
-   * parser backend and a real-filesystem asset resolver (both defaulted
-   * inside `createHighlightService`/`createAssetResolver`). Threaded to
-   * `renderShell.tsx`'s `ShellRenderDeps.highlightService`, mirroring
-   * `findService`'s own composition-root wiring. With zero languages
-   * registered (Task 2.9/Issue #25 not landed yet), every open document
-   * resolves to `"plaintext"` and this never touches the parser backend at
-   * all (design.md §10's "no real grammars ship yet" — `languages/
-   * highlightService.ts`'s TSDoc). */
+   * parser backend (defaulted inside `createHighlightService`) and an
+   * asset resolver whose filesystem seam is overlaid with `@tecode/
+   * builtin`'s embedded `languages-basic` grammar/query assets (Task 2.9,
+   * Req 8.4, 8.5, `createBuiltinLanguageAssetsFs`) so those 12 built-in
+   * languages load without ever touching a real `fs.readFile` (this
+   * extension has no real directory — `languageAssetsFs.ts`'s TSDoc).
+   * Threaded to `renderShell.tsx`'s `ShellRenderDeps.highlightService`,
+   * mirroring `findService`'s own composition-root wiring. A document whose
+   * extension matches none of `languages-basic`'s (or any `user`/
+   * `workspace` extension's) languages still resolves to `"plaintext"` and
+   * never touches the parser backend at all (design.md §10's Req 8.3
+   * bypass). */
   highlightService: HighlightService;
   /** Turns a keymap-fallthrough key event into a multi-cursor
    * `applyEdits` call (Req 4.6, 6.6, design.md §6.1, §8.3, Task 2.2) —
@@ -325,10 +335,20 @@ export function buildAssemblyRoot(
   // `web-tree-sitter`, `createHighlightService`'s own default) — see
   // `AssemblyRoot.highlightService`'s TSDoc for why this is safe with zero
   // languages registered.
+  // `fs: createBuiltinLanguageAssetsFs(...)` (Task 2.9, Req 8.4, 8.5):
+  // overlays the SAME "built-in has no real directory" seam
+  // `createBuiltinThemeAssetsFs` fixes for themes (above's TSDoc), so a
+  // `languages-basic` language's `grammar`/`highlights` paths resolve from
+  // `@tecode/builtin`'s embedded WASM/`.scm` maps instead of a real (never
+  // present) `fs.readFile` under this extension's synthetic `<builtin>/<id>`
+  // directory — in both dev and a `bun build --compile` binary alike
+  // (`languageAssetsFs.ts`'s TSDoc).
   const highlightService = createHighlightService({
     documents,
     languageRegistry,
-    assetResolver: createAssetResolver(),
+    assetResolver: createAssetResolver({
+      fs: createBuiltinLanguageAssetsFs(builtinLanguageGrammarAssets, builtinLanguageQueryAssets),
+    }),
     log,
     sink,
   });

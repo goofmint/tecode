@@ -115,7 +115,7 @@ test("Dark Modern is active before renderShell would be called, with zero extens
 
     expect(root.hostRef.current).toBe(extensionHost);
     const loadedIds = loadResult.loaded.map((e) => e.extensionId).sort();
-    expect(loadedIds).toEqual(["tecode.editor-core", "tecode.themes-default"]);
+    expect(loadedIds).toEqual(["tecode.editor-core", "tecode.languages-basic", "tecode.themes-default"]);
     // The theme is still Dark Modern after the deferred phase re-applies
     // the configured theme (`runDeferredPhase`'s own `applyConfiguredTheme`
     // retry) — a safe no-op here since it was already correct.
