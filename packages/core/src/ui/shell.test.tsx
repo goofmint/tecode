@@ -65,6 +65,8 @@ import { createDocumentManager, type DocumentManagerFs } from "../buffer/documen
 import { pathToUri } from "../buffer/uri";
 import { createHostLog } from "../host/errors";
 import { createContextService } from "../keymap/context";
+import { createEditorSessionService } from "./editorSession";
+import { createFindService } from "./findService";
 import { ContextFocusTracker } from "./focus";
 import { createLayoutStateService, type LayoutStateFs } from "./layoutState";
 import { createSlotRegistry } from "./slotRegistry";
@@ -473,6 +475,124 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     });
 
     expect(captureCharFrame()).toContain("No editor open.");
+  });
+});
+
+describe("Shell — FindWidget wiring (Req 11.1, design.md §13)", () => {
+  test("opening find renders the widget and focuses it; closing hides it and returns focus to the text", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "const x = 1;\nconsole.log(x);" }),
+    });
+    const editorSession = createEditorSessionService({ documents });
+    const findService = createFindService({ editorSession });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell
+            slotRegistry={slotRegistry}
+            layoutState={layoutState}
+            documents={documents}
+            editorSession={editorSession}
+            findService={findService}
+          />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 100, height: 20 },
+    );
+    await act(async () => {
+      await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Not open yet: no widget in the frame, no findWidgetFocus.
+    expect(captureCharFrame()).not.toContain("Replace");
+    expect(context.get<boolean>("findWidgetFocus")).toBeUndefined();
+
+    await act(async () => {
+      findService.open();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Open: the widget renders (its "Replace" placeholder is a reliable,
+    // unambiguous marker distinct from the buffer's own text) and its query
+    // input is focused (Req 11.1's "ctrl+f opens focused").
+    expect(captureCharFrame()).toContain("Replace");
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+
+    await act(async () => {
+      findService.close();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Closed: the widget is gone, findWidgetFocus is no longer stuck true
+    // (the `focus.tsx` fix for a still-focused node detaching), and focus
+    // returned to the editor's text plane (Req 11.1's "Escape closes
+    // returning focus to the text").
+    expect(captureCharFrame()).not.toContain("Replace");
+    expect(context.get<boolean>("findWidgetFocus")).toBe(false);
+    expect(context.get<boolean>("editorTextFocus")).toBe(true);
+  });
+
+  test("typing while the find widget is focused updates the query, not the buffer", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "const x = 1;" }),
+    });
+    const editorSession = createEditorSessionService({ documents });
+    const findService = createFindService({ editorSession });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell
+            slotRegistry={slotRegistry}
+            layoutState={layoutState}
+            documents={documents}
+            editorSession={editorSession}
+            findService={findService}
+          />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 100, height: 20 },
+    );
+    const document = await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    await act(async () => {
+      findService.open();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+    // With `findWidgetFocus` true, the buffer's own `editorTextFocus` is
+    // NOT set — `editor/inputRouter.ts` gates every insert on that key, so
+    // a keystroke reaching the buffer at all requires it to be true. Typed
+    // characters go through `findService.setQuery` (`findWidget.tsx`'s
+    // `Input onChange`), never through `document.applyEdits`.
+    expect(context.get<boolean>("editorTextFocus")).toBeFalsy();
+
+    await act(async () => {
+      findService.setQuery("const");
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(document.getLine(0)).toBe("const x = 1;"); // buffer unchanged
+    expect(captureCharFrame()).toContain("1/1"); // one match found
   });
 });
 

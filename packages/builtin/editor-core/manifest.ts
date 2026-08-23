@@ -110,6 +110,37 @@
  * `ctrl+y`, a universally unambiguous (Ctrl-only, no shift) alternate
  * binding for the same command, verified below.
  *
+ * **Task 2.5's find/replace keybindings** (Req 11.1, design.md §13): all
+ * find/replace STATE/UI/LOGIC lives in `@tecode/core` (`ui/findService.ts`,
+ * `ui/findWidget.tsx`) — every command below is a one-line delegate to
+ * `ctx.api.editor.find.*` (`index.ts`'s TSDoc's architecture decision).
+ * `ctrl+f` opens the widget from the buffer (`when: "editorTextFocus"`);
+ * `return`/`shift+return`/`escape` drive it once open (`when:
+ * "findWidgetFocus"` — the context key `ui/findWidget.tsx`'s query input
+ * reports via `useFocusTracking`, set/cleared exactly like `editorTextFocus`
+ * is for the buffer). `escape`'s canonical key name — verified the same way
+ * every other stroke in this file was (this TSDoc's own methodology,
+ * `keymap/normalize.test.ts`'s `normalizeKey("Escape") === "escape"`,
+ * `keymap/keyEvent.test.ts`'s `keyEventToStroke({name: "escape"}) ===
+ * "escape"`) — is simply `"escape"`, already `@opentui/core`'s own parsed
+ * key name (`parseKeypress`'s dedicated `escape` case, not something that
+ * varies by Kitty-protocol availability the way bracket/quote characters
+ * do), so no dual-binding is needed the way `ctrl+/`'s two forms are.
+ * `return`'s binding here `when: "findWidgetFocus"` coexists with this
+ * SAME manifest's OWN `return` → `editor.action.insertNewLine` binding
+ * `when: "editorTextFocus"` above — two entries sharing one key string,
+ * disambiguated purely by `when` (`bindingTable.ts`'s documented
+ * multi-binding-per-key contract): `editorTextFocus` and `findWidgetFocus`
+ * are never both true at once (opening find moves the OpenTUI focus
+ * pointer off the buffer and onto the widget's query input — `ui/
+ * findWidget.tsx`'s own TSDoc), so exactly one of the two ever resolves
+ * for a given `return` stroke. `editor.action.replaceOne`/`replaceAll`
+ * are registered as commands (palette/`commands.execute` reachable) with
+ * no DEFAULT keybinding in this MVP — the widget's two inputs do not
+ * (yet) report distinguishable focus states, so there is no unambiguous
+ * "which input is this Enter in" signal to bind a keyboard shortcut on
+ * top of `findNext`'s own `return` binding without a collision.
+ *
  * **Alt+Arrow (`moveLinesUp`/`moveLinesDown`/`duplicateLine`)**: verified
  * against both the traditional CSI modifier-parameter form
  * (`\x1b[1;{n}A`) and the double-ESC form (`\x1b\x1b[A`) some terminals
@@ -134,6 +165,10 @@
 import type { Manifest } from "@tecode/api";
 
 const WHEN_EDITOR_TEXT_FOCUS = "editorTextFocus";
+/** Task 2.5's find widget's own context key (Req 11.1) — set/cleared by
+ * `@tecode/core`'s `ui/findWidget.tsx` query input via `useFocusTracking`,
+ * the exact same mechanism `WHEN_EDITOR_TEXT_FOCUS` uses for the buffer. */
+const WHEN_FIND_WIDGET_FOCUS = "findWidgetFocus";
 
 export default {
   id: "tecode.editor-core",
@@ -189,6 +224,19 @@ export default {
       { id: "editor.action.typeCloseBrace", title: "Type } (auto-close)", category: "Editor" },
       { id: "editor.action.typeDoubleQuote", title: 'Type " (auto-close)', category: "Editor" },
       { id: "editor.action.typeSingleQuote", title: "Type ' (auto-close)", category: "Editor" },
+      // Task 2.5: in-buffer find/replace (Req 11.1). See this file's TSDoc
+      // "Task 2.5's find/replace keybindings" for the full rationale.
+      { id: "editor.action.find", title: "Find", category: "Editor" },
+      { id: "editor.action.findNext", title: "Find Next", category: "Editor" },
+      { id: "editor.action.findPrevious", title: "Find Previous", category: "Editor" },
+      { id: "editor.action.replaceOne", title: "Replace", category: "Editor" },
+      { id: "editor.action.replaceAll", title: "Replace All", category: "Editor" },
+      {
+        id: "editor.action.toggleFindCaseSensitive",
+        title: "Toggle Find Case Sensitivity",
+        category: "Editor",
+      },
+      { id: "editor.action.closeFind", title: "Close Find", category: "Editor" },
     ],
     keybindings: [
       { key: "left", command: "editor.action.cursorLeft", when: WHEN_EDITOR_TEXT_FOCUS },
@@ -252,6 +300,13 @@ export default {
       { key: "}", command: "editor.action.typeCloseBrace", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: '"', command: "editor.action.typeDoubleQuote", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: "'", command: "editor.action.typeSingleQuote", when: WHEN_EDITOR_TEXT_FOCUS },
+      // Task 2.5: in-buffer find/replace (Req 11.1). See this file's TSDoc
+      // "Task 2.5's find/replace keybindings" for the full rationale,
+      // including why `return` safely appears twice in this table.
+      { key: "ctrl+f", command: "editor.action.find", when: WHEN_EDITOR_TEXT_FOCUS },
+      { key: "return", command: "editor.action.findNext", when: WHEN_FIND_WIDGET_FOCUS },
+      { key: "shift+return", command: "editor.action.findPrevious", when: WHEN_FIND_WIDGET_FOCUS },
+      { key: "escape", command: "editor.action.closeFind", when: WHEN_FIND_WIDGET_FOCUS },
     ],
   },
 } satisfies Manifest;

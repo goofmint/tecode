@@ -31,6 +31,7 @@ import { createContextService } from "../keymap/context";
 import { createHostLog, type HostError } from "../host/errors";
 import type { ExtensionModule } from "../host/activation";
 import { createEditorSessionService } from "../ui/editorSession";
+import { createFindService } from "../ui/findService";
 import { createTecodeApi } from "./create";
 import { registerTecodeAlias } from "./alias";
 
@@ -498,5 +499,83 @@ describe("createTecodeApi — real editor.* backing via editorSession (Req 6.5, 
     expect(doc.dirty).toBe(false);
     const { readFile } = await import("node:fs/promises");
     expect(await readFile(filePath, "utf8")).toBe("Xbefore");
+  });
+});
+
+describe("createTecodeApi — real editor.find backing via a FindService (Req 11.1, Task 2.5)", () => {
+  let dir: string;
+  let config: ConfigService | undefined;
+
+  afterEach(async () => {
+    config?.dispose();
+    config = undefined;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  test("api.editor.find delegates to the real FindService, mutating the real document", async () => {
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-find-"));
+    const filePath = join(dir, "find.txt");
+    await writeFile(filePath, "foo bar foo baz foo", "utf8");
+    const uri = pathToUri(filePath);
+
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const documents = createDocumentManager({ log, sink });
+    const fs = createFileSystem({ log });
+    config = createConfigService({ log, sink, workspaceRoot: dir });
+    await config.ready;
+    const context = createContextService();
+    const editorSession = createEditorSessionService({ documents });
+    const findService = createFindService({ editorSession });
+
+    const api = createTecodeApi({
+      commands,
+      documents,
+      fs,
+      rootUri: pathToUri(dir),
+      config,
+      context,
+      sink,
+      editorSession,
+      findService,
+    });
+
+    await api.workspace.openDocument(uri);
+
+    api.editor.find.open();
+    api.editor.find.setQuery("foo");
+    api.editor.find.next();
+    api.editor.find.setReplaceQuery("X");
+    api.editor.find.replaceCurrent();
+
+    // `replaceCurrent` replaced the SECOND "foo" (index 0 was active,
+    // `next()` advanced it to index 1) through the real document.
+    expect(api.editor.getLine(0)).toBe("foo bar X baz foo");
+
+    api.editor.find.replaceAll();
+    // `replaceAll` replaces EVERY current match, including the two the
+    // earlier `replaceCurrent` call left untouched.
+    expect(api.editor.getLine(0)).toBe("X bar X baz X");
+
+    api.editor.find.close();
+    // Every method is frozen-namespace-shaped and never throws with no
+    // active editor either — a second `close()`/`next()` after the whole
+    // document closes is a documented no-op, not a crash.
+    documents.close(uri);
+    expect(() => api.editor.find.next()).not.toThrow();
+    expect(() => api.editor.find.close()).not.toThrow();
+  });
+
+  test("with no findService supplied, api.editor.find is the inert, frozen stub", async () => {
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-find-stub-"));
+    const root = await buildRoot(dir);
+    const { api } = root;
+    config = root.config;
+
+    expect(Object.isFrozen(api.editor.find)).toBe(true);
+    expect(() => api.editor.find.open()).not.toThrow();
+    expect(() => api.editor.find.next()).not.toThrow();
+    expect(() => api.editor.find.replaceAll()).not.toThrow();
   });
 });

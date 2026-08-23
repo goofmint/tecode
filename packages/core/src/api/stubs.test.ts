@@ -33,7 +33,7 @@ test("createBaseTheme fills in every UiColorKey and is frozen", () => {
   expect(theme.colors["statusBar.background"]).toBeDefined();
   expect(theme.colors["tab.activeBackground"]).toBeDefined();
   expect(theme.colors["list.activeSelectionBackground"]).toBeDefined();
-  expect(Object.keys(theme.colors)).toHaveLength(55);
+  expect(Object.keys(theme.colors)).toHaveLength(57);
 
   expect(Object.isFrozen(theme)).toBe(true);
   expect(Object.isFrozen(theme.colors)).toBe(true);

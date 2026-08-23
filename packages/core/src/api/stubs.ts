@@ -34,6 +34,7 @@
 import type {
   Disposable,
   EditorNamespace,
+  FindNamespace,
   LanguageContribution,
   LanguagesNamespace,
   Position,
@@ -115,6 +116,12 @@ const BASE_COLORS: Record<UiColorKey, RGB> = {
   "editor.selectionBackground": SELECTION,
   "editor.selectionForeground": FG,
   "editor.inactiveSelectionBackground": { r: 38, g: 53, b: 71 },
+  // Distinct from `editor.selectionBackground`/`editor.inactiveSelectionBackground`
+  // (Req 11.1, `theme.ts`'s TSDoc): a warm amber for the CURRENT match, a
+  // dimmer olive for every OTHER match — both read unambiguously as "a
+  // search hit", not "a selection".
+  "editor.findMatchBackground": { r: 148, g: 116, b: 25 },
+  "editor.findMatchHighlightBackground": { r: 90, g: 85, b: 40 },
   "editorLineNumber.foreground": MUTED,
   "editorLineNumber.activeForeground": FG,
   "editorCursor.foreground": FG,
@@ -227,13 +234,44 @@ export function createWindowStub(): WindowStub {
 }
 
 /**
+ * Build the inert `tecode.editor.find` stub (Req 11.1, design.md §13) —
+ * every one of `FindNamespace`'s 9 actions is a documented no-op. Used
+ * whenever `create.ts` has no `FindService` to back `tecode.editor.find`
+ * with: the no-`editorSession`-at-all case (`createEditorStub` below) and
+ * any caller of `createEditorNamespace` (`editorNamespace.ts`) that omits
+ * `find` (matching `EditorNamespaceDeps.find`'s own TSDoc). Never throws,
+ * matching every other stub in this module.
+ */
+export function createFindStub(): FindNamespace {
+  // Frozen (design.md §12's "every namespace object... is Object.freeze'd
+  // shallowly") — `tecode.editor` itself is frozen by `create.ts`, but
+  // `editor.find` is its own nested namespace-shaped object and needs the
+  // same protection independently; the real, `FindService`-backed
+  // `FindNamespace` `create.ts` builds gets the identical treatment.
+  return Object.freeze({
+    open() {},
+    close() {},
+    setQuery() {},
+    setReplaceQuery() {},
+    toggleCaseSensitive() {},
+    next() {},
+    previous() {},
+    replaceCurrent() {},
+    replaceAll() {},
+  });
+}
+
+/**
  * Build the `tecode.editor` stub (Req 10.1, design.md §12: "calls made with
  * no active editor no-op with a status-bar notice"). There is no
  * active-editor tracking yet, so this is *always* the no-active-editor
  * case — `selections` is empty, `cursor` is the document origin, and every
  * mutating call reports through `sink` rather than doing anything.
+ * `find` defaults to {@link createFindStub} — a caller with no
+ * `FindService` at all (there is no active editor here in the first place)
+ * gets the same inert no-op surface as the rest of this namespace.
  */
-export function createEditorStub(deps: { sink: StatusSink }): EditorNamespace {
+export function createEditorStub(deps: { sink: StatusSink; find?: FindNamespace }): EditorNamespace {
   const { sink } = deps;
 
   function notifyNoActiveEditor(action: string): void {
@@ -278,6 +316,7 @@ export function createEditorStub(deps: { sink: StatusSink }): EditorNamespace {
       // back to, and unlike `revealLine`/`insertSnippet`/`applyEdits` this
       // is not itself an action that failed, so it does not notify.
     },
+    find: deps.find ?? createFindStub(),
   };
 }
 

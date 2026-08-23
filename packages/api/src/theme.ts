@@ -5,11 +5,17 @@
 /**
  * The UI color keys a theme can supply, reusing VS Code's color IDs so
  * existing VS Code theme knowledge transfers directly (Req 7.2). This is
- * the ~40-key set called out in Req 7.2, realized here as 55 keys; the six keys
+ * the ~40-key set called out in Req 7.2, realized here as 57 keys; the six keys
  * named explicitly there (`editor.background`, `editor.foreground`,
  * `sideBar.background`, `statusBar.background`, `tab.activeBackground`,
  * `list.activeSelectionBackground`) are included below. A theme that omits
  * a key falls back to the built-in base palette for it (design.md §9).
+ *
+ * `editor.findMatchBackground`/`editor.findMatchHighlightBackground` (Req
+ * 11.1, design.md §13) back editor-core's in-buffer find/replace widget:
+ * the former highlights the current match, the latter every other match —
+ * both distinct from `editor.selectionBackground` so a search result never
+ * reads as a normal selection (`ui/editorView.tsx`'s highlight layering).
  */
 export type UiColorKey =
   | "focusBorder"
@@ -20,6 +26,8 @@ export type UiColorKey =
   | "editor.selectionBackground"
   | "editor.selectionForeground"
   | "editor.inactiveSelectionBackground"
+  | "editor.findMatchBackground"
+  | "editor.findMatchHighlightBackground"
   | "editorLineNumber.foreground"
   | "editorLineNumber.activeForeground"
   | "editorCursor.foreground"

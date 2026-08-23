@@ -26,6 +26,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { SelectOption, TabSelectOption, TabSelectRenderable } from "@opentui/core";
 import type { ComponentType } from "@tecode/api";
+import type { FocusableNode } from "./focus";
 import { toColorInput, useTheme } from "./theme";
 
 /* ------------------------------------------------------------------ */
@@ -196,6 +197,18 @@ export interface InputProps {
   onChange?: (value: string) => void;
   onSubmit?: (value: string) => void;
   focused?: boolean;
+  /**
+   * Ref callback onto the underlying OpenTUI `<input>` node — an escape
+   * hatch for a `core`-internal caller that needs the raw node itself, to
+   * either track its focus (`useFocusTracking`, Req 11.1) or imperatively
+   * drive it (`.focus()` — the find widget's own mount effect, `focus.tsx`'s
+   * `FocusableNode`'s TSDoc explains why a manual call is needed rather
+   * than the declarative `focused` prop below). Not part of `tecode.ui.
+   * Input`'s public extension-facing contract — `ComponentType`'s props are
+   * plain `Record<string, unknown>` (this module's TSDoc), so an extension
+   * that never sets this key is unaffected either way.
+   */
+  inputRef?: (node: FocusableNode | null) => void;
 }
 
 /** A minimal single-line text input (`tecode.ui.Input`, Req 10.1), over
@@ -216,6 +229,7 @@ export function Input(rawProps: Record<string, unknown>): ReactNode {
     : undefined;
   return (
     <input
+      ref={props.inputRef}
       value={props.value}
       placeholder={props.placeholder}
       focused={props.focused}

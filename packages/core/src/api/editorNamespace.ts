@@ -15,10 +15,11 @@
  * `CreateTecodeApiDeps.editorSession` was supplied.
  */
 
-import type { EditorNamespace, Position, Selection, TextEdit } from "@tecode/api";
+import type { EditorNamespace, FindNamespace, Position, Selection, TextEdit } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { StatusSink } from "../host/errors";
 import type { EditorSessionService } from "../ui/editorSession";
+import { createFindStub } from "./stubs";
 
 /** The primary cursor's placeholder position when there is no active
  * editor: the document origin. A fresh object every call — mirrors
@@ -69,6 +70,13 @@ export interface EditorNamespaceDeps {
    * `Pick` (matches `editor/inputRouter.ts`'s own dependency narrowing) so
    * a test can inject a minimal fake instead of a whole real service. */
   editorSession: Pick<EditorSessionService, "getActiveDocument" | "getState" | "setState">;
+  /** Backs `tecode.editor.find` (Req 11.1, design.md §13) — the ready-made
+   * `FindNamespace` `create.ts` builds from a `FindService`, or omitted for
+   * `createFindStub()`'s inert no-op surface (a caller that wires a real
+   * `editorSession` but no `FindService` — every test in this suite that
+   * predates this task, and any future caller with genuinely no find/
+   * replace UI to back it). */
+  find?: FindNamespace;
 }
 
 /**
@@ -187,5 +195,7 @@ export function createEditorNamespace(deps: EditorNamespaceDeps): EditorNamespac
       const state = editorSession.getState(document.uri);
       editorSession.setState(document.uri, { ...state, selections: selections.map(cloneSelection) });
     },
+
+    find: deps.find ?? createFindStub(),
   };
 }
