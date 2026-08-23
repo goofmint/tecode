@@ -124,7 +124,10 @@ test("headless startup renders the shell before any extension's index.ts loads, 
     expect(firstFrameMs).toBeGreaterThanOrEqual(0);
     expect(firstFrameMs).toBeLessThan(1_000);
 
-    expect(headlessExit?.["loaded"]).toBe(1);
+    // 2, not 1: the workspace fixture extension AND the real `@tecode/
+    // builtin` `editor-core` (Task 2.3, `onStartup`) both load and
+    // activate during this real (no `builtins` override) subprocess run.
+    expect(headlessExit?.["loaded"]).toBe(2);
     expect(headlessExit?.["skipped"]).toBe(0);
   } finally {
     await rm(homeDir, { recursive: true, force: true });

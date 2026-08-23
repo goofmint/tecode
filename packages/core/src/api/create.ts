@@ -3,9 +3,12 @@
  * every extension (Req 10.1, 10.2; design.md §12; Task 1.13). Each
  * `tecode.*` namespace is either a thin, deliberately narrowed projection of
  * an already-built core service (`commands`, `workspace`, `config`,
- * `context`) or a documented no-op/placeholder stub (`window`, `editor`,
- * `ui`, `languages`, `themes` — see `stubs.ts`'s TSDoc for why each is a
- * stub today).
+ * `context`), a real implementation conditional on an optional dependency
+ * (`window.activeEditor`, `editor` — real once `deps.editorSession` is
+ * supplied, Task 2.3; the exact prior stub otherwise), or a documented
+ * no-op/placeholder stub (`ui`, `languages`, `themes`, and `window`/`editor`
+ * without `editorSession` — see `stubs.ts`'s TSDoc for why each is a stub
+ * today).
  *
  * **Narrowing, not re-implementing** (design.md §12's "prevent accidental
  * monkey-patching across extensions" extends to the host itself): several
@@ -44,8 +47,10 @@ import type { DocumentManager } from "../buffer/documentManager";
 import type { ConfigService } from "../config/service";
 import type { ContextService } from "../keymap/context";
 import type { StatusSink } from "../host/errors";
+import type { EditorSessionService } from "../ui/editorSession";
 import { Input, List, Tabs, Tree } from "../ui/components";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
+import { createEditorNamespace } from "./editorNamespace";
 import {
   createEditorStub,
   createLanguagesStub,
@@ -92,6 +97,18 @@ export interface CreateTecodeApiDeps {
    * `host/activation.ts`'s `activateExtension`.
    */
   slotRegistry?: SlotRegistry;
+  /**
+   * Backs the REAL `tecode.editor` (Task 2.3's `editorNamespace.ts`) and
+   * `tecode.window.activeEditor` — the active-document/selection seam Task
+   * 2.2 built for the editor input router (`ui/editorSession.ts`).
+   * Optional, narrowed to a `Pick` (`editorNamespace.ts`'s own dependency
+   * shape): every caller that predates Task 2.3 (and any future caller
+   * with genuinely no editor UI to back it) omits this and gets the exact
+   * same "always no active editor" `editor`/`window.activeEditor` behavior
+   * as before (`stubs.ts`'s `createEditorStub`/`createWindowStub`) — Task
+   * 2.3 adds a real backing, not a breaking change to the stub contract.
+   */
+  editorSession?: Pick<EditorSessionService, "getActiveDocument" | "getState" | "setState">;
 }
 
 /**
@@ -119,6 +136,12 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     onDidOpen: deps.documents.onDidOpen,
     onDidClose: deps.documents.onDidClose,
     onDidSave: deps.documents.onDidSave,
+    // `DocumentManager.save` resolves `boolean` (success/no-op both report
+    // through `sink` already — see its own TSDoc) — `tecode.workspace.save`
+    // narrows that to `Promise<void>` per its documented "always resolves,
+    // never throws" contract (Req 11.1's save command doesn't need the
+    // boolean; it would just be another thing every caller has to ignore).
+    save: (uri: Uri) => deps.documents.save(uri).then(() => undefined),
   });
 
   const configNamespace: ConfigNamespace = Object.freeze({
@@ -149,7 +172,17 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
   const windowStub = createWindowStub();
   const windowNamespace: WindowNamespace = Object.freeze({
     get activeEditor() {
-      return windowStub.activeEditor;
+      // Real backing (Task 2.3) when an `editorSession` was supplied;
+      // otherwise the exact same "nothing is active" stub as before
+      // (`windowStub.activeEditor`'s TSDoc) — see `CreateTecodeApiDeps.
+      // editorSession`'s TSDoc for why both paths coexist. `document` here
+      // is a `CoreDocument`, which structurally satisfies `@tecode/api`'s
+      // `Document` (it only ADDS members — `document.ts`'s own TSDoc), so
+      // no cast is needed to hand it back as `Editor.document`.
+      if (!deps.editorSession) return windowStub.activeEditor;
+      const document = deps.editorSession.getActiveDocument();
+      if (!document) return undefined;
+      return { document, selections: deps.editorSession.getState(document.uri).selections };
     },
     showMessage: windowStub.showMessage,
     showQuickPick: windowStub.showQuickPick,
@@ -157,7 +190,14 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     setStatusBarItem: windowStub.setStatusBarItem,
   });
 
-  const editorNamespace: EditorNamespace = Object.freeze(createEditorStub({ sink: deps.sink }));
+  // Real backing (Task 2.3's `editorNamespace.ts`) when an `editorSession`
+  // was supplied; otherwise the exact same stub as before (this module's
+  // TSDoc, `CreateTecodeApiDeps.editorSession`'s TSDoc).
+  const editorNamespace: EditorNamespace = Object.freeze(
+    deps.editorSession
+      ? createEditorNamespace({ sink: deps.sink, editorSession: deps.editorSession })
+      : createEditorStub({ sink: deps.sink }),
+  );
 
   // No slot registry injected (see CreateTecodeApiDeps.slotRegistry's
   // TSDoc) — build one with no pending manifest views and no activation

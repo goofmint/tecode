@@ -10,6 +10,7 @@ import {
   type KeyEventLike,
   type KeymapLayers,
 } from "@tecode/core";
+import editorCoreManifest from "@tecode/builtin/editor-core/manifest";
 import { handleKeyEvent, type KeyRoutingDeps, type RoutableKeyEvent } from "./keyRouting";
 
 function keyOf(partial: Partial<KeyEventLike> & { name: string }): RoutableKeyEvent {
@@ -76,6 +77,58 @@ describe("handleKeyEvent (Task 2.2, design.md §6.1's full pipeline)", () => {
       editorInputRouter: { routeKeyEvent: () => false },
     };
     expect(() => handleKeyEvent(deps, keyOf({ name: "a" }))).not.toThrow();
+  });
+
+  test("editor-core's Enter keybinding is consumed by the REAL chord machine and never reaches the editor router (Task 2.3, no double-insertion)", () => {
+    // Builds the actual layered pipeline (`@opentui/core`'s reported Enter
+    // key name is "return", not "enter" — `editor-core/manifest.ts`'s own
+    // TSDoc) against `editor-core`'s real manifest keybindings, exactly as
+    // `buildAssemblyRoot`/`runDeferredPhase` wire it in production — proof
+    // that a bound Enter stroke is fully "consumed" by the keymap layer
+    // BEFORE `editorInputRouter.routeKeyEvent` (Task 2.2's plain-typing
+    // fallthrough, which does not itself special-case "return" either way)
+    // ever sees it, so `editor.action.insertNewLine` is the newline's sole
+    // source — never a double insertion.
+    const log = createHostLog();
+    const context = createContextService();
+    context.set("editorTextFocus", true);
+
+    const layers: KeymapLayers = {
+      defaults: [],
+      fallback: [],
+      extension: editorCoreManifest.contributes.keybindings ?? [],
+      user: [],
+    };
+    const table = createBindingTable(layers, { log });
+
+    const executed: string[] = [];
+    const chordMachine = createChordStateMachine({
+      table,
+      execute: (id) => {
+        executed.push(id);
+        return Promise.resolve(undefined);
+      },
+      getContext: (key) => context.get(key),
+      log,
+    });
+
+    let routed = false;
+    const deps: KeyRoutingDeps = {
+      chordMachine,
+      editorInputRouter: {
+        routeKeyEvent: () => {
+          routed = true;
+          return true;
+        },
+      },
+    };
+
+    handleKeyEvent(deps, keyOf({ name: "return", sequence: "\r" }));
+
+    expect(executed).toEqual(["editor.action.insertNewLine"]);
+    expect(routed).toBe(false);
+
+    chordMachine.dispose();
   });
 });
 

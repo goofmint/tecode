@@ -200,6 +200,10 @@ test("runDeferredPhase loads a workspace extension, activates it on startup, wir
     const { extensionHost, loadResult } = await runDeferredPhase(root, {
       initialFilePath: targetFile,
       fs: createHermeticDiscoveryFs(),
+      // Isolate this test to the workspace fixture extension only — the
+      // real `@tecode/builtin` `builtinManifests` (Task 2.3's `editor-core`
+      // onward) would otherwise also load here and inflate `loadResult`.
+      builtins: [],
     });
 
     expect(loadResult.loaded.map((e) => e.extensionId)).toEqual(["fixture.startup-order"]);
@@ -256,6 +260,9 @@ test("runDeferredPhase reports a bad extension without failing startup (Req 2.4)
 
     const { extensionHost, loadResult } = await runDeferredPhase(root, {
       fs: createHermeticDiscoveryFs(),
+      // Isolate this test to the broken workspace extension only — see the
+      // sibling test above's identical `builtins: []` comment.
+      builtins: [],
     });
 
     expect(loadResult.loaded).toEqual([]);

@@ -30,6 +30,7 @@ import { createConfigService, type ConfigService } from "../config/service";
 import { createContextService } from "../keymap/context";
 import { createHostLog, type HostError } from "../host/errors";
 import type { ExtensionModule } from "../host/activation";
+import { createEditorSessionService } from "../ui/editorSession";
 import { createTecodeApi } from "./create";
 import { registerTecodeAlias } from "./alias";
 
@@ -294,12 +295,13 @@ describe("createTecodeApi — contract tests (design.md §16 compatibility gate)
     const doc = await api.workspace.openDocument(uri);
     expect(api.workspace.documents).toContain(doc);
 
-    // `workspace.save`/`close` are not part of the public `WorkspaceNamespace`
-    // (Req 10.1 lists no such method — saving is a future built-in
-    // extension's command, design.md §13's editor-core), so this test
-    // drives the underlying `DocumentManager` directly to prove the
-    // *events* are correctly wired through `tecode.workspace`.
-    await documents.save(uri);
+    // `workspace.close` has no public `WorkspaceNamespace` counterpart (Req
+    // 10.1 lists no such method), so this test drives the underlying
+    // `DocumentManager` directly for it; `workspace.save` (Req 11.1, Task
+    // 2.3) IS public now — exercised through `api.workspace.save` itself to
+    // prove the real namespace method (not just the underlying manager) is
+    // correctly wired and fires `onDidSave`.
+    await api.workspace.save(uri);
     documents.close(uri);
 
     expect(events).toEqual([`open:${uri}`, `save:${uri}`, `close:${uri}`]);
@@ -368,5 +370,117 @@ describe("createTecodeApi — contract tests (design.md §16 compatibility gate)
     // Register/dispose symmetry: the fixture's command is gone post-teardown.
     const result = await api.commands.execute("fixture.contract.activate");
     expect(result).toBeUndefined();
+  });
+});
+
+describe("createTecodeApi — real editor.* backing via editorSession (Req 6.5, 6.6, 11.1, Task 2.3)", () => {
+  let dir: string;
+  let config: ConfigService | undefined;
+
+  afterEach(async () => {
+    config?.dispose();
+    config = undefined;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  test("editor/window.activeEditor read the real active document and selections once one is open", async () => {
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-editor-"));
+    const filePath = join(dir, "doc.txt");
+    await writeFile(filePath, "hello\nworld", "utf8");
+    const uri = pathToUri(filePath);
+
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const documents = createDocumentManager({ log, sink });
+    const fs = createFileSystem({ log });
+    config = createConfigService({ log, sink, workspaceRoot: dir });
+    await config.ready;
+    const context = createContextService();
+    const editorSession = createEditorSessionService({ documents });
+
+    const api = createTecodeApi({
+      commands,
+      documents,
+      fs,
+      rootUri: pathToUri(dir),
+      config,
+      context,
+      sink,
+      editorSession,
+    });
+
+    // Before anything is open: identical to the no-editorSession stub
+    // contract (this file's earlier "no active editor" test).
+    expect(api.editor.selections).toEqual([]);
+    expect(api.editor.lineCount).toBe(0);
+    expect(api.editor.getLine(0)).toBe("");
+    expect(api.window.activeEditor).toBeUndefined();
+
+    await api.workspace.openDocument(uri);
+
+    // `EditorSessionService`'s active-document policy (`ui/editorSession.ts`)
+    // makes the freshly opened document active synchronously.
+    expect(api.window.activeEditor?.document.uri).toBe(uri);
+    expect(api.editor.lineCount).toBe(2);
+    expect(api.editor.getLine(0)).toBe("hello");
+    expect(api.editor.getLine(1)).toBe("world");
+    expect(api.editor.selections).toEqual([
+      { start: { line: 0, character: 0 }, end: { line: 0, character: 0 }, anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } },
+    ]);
+
+    const newPos = { line: 1, character: 3 };
+    api.editor.setSelections([{ start: newPos, end: newPos, anchor: newPos, active: newPos }]);
+    expect(api.editor.cursor).toEqual(newPos);
+    expect(api.window.activeEditor?.selections[0]?.active).toEqual(newPos);
+
+    // `window.activeEditor.document` is the real `Document` — `applyEdits`/
+    // `transaction` work exactly as `editor-core`'s command handlers need
+    // (design.md §13's "pure command handlers over tecode.editor + document.
+    // transaction").
+    api.window.activeEditor?.document.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "X" },
+    ]);
+    expect(api.editor.getLine(0)).toBe("Xhello");
+  });
+
+  test("workspace.save persists to disk and clears dirty through the real API", async () => {
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-editor-"));
+    const filePath = join(dir, "save.txt");
+    await writeFile(filePath, "before", "utf8");
+    const uri = pathToUri(filePath);
+
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const documents = createDocumentManager({ log, sink });
+    const fs = createFileSystem({ log });
+    config = createConfigService({ log, sink, workspaceRoot: dir });
+    await config.ready;
+    const context = createContextService();
+    const editorSession = createEditorSessionService({ documents });
+
+    const api = createTecodeApi({
+      commands,
+      documents,
+      fs,
+      rootUri: pathToUri(dir),
+      config,
+      context,
+      sink,
+      editorSession,
+    });
+
+    const doc = await api.workspace.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "X" },
+    ]);
+    expect(doc.dirty).toBe(true);
+
+    await api.workspace.save(uri);
+
+    expect(doc.dirty).toBe(false);
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(filePath, "utf8")).toBe("Xbefore");
   });
 });

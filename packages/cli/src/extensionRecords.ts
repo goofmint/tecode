@@ -26,6 +26,7 @@
 import { stat as nodeStat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { builtinModules } from "@tecode/builtin";
 import { getUserConfigDir, type ExtensionRecord, type LoadedExtension } from "@tecode/core";
 
 async function pathExists(path: string): Promise<boolean> {
@@ -64,13 +65,16 @@ async function loadUserOrWorkspaceModule(extensionDir: string): Promise<unknown>
  * - `builtin` extensions: `discovery.ts` gives these a synthetic
  *   `<builtin>/<id>` `sourcePath` (no real directory — design.md §4.4
  *   compiles built-ins in as static imports instead). `loadModule` for a
- *   builtin therefore has no generic dynamic-import implementation to fall
- *   back to; it exists here as a documented placeholder that reports a
- *   clear error rather than dynamically importing a path that was never a
- *   real file. `packages/builtin/index.ts`'s `builtinManifests` is `[]`
- *   today, so this branch cannot currently fire in practice — it is
- *   structurally ready for the first built-in that adds itself there and
- *   needs its own static-import case added alongside.
+ *   builtin therefore looks `extensionId` up in `@tecode/builtin`'s
+ *   `builtinModules` (Task 2.3) — a map from manifest id to its compiled-in
+ *   `activate`/`deactivate` module, the built-in-side counterpart to
+ *   `builtinManifests` — rather than dynamically importing a path that was
+ *   never a real file. A builtin id with no entry there (a manifest added
+ *   to `builtinManifests` before its module is wired into `builtinModules`
+ *   — should not happen, but this is host-boundary code, so it degrades
+ *   the same way an external extension's genuinely-missing module would:
+ *   a rejected `loadModule` that `host/activation.ts` reports and marks
+ *   `"failed"`, not a startup crash) reports a clear error instead.
  */
 export function buildExtensionRecord(extension: LoadedExtension): ExtensionRecord {
   const isBuiltin = extension.source === "builtin";
@@ -83,15 +87,18 @@ export function buildExtensionRecord(extension: LoadedExtension): ExtensionRecor
     manifest: extension.manifest,
     extensionUri,
     storagePath,
-    loadModule: () =>
-      isBuiltin
-        ? Promise.reject(
+    loadModule: () => {
+      if (!isBuiltin) return loadUserOrWorkspaceModule(extensionDir);
+      const module = builtinModules[extension.extensionId];
+      return module
+        ? Promise.resolve(module)
+        : Promise.reject(
             new Error(
-              `No static module wiring for built-in extension "${extension.extensionId}" yet ` +
-                `(packages/builtin/index.ts's builtinManifests is empty today — see extensionRecords.ts's TSDoc).`,
+              `No static module wiring for built-in extension "${extension.extensionId}" ` +
+                `(missing from @tecode/builtin's builtinModules — see extensionRecords.ts's TSDoc).`,
             ),
-          )
-        : loadUserOrWorkspaceModule(extensionDir),
+          );
+    },
   };
 }
 

@@ -31,10 +31,13 @@ export interface CoreConfigRegistrar {
   registerConfiguration(contribution: ConfigurationContribution): Disposable;
 }
 
-/** Core's own configuration schema (Req 9.5, design.md §8.3): `editor.
+/** Core's own configuration schema (Req 9.5, 11.1; design.md §8.3): `editor.
  * lineNumbers` gates the `EditorView` gutter; `editor.tabSize` sizes
- * indentation for both the gutter-adjacent text layer and (in a later task)
- * editor-core's indent commands. */
+ * indentation for both the gutter-adjacent text layer and editor-core's
+ * indent commands (Task 2.3); `editor.insertSpaces` picks what those same
+ * commands' Tab key inserts — spaces up to the next `editor.tabSize` stop
+ * when `true` (the default, matching most editors), a literal `"\t"`
+ * otherwise. */
 export const CORE_CONFIGURATION: ConfigurationContribution = {
   title: "Editor",
   properties: {
@@ -47,6 +50,11 @@ export const CORE_CONFIGURATION: ConfigurationContribution = {
       type: "number",
       default: 4,
       description: "The number of spaces a tab is equal to.",
+    },
+    "editor.insertSpaces": {
+      type: "boolean",
+      default: true,
+      description: "Insert spaces when pressing Tab.",
     },
   },
 };

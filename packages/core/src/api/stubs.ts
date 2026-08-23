@@ -262,6 +262,22 @@ export function createEditorStub(deps: { sink: StatusSink }): EditorNamespace {
     applyEdits() {
       notifyNoActiveEditor("apply edits");
     },
+    getLine() {
+      // No active editor: "" (Req 11.1's documented no-active-editor
+      // default — `@tecode/api`'s `EditorNamespace.getLine` TSDoc), same
+      // "report the harmless empty/zero default, never throw" policy as
+      // every other read here.
+      return "";
+    },
+    get lineCount() {
+      return 0;
+    },
+    setSelections() {
+      // No active editor: a documented no-op (`@tecode/api`'s
+      // `EditorNamespace.setSelections` TSDoc) — there is nothing to write
+      // back to, and unlike `revealLine`/`insertSnippet`/`applyEdits` this
+      // is not itself an action that failed, so it does not notify.
+    },
   };
 }
 
