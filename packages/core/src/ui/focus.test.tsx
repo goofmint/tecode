@@ -49,6 +49,11 @@ describe("ContextFocusTracker / useFocusTracking (Req 4.6)", () => {
   });
 
   test("used outside a ContextFocusTracker, it attaches without throwing and reports nothing", async () => {
+    // An independent context service, never passed anywhere near the
+    // rendered tree below — proves focusing outside a ContextFocusTracker
+    // truly reports to nothing, not merely that some in-tree context
+    // happens to stay untouched.
+    const context = createContextService();
     let captured: BoxRenderable | null = null;
     const { renderOnce } = await testRender(<Probe onNode={(node) => (captured = node)} />, {
       width: 10,
@@ -57,6 +62,7 @@ describe("ContextFocusTracker / useFocusTracking (Req 4.6)", () => {
     await renderOnce();
 
     expect(() => captured!.focus()).not.toThrow();
+    expect(context.get<boolean>("testFocus")).toBeUndefined();
   });
 
   test("the ref callback tolerates being called with null (React's unmount cleanup)", async () => {

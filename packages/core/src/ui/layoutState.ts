@@ -199,6 +199,16 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
   // Serialized write chain (this module's TSDoc) — every scheduled save
   // (debounced or flushed) is appended here so writes never overlap.
   let saveChain: Promise<void> = Promise.resolve();
+  // True once `load()` has settled (successfully or not). While false, any
+  // field an `update()` call touches is also recorded in `localOverrides`
+  // below — guarding against the race where `update()` lands while `load()`
+  // is still awaiting `fs.readFile`: without this, `load()`'s merge (which
+  // must still apply the *persisted* value for every field the caller
+  // hasn't locally touched) would blindly overwrite that field with
+  // whatever `state.json` says, clobbering the just-arrived local update
+  // even though it happened after the read started.
+  let loaded = false;
+  let localOverrides: Partial<LayoutState> = {};
 
   function logSafely(level: "error" | "warning", err: HostError): void {
     try {
@@ -242,6 +252,13 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
 
   function update(partial: Partial<LayoutState>): void {
     state = { ...state, ...partial };
+    if (!loaded) {
+      // Still mid-`load()` (or not yet started) — remember exactly which
+      // fields this update touched so `load()`'s merge below can exclude
+      // them from the persisted values, whether or not it awaits again
+      // before returning.
+      localOverrides = { ...localOverrides, ...partial };
+    }
     if (pendingTimer !== undefined) {
       try {
         timer.cancel(pendingTimer);
@@ -289,7 +306,8 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
         logSafely("error", { message, path });
         notifySafely({ message, path });
       }
-      return; // Keep DEFAULT_LAYOUT_STATE (last-good policy).
+      loaded = true; // Keep DEFAULT_LAYOUT_STATE (last-good policy).
+      return;
     }
 
     let parsed: unknown;
@@ -299,10 +317,19 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
       const message = `Failed to parse layout state (${path}): ${describeError(cause)}`;
       logSafely("error", { message, path });
       notifySafely({ message, path });
-      return; // Keep DEFAULT_LAYOUT_STATE (last-good policy).
+      loaded = true; // Keep DEFAULT_LAYOUT_STATE (last-good policy).
+      return;
     }
 
-    state = coerceLayoutState(parsed, state);
+    // Coerce against `state` as the fallback (so any local override already
+    // applied to a field the file doesn't set, or sets invalidly, survives
+    // as before) and then re-apply `localOverrides` on top — those are
+    // exactly the fields an in-flight `update()` touched while this read
+    // was pending, which must win over the persisted value even when the
+    // file does validly set that same field (this function's TSDoc / this
+    // module's race-condition TSDoc above `localOverrides`'s declaration).
+    state = { ...coerceLayoutState(parsed, state), ...localOverrides };
+    loaded = true;
   }
 
   return {

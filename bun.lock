@@ -38,8 +38,8 @@
       "name": "@tecode/core",
       "version": "0.1.0",
       "dependencies": {
-        "@opentui/core": "^0.1.30",
-        "@opentui/react": "^0.1.30",
+        "@opentui/core": "^0.1.107",
+        "@opentui/react": "^0.1.107",
         "@tecode/api": "workspace:*",
         "react": "^19.0.0",
       },

@@ -58,13 +58,33 @@ import { toColorInput, useTheme } from "./theme";
 
 /** Re-renders the calling component whenever `slotRegistry` reports a
  * change to `slot`, and returns that slot's current views (design.md
- * §8.2's "shell regions subscribe and re-render on registration"). */
+ * §8.2's "shell regions subscribe and re-render on registration").
+ *
+ * **The subscribe-after-render race, and how this closes it**: the render
+ * that reads `slotRegistry.getViews(slot)` below happens *before* this
+ * component's `useEffect` runs and actually subscribes (React always
+ * commits/paints before running effects) — a registration landing in that
+ * gap fires `onDidChange` to no listener yet and is lost, leaving this
+ * component on a stale snapshot until some *later*, unrelated change
+ * happens to trigger a re-render. The fix is the unconditional
+ * `forceRender()` right after subscribing below: it does not compare
+ * "did anything change" (this hook has no cheap way to know, short of the
+ * full `useSyncExternalStore` machinery, which risks its own subtle
+ * infinite-render bugs if the snapshot isn't cached correctly — not worth
+ * it for what is otherwise a one-line seam) — it just re-renders once,
+ * unconditionally, right after the subscription is live, so this render's
+ * `getViews(slot)` call is always guaranteed to be fresh as of a point in
+ * time no earlier than "subscribed". */
 function useSlotViews(slotRegistry: SlotRegistry, slot: SlotId): readonly SlotViewEntry[] {
   const [, forceRender] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
     const sub = slotRegistry.onDidChange((changed) => {
       if (changed === slot) forceRender();
     });
+    // Close the subscribe-after-render race (this function's TSDoc):
+    // re-render now that the subscription is live, in case a change landed
+    // in the gap between this render and this effect running.
+    forceRender();
     return () => sub.dispose();
   }, [slotRegistry, slot]);
   return slotRegistry.getViews(slot);
@@ -79,6 +99,8 @@ function useSidebarPairs(slotRegistry: SlotRegistry): readonly SidebarPair[] {
     const sub = slotRegistry.onDidChange((changed) => {
       if (changed === "activityBar.item" || changed === "sidebar.view") forceRender();
     });
+    // Closes the subscribe-after-render race — see useSlotViews's TSDoc.
+    forceRender();
     return () => sub.dispose();
   }, [slotRegistry]);
   return slotRegistry.listSidebarPairs();
@@ -92,6 +114,8 @@ function useStatusBarItems(slotRegistry: SlotRegistry): readonly SlotViewEntry[]
     const sub = slotRegistry.onDidChange((changed) => {
       if (changed === "statusBar.item") forceRender();
     });
+    // Closes the subscribe-after-render race — see useSlotViews's TSDoc.
+    forceRender();
     return () => sub.dispose();
   }, [slotRegistry]);
   return slotRegistry.listStatusBarItems();
@@ -154,7 +178,7 @@ export function ActivityBar(props: ActivityBarProps): ReactNode {
         if (item?.component) {
           return (
             <box key={pair.id} onMouseDown={() => props.onSelectView(pair.id)}>
-              <RegisteredView component={item.component} viewProps={{ active: isActive }} />
+              <RegisteredView key={pair.id} component={item.component} viewProps={{ active: isActive }} />
             </box>
           );
         }
@@ -223,7 +247,12 @@ export function Sidebar(props: SidebarProps): ReactNode {
         <text fg={toColorInput(theme.colors["sideBarTitle.foreground"])}>{view.title}</text>
       ) : null}
       {view?.component ? (
-        <RegisteredView component={view.component} />
+        // Keyed by view.id (not just position) so switching the active
+        // sidebar view — same conditional slot, different registered
+        // component — unmounts the old view's fiber instead of reusing it
+        // (components.tsx's RegisteredView TSDoc: this is what keeps hook
+        // state from leaking across views).
+        <RegisteredView key={view.id} component={view.component} />
       ) : (
         <text fg={toColorInput(theme.colors["sideBar.foreground"])}>
           {view ? "Activating…" : ""}
@@ -313,7 +342,10 @@ export function Panel(props: PanelProps): ReactNode {
       borderColor={toColorInput(theme.colors["panel.border"])}
     >
       {tabs.length > 0 ? <Tabs tabs={tabs} activeId={activeId} onSelect={setActiveTabId} /> : null}
-      {active?.component ? <RegisteredView component={active.component} /> : null}
+      {/* Keyed by active.id for the same reason as Sidebar above — switching
+       * the active panel tab must remount rather than reuse the previous
+       * tab's fiber. */}
+      {active?.component ? <RegisteredView key={active.id} component={active.component} /> : null}
     </box>
   );
 }

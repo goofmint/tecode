@@ -276,4 +276,57 @@ describe("createLayoutStateService — update()/debounce/flush (Req 6.4, design.
     expect(second.get().sidebarWidth).toBe(77);
     expect(second.get().activeView).toBe("search");
   });
+
+  test("an update() that lands mid-load wins over the persisted value for that field, without losing other persisted fields", async () => {
+    const stored: LayoutState = {
+      sidebarVisible: false,
+      sidebarWidth: 42,
+      panelVisible: true,
+      panelHeight: 12,
+      activeView: "explorer",
+    };
+    let releaseRead: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const writes: { path: string; data: string }[] = [];
+    const fs: LayoutStateFs = {
+      async readFile() {
+        await gate; // Blocks until the test calls releaseRead() below.
+        return JSON.stringify(stored);
+      },
+      async mkdir() {
+        // No-op.
+      },
+      async writeFile(p, data) {
+        writes.push({ path: p, data });
+      },
+    };
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+
+    // update() arrives while `load()` is still awaiting `fs.readFile` —
+    // the exact race this test guards against.
+    service.update({ sidebarWidth: 99 });
+    expect(service.get().sidebarWidth).toBe(99);
+
+    releaseRead?.();
+    await service.ready;
+
+    // The local update must survive load()'s merge...
+    expect(service.get().sidebarWidth).toBe(99);
+    // ...while every other field still came from the persisted file.
+    expect(service.get().panelVisible).toBe(true);
+    expect(service.get().panelHeight).toBe(12);
+    expect(service.get().activeView).toBe("explorer");
+    expect(service.get().sidebarVisible).toBe(false);
+
+    await service.flush();
+    expect(writes).toHaveLength(1);
+    const written = JSON.parse(writes[0]!.data) as LayoutState;
+    expect(written.sidebarWidth).toBe(99);
+    expect(written.panelVisible).toBe(true);
+    expect(written.activeView).toBe("explorer");
+  });
 });

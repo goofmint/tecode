@@ -37,18 +37,24 @@ import { toColorInput, useTheme } from "./theme";
  * component (a plain `(props) => unknown` function, not a JSX component
  * type) as part of a real React tree (design.md §12's "bridge `@tecode/
  * api`'s React-free `ComponentType` to real React component types in
- * core"). Calling `component(props)` directly inside this component's own
- * render body — rather than trying to use `component` as a JSX tag, which
- * its `unknown` return type is not statically compatible with — means any
- * hooks `component` itself calls (e.g. `tecode.ui.useTheme()`) still run in
- * a stable position during this component's render, exactly as if it had
- * been inlined.
+ * core"). `component` is cast to a real React function-component type and
+ * rendered as a JSX element (`<Component .../>`) — never called directly as
+ * a plain function. Calling it directly would attach any hooks it calls
+ * (e.g. `tecode.ui.useTheme()`) to *this* component's own hook state
+ * instead of a fiber of its own; swapping in a differently-registered
+ * `component` with a different hook count at the same call site would then
+ * throw ("Rendered fewer hooks than expected") and, when the hook counts
+ * happen to match, leak state across unrelated views. Rendering it as a
+ * real element gives every registered component its own fiber, keyed by
+ * the caller (see `shell.tsx`'s `key={view.id}` usage) so switching views
+ * cleanly unmounts the old one and mounts the new one.
  */
 export function RegisteredView(props: {
   component: ComponentType;
   viewProps?: Record<string, unknown>;
 }): ReactNode {
-  return props.component(props.viewProps ?? {}) as ReactNode;
+  const Component = props.component as unknown as (p: Record<string, unknown>) => ReactNode;
+  return <Component {...(props.viewProps ?? {})} />;
 }
 
 /* ------------------------------------------------------------------ */
@@ -260,7 +266,13 @@ export function Tabs(rawProps: Record<string, unknown>): ReactNode {
   // option — so `activeId` is applied via a ref effect rather than a prop.
   useEffect(() => {
     if (selectedIndex >= 0) ref.current?.setSelectedIndex(selectedIndex);
-  }, [selectedIndex]);
+    // `tabs.length` is included alongside `selectedIndex`: when the tab
+    // list itself changes (a tab added/removed) but `selectedIndex`
+    // happens to come out the same number, this effect would otherwise
+    // skip re-applying it — even though `<tab-select>`'s own options just
+    // changed underneath the same numeric index — leaving the wrong tab
+    // visually selected.
+  }, [selectedIndex, tabs.length]);
 
   return (
     <tab-select

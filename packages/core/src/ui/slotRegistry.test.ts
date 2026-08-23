@@ -4,13 +4,6 @@ import { createHostLog } from "../host/errors";
 import type { PendingViewContribution } from "../host/registration";
 import { createSlotRegistry } from "./slotRegistry";
 
-/** Records every `log.append` call, in order (matches
- * `commands/registry.test.ts`'s own recording-log pattern). */
-function createRecordingLog() {
-  const log = createHostLog();
-  return log;
-}
-
 function warnings(log: ReturnType<typeof createHostLog>): HostError[] {
   return log
     .entries()
@@ -50,7 +43,7 @@ describe("createSlotRegistry — registerView/getViews (Req 6.2, 6.3)", () => {
   });
 
   test("last-wins on a duplicate (slot, id): the newer component wins and a warning is logged", () => {
-    const log = createRecordingLog();
+    const log = createHostLog();
     const registry = createSlotRegistry({ log });
     const first = () => "first";
     const second = () => "second";
@@ -146,7 +139,12 @@ describe("createSlotRegistry — lazy views from pendingViews (Req 2.5, 6.2, des
     const registry = createSlotRegistry({ pendingViews: [pendingSidebarView()] });
 
     const item = registry.getView("activityBar.item", "demo.view");
-    expect(item?.lazy).toBe(false);
+    // `lazy: true` — a placeholder, not a real registration (this entry's
+    // `component` is always undefined at this point); ActivityBar renders
+    // on `component` presence, not `lazy` (shell.tsx), so this has no
+    // rendering effect, but it matters for `storeEntry`'s duplicate-
+    // registration warning: see the "no spurious warning" test below.
+    expect(item?.lazy).toBe(true);
     expect(item?.title).toBe("Demo");
     expect(item?.icon).toBe("★");
   });
@@ -163,7 +161,7 @@ describe("createSlotRegistry — lazy views from pendingViews (Req 2.5, 6.2, des
   });
 
   test("a real registerView call for the same id resolves the lazy entry (last-wins, no duplicate warning)", () => {
-    const log = createRecordingLog();
+    const log = createHostLog();
     const registry = createSlotRegistry({ pendingViews: [pendingSidebarView()], log });
 
     const realComponent = () => "real";
@@ -174,6 +172,25 @@ describe("createSlotRegistry — lazy views from pendingViews (Req 2.5, 6.2, des
     expect(entry?.component).toBe(realComponent);
     // Resolving a lazy placeholder is the expected activation flow, not a
     // collision — no warning should be logged for it.
+    expect(warnings(log)).toEqual([]);
+  });
+
+  test("a real registerView call for the synthesized activityBar.item placeholder logs no spurious warning", () => {
+    // Regression test: the synthesized activityBar.item placeholder is
+    // `lazy: true` (not a real registration), so an extension's later, real
+    // `registerView("activityBar.item", id, ...)` call must resolve it
+    // exactly like any other lazy entry — not trip `storeEntry`'s
+    // duplicate-registration warning, which only fires against a non-lazy
+    // existing entry.
+    const log = createHostLog();
+    const registry = createSlotRegistry({ pendingViews: [pendingSidebarView()], log });
+
+    const realComponent = () => "real icon";
+    registry.registerView("activityBar.item", "demo.view", realComponent);
+
+    const entry = registry.getView("activityBar.item", "demo.view");
+    expect(entry?.lazy).toBe(false);
+    expect(entry?.component).toBe(realComponent);
     expect(warnings(log)).toEqual([]);
   });
 
@@ -204,6 +221,40 @@ describe("createSlotRegistry — lazy views from pendingViews (Req 2.5, 6.2, des
     registry.registerView("sidebar.view", "demo.view", noopComponent);
     registry.requestActivation("sidebar.view", "demo.view"); // now resolved — must not call again
     expect(calls).toEqual(["demo.ext"]);
+  });
+
+  test("a rejected activation is logged, and a later requestActivation for the same view retries", async () => {
+    const log = createHostLog();
+    const calls: string[] = [];
+    let attempt = 0;
+    const registry = createSlotRegistry({
+      pendingViews: [pendingSidebarView()],
+      log,
+      activateExtension: async (id) => {
+        calls.push(id);
+        attempt += 1;
+        if (attempt === 1) throw new Error("activation boom");
+      },
+    });
+
+    registry.requestActivation("sidebar.view", "demo.view");
+    expect(calls).toEqual(["demo.ext"]);
+
+    // Let the rejected promise's .catch()/.finally() run.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      log
+        .entries()
+        .some((e) => e.level === "error" && e.error.message.includes("activation boom")),
+    ).toBe(true);
+
+    // The failed attempt must not leave the view stuck — a later
+    // requestActivation for the same still-unresolved view retries.
+    registry.requestActivation("sidebar.view", "demo.view");
+    expect(calls).toEqual(["demo.ext", "demo.ext"]);
   });
 
   test("requestActivation never throws and is a no-op with no activateExtension wired", () => {

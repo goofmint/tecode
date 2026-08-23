@@ -362,8 +362,8 @@ export function createSlotRegistry(deps: SlotRegistryDeps = {}): SlotRegistry {
   }
 
   function listSidebarPairs(): readonly SidebarPair[] {
-    const activityItems = slots.get("activityBar.item") ?? new Map();
-    const sidebarViews = slots.get("sidebar.view") ?? new Map();
+    const activityItems = slots.get("activityBar.item") ?? new Map<string, SlotViewEntry>();
+    const sidebarViews = slots.get("sidebar.view") ?? new Map<string, SlotViewEntry>();
     const ids = new Set<string>([...activityItems.keys(), ...sidebarViews.keys()]);
     return Array.from(ids).map((id) => ({
       id,
@@ -402,10 +402,19 @@ export function createSlotRegistry(deps: SlotRegistryDeps = {}): SlotRegistry {
       icon: pending.view.icon,
     });
     if (pending.view.slot === "sidebar") {
+      // `lazy: true`, not `false`: this is a synthesized placeholder (Req
+      // 6.2's activityBar.item/sidebar.view pairing, this module's TSDoc),
+      // not a real registration. `storeEntry`'s duplicate-registration
+      // warning only fires against a non-lazy existing entry, so marking
+      // this one `lazy: false` would make the extension's later, real
+      // `registerView("activityBar.item", id, ...)` call log a spurious
+      // "View re-registered" warning for a view that was never actually
+      // registered twice. `ActivityBar` (shell.tsx) renders on `component`
+      // presence, not `lazy`, so this has no rendering effect.
       storeEntry("activityBar.item", pending.view.id, {
         slot: "activityBar.item",
         id: pending.view.id,
-        lazy: false,
+        lazy: true,
         extensionId: pending.extensionId,
         title: pending.view.title,
         icon: pending.view.icon,
