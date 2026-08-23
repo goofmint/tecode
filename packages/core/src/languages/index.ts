@@ -19,14 +19,13 @@ export {
 
 export {
   createWebTreeSitterParserBackend,
-  utf16OffsetToUtf8Byte,
-  utf8ByteOffsetToUtf16,
   type ParserBackend,
   type ParserCapture,
   type ParserEditDescriptor,
   type ParserLanguageHandle,
   type ParserPoint,
   type ParserQuery,
+  type ParserRange,
   type ParserTree,
   type WebTreeSitterParserBackendDeps,
 } from "./parserBackend";

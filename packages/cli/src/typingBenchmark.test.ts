@@ -26,9 +26,9 @@
  *   `renderOnce()` call resolves — i.e. `handleKeyEvent` (keymap lookup +
  *   `editorInputRouter.routeKeyEvent` -> `document.applyEdits`, which
  *   SYNCHRONOUSLY fires `onDidChange` -> `HighlightService`'s incremental
- *   `tree.edit()` + a fresh `backend.parse()` + a full-document
- *   `query.captures()` re-run, per `highlightService.ts`'s
- *   `recomputeLineSpans` — and `editorSession`'s own state update) THROUGH
+ *   `tree.edit()` + a fresh `backend.parse()` + a RANGED span recompute
+ *   over only the dirty line range, per `highlightService.ts`'s
+ *   `spliceLineSpans` — and `editorSession`'s own state update) THROUGH
  *   to the Shell's next committed frame. This is genuinely the full
  *   key-input-to-render path Req 13.1 describes, not just the buffer edit.
  * - **Sample size and typing position**: {@link KEYSTROKE_COUNT} plain
@@ -54,9 +54,11 @@
  *   §10's own documented contingency ("parsing moves behind a microtask with
  *   stale-token rendering") does NOT apply here: profiling (recorded on
  *   {@link P95_THRESHOLD_MS}'s own comment) traced the cost first to
- *   `recomputeLineSpans`'s per-capture `LineBuffer.positionAt` scan (fixed)
- *   and, post-fix, to `query.captures()` itself — parsing was never the
- *   bottleneck at any point.
+ *   `recomputeLineSpans`'s per-capture `LineBuffer.positionAt` scan (fixed),
+ *   then to the full-document `query.captures()` re-run per keystroke
+ *   (fixed — the recompute is now restricted to the changed line range),
+ *   and what remains is document-size-INDEPENDENT render-pipeline overhead
+ *   — parsing was never the bottleneck at any point.
  * - **Trend tracking**: one single-line JSON metric is logged per run
  *   (`{ event: "tecode.typingBenchmark", ... }`), matching `main.ts`'s own
  *   `emitMetric` shape, so CI logs carry a parseable time series across
@@ -86,12 +88,12 @@ const LINE_COUNT = 10_000;
 
 /**
  * Sample size. Task 2.10's plan suggests "100+" keystrokes; this file keeps
- * a smaller count. Historically (before the `recomputeLineSpans` fix
+ * a smaller count. Historically (before the fixes
  * {@link P95_THRESHOLD_MS}'s own comment records), the per-keystroke cost
  * on a real 10,000-line file was on the order of SECONDS, so 100+ samples
- * would have taken this file's own `bun test` run ~15 MINUTES; post-fix the
- * per-keystroke cost is ~350-400 ms (still compute-bound, still low
- * variance across samples), so 20 samples remains a stable median/p95 read
+ * would have taken this file's own `bun test` run ~15 MINUTES; the count
+ * was kept once measurements showed 20 samples give a stable median/p95
+ * read (low variance across samples at every stage of the fix history)
  * while keeping `bun test`'s total runtime bounded.
  */
 const KEYSTROKE_COUNT = 20;
@@ -116,30 +118,54 @@ const KEYSTROKE_COUNT = 20;
  * `"\n"`-`eol` assumption, so using them directly would silently change
  * behavior for CRLF documents instead of just making it faster).
  *
- * **Post-fix, the 16 ms target is still NOT met.** Measured locally (20
- * samples each, steady-state, same corpus/harness, 4 consecutive runs):
- * median ≈ 335-383 ms, p95 ≈ 366-404 ms — roughly 21x-23x over budget, but
- * a ~20x improvement over the pre-fix numbers above and no longer dominated
- * by an accidental O(n) scan. What remains is `query.captures()` itself
- * (tree-sitter's own per-keystroke full-tree query cost on ~60,000
- * captures, independently measured at ~350-400 ms before this fix and
- * consistent with what's left now) — a real, tracked-separately follow-up
- * (e.g. incremental/windowed querying), not something this task's fix
- * (eliminating the `positionAt` scan) was ever going to close on its own.
- * Tree-sitter's incremental `parse()` remains fast (~4-5 ms) and is still
- * not the bottleneck.
+ * **Second fix (ranged recompute, Req 13.1)**: with the scan fixed, the
+ * remaining ~350-400 ms was the per-keystroke FULL-document
+ * `query.captures()` re-run (~60,000 raw captures extracted and converted
+ * per keystroke, plus an O(document) offset-index build per call).
+ * `highlightService.ts` now recomputes spans ONLY for the affected line
+ * range — the edit's own lines UNIONed with tree-sitter's
+ * `getChangedRanges(oldTree, newTree)` (catching cascading recolors, e.g.
+ * an unterminated template literal), expanded to whole lines — via a
+ * range-restricted `query.captures()` call (~0.2 ms), splicing the result
+ * into the cached per-line span map (untouched lines keep their spans,
+ * shifted by the line delta when lines were inserted/deleted); see
+ * `spliceLineSpans`'s TSDoc. The same task removed `parserBackend.ts`'s
+ * per-call UTF-8 offset-conversion layer outright after establishing that
+ * `web-tree-sitter`'s JS API is UTF-16-code-unit based (its module TSDoc
+ * records the evidence), which both fixed a latent multi-byte-document
+ * correctness bug and deleted the remaining O(document) work on the
+ * per-keystroke path. Correctness is enforced differentially at two
+ * levels: `highlightService.test.ts` (mock backend) and
+ * `highlightIncremental.e2e.test.ts` (real typescript grammar) both
+ * assert every-line equality between the incremental splice and a fresh
+ * full parse after each edit shape.
+ *
+ * **Post-fix, the 16 ms target is STILL not met — but no longer because of
+ * highlighting.** Measured locally (20 samples each, steady-state, same
+ * corpus/harness, 4 consecutive runs): median ≈ 27.8-31.1 ms, p95 ≈
+ * 32.6-39.6 ms — a further ~10x improvement (~230x total from the original
+ * ~8 s). Rerunning this same harness on a 100-LINE file measures median ≈
+ * 23 ms / p95 ≈ 27 ms, i.e. ~23 ms of every sample is document-size-
+ * INDEPENDENT render-pipeline overhead (React `act` + OpenTUI headless
+ * frame commit), leaving only ~5-8 ms that scales with the document (tree
+ * edit + incremental parse ≈ 2-4 ms, `getChangedRanges` ≈ 1-2 ms, line
+ * bookkeeping ≈ 1-2 ms). Per-keystroke highlight cost is now proportional
+ * to the edit, not the document (Req 13.1's contingency satisfied);
+ * closing the last ~2x to 16 ms is a render-pipeline follow-up, not a
+ * highlighting one.
  *
  * Per Task 2.10's own instruction ("if p95 exceeds 16 ms meaningfully...
  * keep the honest measurement, set the enforced threshold to a level the
  * suite passes reliably, and clearly report the miss"): this threshold is
- * set with headroom over the ACTUAL measured p95 (worst observed ≈ 404 ms
- * across 4 runs) — not over the 16 ms target, which is unreachable without
- * the `query.captures()` follow-up above — comfortably above typical
- * CI-runner slowdown while still catching a genuine further regression
- * (e.g. `positionAt`'s O(n) scan creeping back in, or an accidental O(n²)
- * added elsewhere).
+ * set with ~2.5x headroom over the ACTUAL worst measured p95 (≈ 39.6 ms
+ * across 4 runs; the same headroom ratio the previous 1000 ms threshold
+ * carried over its ~400 ms measurements) — not at the 16 ms target, which
+ * is unreachable without the render-pipeline follow-up above —
+ * comfortably above typical CI-runner slowdown while still catching a
+ * genuine regression (e.g. a full-document recompute creeping back onto
+ * the keystroke path would blow straight past it).
  */
-const P95_THRESHOLD_MS = 1_000;
+const P95_THRESHOLD_MS = 100;
 
 /** Nearest-rank percentile over an ALREADY-SORTED ascending array (Task
  * 2.10's "aggregate median and p95"). */
@@ -163,6 +189,15 @@ describe("Typing latency on a 10,000-line file (Task 2.10, Req 13.1, design.md �
         harness = await buildEditingHarness({ workspaceRoot: workspaceDir, homeDir });
         const { root } = harness;
 
+        // Subscribe BEFORE opening the document: the highlight pipeline's
+        // first-parse `onDidChange` fires only after the open attaches the
+        // document, so subscribing first can never miss it — whereas
+        // subscribing after `renderOnce()` (the previous shape) raced a
+        // WARM web-tree-sitter runtime (earlier test files in the same
+        // process already ran `Parser.init`), whose now-fast first parse
+        // could settle during the render awaits and leave the later
+        // subscription waiting for an event that had already fired.
+        const highlightReady = waitForHighlightChange(root.highlightService, 60_000);
         const document = await root.documents.openDocument(pathToUri(filePath));
         expect(document.languageId).toBe("typescript");
         expect(document.lineCount).toBeGreaterThanOrEqual(LINE_COUNT);
@@ -176,7 +211,7 @@ describe("Typing latency on a 10,000-line file (Task 2.10, Req 13.1, design.md �
         // grammar's one-time load/compile plus the document's first FULL
         // parse.
         await act(async () => {
-          await waitForHighlightChange(root.highlightService);
+          await highlightReady;
         });
         await act(async () => {
           await renderOnce();

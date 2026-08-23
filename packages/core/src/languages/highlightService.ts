@@ -49,6 +49,25 @@
  * changed, but the RESULT is defined to be identical to a fresh parse of
  * the same text (this module's differential test).
  *
+ * **Ranged span recompute** (Req 13.1's 16ms typing budget): after the
+ * incremental re-parse, spans are recomputed ONLY for the affected line
+ * range — the edits' own lines UNIONed with tree-sitter's
+ * `changedRanges(oldTree, newTree)` (which catches cascading recolors,
+ * e.g. an unterminated template literal recoloring the rest of the file),
+ * expanded to whole lines — via a range-restricted `query.captures()`
+ * call, and spliced into the cached per-line map (untouched lines keep
+ * their cached spans, shifted by the batch's line delta where lines were
+ * inserted/deleted). See {@link spliceLineSpans} for the full mechanics
+ * and trap analysis. The initial parse on document open still runs the
+ * full-document pass; so does any edit on a backend without
+ * `changedRanges` (every hand-rolled minimal mock in this module's
+ * tests). Differential guarantee, enforced by tests at both the mock
+ * level (`highlightService.test.ts`) and against the real
+ * grammar/backend (`packages/cli`'s
+ * `highlightIncremental.e2e.test.ts`): after ANY edit, every line's
+ * `getSpansForLine` result is identical to a fresh full recompute of the
+ * same final text.
+ *
  * **Failure degradation** (design.md §14's "Grammar WASM fails to load ->
  * Language degrades to `plaintext`, one-time warning"): a `warnedLanguages`
  * `Set<languageId>` — the first grammar/`.scm`-query load failure for a
@@ -322,9 +341,10 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
    * respectively). The fix: build the {@link buildLineStarts} offset table
    * ONCE per recompute (O(line count) total, not per capture) and resolve
    * each capture's line via {@link findLineForOffset}'s O(log line count)
-   * binary search instead — the same index-then-binary-search shape
-   * `parserBackend.ts`'s own `TextIndex`/`resolveByteOffset` already use
-   * for the UTF-8-byte side of this problem.
+   * binary search instead. (A later fix went further still: edits no
+   * longer take this full pass at all — see {@link spliceLineSpans} — so
+   * this function now runs only for a document's initial parse and for
+   * backends without `changedRanges`.)
    *
    * **Why not just use `capture.startPosition`/`endPosition` directly**
    * (`ParserCapture` already carries `{ row, column }` points computed by
@@ -346,20 +366,150 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     const captures = assets.query.captures(state.tree!);
     const lineSpans = new Map<number, HighlightSpan[]>();
     for (const capture of captures) {
-      const startLine = findLineForOffset(lineStarts, capture.startIndex);
-      const endLine = findLineForOffset(lineStarts, capture.endIndex);
-      for (let line = startLine; line <= endLine; line++) {
-        const lineLength = buf.getLine(line).length;
-        const startCol = line === startLine ? clampColumn(capture.startIndex - lineStarts[startLine]!, lineLength) : 0;
-        const endCol = line === endLine ? clampColumn(capture.endIndex - lineStarts[endLine]!, lineLength) : lineLength;
-        if (endCol <= startCol) continue;
-        const existing = lineSpans.get(line);
-        const span: HighlightSpan = { startCol, endCol, capture: capture.name };
-        if (existing) existing.push(span);
-        else lineSpans.set(line, [span]);
-      }
+      appendCaptureSpans(lineSpans, capture, lineStarts, buf, 0, buf.lineCount - 1);
     }
     state.lineSpans = lineSpans;
+  }
+
+  /** Split one capture into per-line {@link HighlightSpan}s and append them
+   * to `lineSpans` — but ONLY for the capture's lines within `[fromLine,
+   * toLine]`. The full recompute ({@link recomputeLineSpans}) passes the
+   * whole document as the window; the ranged recompute
+   * ({@link spliceLineSpans}) passes just its dirty line range, which is
+   * both what makes it cheap AND what makes tree-sitter's superset-shaped
+   * ranged query results safe (`ParserQuery.captures`'s TSDoc: a ranged
+   * query returns every capture INTERSECTING the range — including ones
+   * starting before it — and possibly extra captures outside it entirely;
+   * clamping the written lines to the dirty window means an intersecting
+   * capture updates exactly its dirty lines while its untouched lines keep
+   * their cached spans, and an entirely-outside capture writes nothing).
+   * Extracted from `recomputeLineSpans`'s old inline body so both paths
+   * share one bit-for-bit identical span computation (the differential
+   * tests' baseline requirement). */
+  function appendCaptureSpans(
+    lineSpans: Map<number, HighlightSpan[]>,
+    capture: { name: string; startIndex: number; endIndex: number },
+    lineStarts: readonly number[],
+    buf: LineBuffer,
+    fromLine: number,
+    toLine: number,
+  ): void {
+    const startLine = findLineForOffset(lineStarts, capture.startIndex);
+    const endLine = findLineForOffset(lineStarts, capture.endIndex);
+    const from = Math.max(startLine, fromLine);
+    const to = Math.min(endLine, toLine);
+    for (let line = from; line <= to; line++) {
+      const lineLength = buf.getLine(line).length;
+      const startCol = line === startLine ? clampColumn(capture.startIndex - lineStarts[startLine]!, lineLength) : 0;
+      const endCol = line === endLine ? clampColumn(capture.endIndex - lineStarts[endLine]!, lineLength) : lineLength;
+      if (endCol <= startCol) continue;
+      const existing = lineSpans.get(line);
+      const span: HighlightSpan = { startCol, endCol, capture: capture.name };
+      if (existing) existing.push(span);
+      else lineSpans.set(line, [span]);
+    }
+  }
+
+  /**
+   * The ranged, per-edit replacement for a full {@link recomputeLineSpans}
+   * pass (Req 13.1: per-keystroke highlight cost proportional to the EDIT,
+   * not the document — measured, the full pass's `query.captures()` over
+   * ~60,000 captures was ~350-400ms per keystroke on a 10,000-line file,
+   * see `typingBenchmark.test.ts`): recompute spans ONLY for the dirty
+   * line range, splicing the result into the cached per-line map. `false`
+   * when the ranged path can't run (backend without
+   * {@link ParserBackend.changedRanges}, no cached spans yet, or an empty
+   * edit batch) — the caller then falls back to the full pass.
+   *
+   * **The dirty range** (in NEW-text line numbers) is the UNION of:
+   *
+   * 1. The edits' own extent: from the topmost edit's start line (identical
+   *    in old and new coordinates — every other edit in the batch is
+   *    strictly below it, and edits below a line never renumber it) down to
+   *    the bottommost edit's OLD end line shifted by the batch's total line
+   *    delta (lines below every edit shift by exactly that total).
+   * 2. Tree-sitter's own changed ranges between the edited old tree and the
+   *    re-parsed new tree ({@link ParserBackend.changedRanges}) — the
+   *    robust catch for captures whose extent GROWS beyond the edited lines
+   *    (the classic trap: typing the opening backtick of an unterminated
+   *    template literal recolors the rest of the file; the edit itself is
+   *    one character, but the changed ranges cover everything recolored).
+   *
+   * ...expanded to whole lines (the recompute always covers full lines, so
+   * `getSpansForLine` output for a dirty line is complete, not partial).
+   *
+   * **Line-shift bookkeeping**: cached spans for lines ABOVE the dirty
+   * range keep their keys; lines BELOW it (old line > the dirty range's
+   * old-coordinate end) shift by the batch's line delta; dirty lines are
+   * dropped and rebuilt from a ranged `captures()` call. When the delta is
+   * 0 (the plain-character-typing steady state) the existing map is
+   * updated IN PLACE — deleting just the dirty keys — instead of copying
+   * all ~O(line count) entries (measured ~3.7ms per copy on a 10,000-line
+   * file, a fifth of the whole 16ms budget).
+   */
+  function spliceLineSpans(
+    state: DocState,
+    assets: LanguageAssets,
+    text: string,
+    sortedEdits: readonly TextEdit[],
+    oldLineCount: number,
+    oldTree: ParserTree,
+  ): boolean {
+    const previous = state.lineSpans;
+    if (!backend.changedRanges || !previous || sortedEdits.length === 0) return false;
+
+    const buf = createLineBuffer(text || "\n", "\n");
+    const lineStarts = buildLineStarts(buf);
+    const lineDelta = buf.lineCount - oldLineCount;
+
+    let dirtyStart = Number.MAX_SAFE_INTEGER;
+    let editsOldEnd = -1;
+    for (const edit of sortedEdits) {
+      dirtyStart = Math.min(dirtyStart, edit.range.start.line);
+      editsOldEnd = Math.max(editsOldEnd, edit.range.end.line);
+    }
+    let dirtyEnd = Math.max(dirtyStart, editsOldEnd + lineDelta);
+
+    for (const range of backend.changedRanges(oldTree, state.tree!)) {
+      dirtyStart = Math.min(dirtyStart, findLineForOffset(lineStarts, range.startIndex));
+      dirtyEnd = Math.max(dirtyEnd, findLineForOffset(lineStarts, range.endIndex));
+    }
+    dirtyStart = Math.max(0, Math.min(dirtyStart, buf.lineCount - 1));
+    dirtyEnd = Math.max(dirtyStart, Math.min(dirtyEnd, buf.lineCount - 1));
+    // The dirty range's bottom in OLD line numbers — the last old line
+    // whose cached spans must be dropped rather than kept/shifted.
+    const dirtyEndOld = dirtyEnd - lineDelta;
+
+    let next: Map<number, HighlightSpan[]>;
+    if (lineDelta === 0) {
+      // In-place: only the dirty keys change (this function's TSDoc).
+      next = previous;
+      for (let line = dirtyStart; line <= dirtyEnd; line++) next.delete(line);
+    } else {
+      next = new Map<number, HighlightSpan[]>();
+      for (const [line, spans] of previous) {
+        if (line < dirtyStart) next.set(line, spans);
+        else if (line > dirtyEndOld) next.set(line + lineDelta, spans);
+        // Lines within [dirtyStart, dirtyEndOld] are dropped — rebuilt below.
+      }
+    }
+
+    // Both `ParserRange` forms describe the same whole-line window
+    // (`parserBackend.ts`'s `ParserRange` TSDoc: offsets for backends that
+    // filter by offset — the test mocks — and points for the real backend,
+    // which restricts by position only).
+    const dirtyEndLineLength = buf.getLine(dirtyEnd).length;
+    const captures = assets.query.captures(state.tree!, {
+      startIndex: lineStarts[dirtyStart]!,
+      endIndex: lineStarts[dirtyEnd]! + dirtyEndLineLength,
+      startPosition: { row: dirtyStart, column: 0 },
+      endPosition: { row: dirtyEnd, column: dirtyEndLineLength },
+    });
+    for (const capture of captures) {
+      appendCaptureSpans(next, capture, lineStarts, buf, dirtyStart, dirtyEnd);
+    }
+    state.lineSpans = next;
+    return true;
   }
 
   /** Run a full (non-incremental) parse for `document` against `assets` —
@@ -403,7 +553,19 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
         oldEndPosition: { row: edit.range.end.line, column: edit.range.end.character },
       });
     }
-    parseDocument(uri, document, state, assets);
+
+    // Re-parse incrementally, then recompute spans for ONLY the dirty line
+    // range when the backend supports it ({@link spliceLineSpans}), falling
+    // back to the full-document pass otherwise — the initial parse on
+    // document open always takes the full pass ({@link parseDocument}).
+    const oldTree = state.tree;
+    const text = document.getText();
+    state.tree = backend.parse(assets.language, text, oldTree);
+    state.lastText = text;
+    if (!spliceLineSpans(state, assets, text, sortedEdits, oldBuffer.lineCount, oldTree)) {
+      recomputeLineSpans(state, assets, text);
+    }
+    fireChange();
   }
 
   function attachDocument(document: CoreDocument): void {

@@ -15,6 +15,7 @@ import type {
   ParserCapture,
   ParserEditDescriptor,
   ParserLanguageHandle,
+  ParserRange,
   ParserTree,
 } from "./parserBackend";
 
@@ -365,6 +366,307 @@ describe("createHighlightService — incremental edits (Req 8.1, design.md §10)
       document.applyEdits([{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "z" }]),
     ).not.toThrow();
     expect(service.getSpansForLine(document.uri, 0)).toEqual([]);
+  });
+});
+
+/** `tokenize`, plus multi-line `"comment"` captures over every
+ * `/* ... *``/` region (an unterminated `/*` runs to the end of the text) —
+ * a hand-rolled stand-in for a real grammar's multi-line constructs
+ * (template literals, block comments), giving the ranged-recompute
+ * differential tests below a capture that SPANS lines, starts BEFORE an
+ * edit's dirty range while extending into it, and whose extent GROWS to
+ * the end of the file when its terminator is deleted. Captures come out in
+ * document order, same as a real query's. */
+function tokenizeWithComments(text: string): ParserCapture[] {
+  const captures: ParserCapture[] = [];
+  const zero = { row: 0, column: 0 };
+  let pos = 0;
+  for (;;) {
+    const open = text.indexOf("/*", pos);
+    const stretchEnd = open === -1 ? text.length : open;
+    for (const token of tokenize(text.slice(pos, stretchEnd))) {
+      captures.push({ ...token, startIndex: token.startIndex + pos, endIndex: token.endIndex + pos });
+    }
+    if (open === -1) break;
+    const close = text.indexOf("*/", open + 2);
+    const end = close === -1 ? text.length : close + 2;
+    captures.push({ name: "comment", startIndex: open, endIndex: end, startPosition: zero, endPosition: zero });
+    if (close === -1) break;
+    pos = end;
+  }
+  return captures;
+}
+
+/** The ordered sequence of comment delimiters in `text` — the ranged
+ * mock's stand-in for "did the SYNTACTIC STRUCTURE beyond the edit
+ * change": while an edit leaves this sequence intact (typing inside a
+ * comment, or outside every comment), highlight effects cannot cascade
+ * past the edited region in this mock language; when it changes (deleting
+ * a terminator), they can — mirroring what makes real tree-sitter's
+ * `getChangedRanges` report a range far wider than the edit. */
+function commentMarkerSignature(text: string): string {
+  return Array.from(text.matchAll(/\/\*|\*\//g), (m) => m[0]).join(",");
+}
+
+interface RangedMockBackend extends ParserBackend {
+  /** One entry per `captures()` call: the range it was (or wasn't) given —
+   * lets a test assert the service actually took the ranged path. */
+  capturesCalls: Array<ParserRange | undefined>;
+}
+
+/**
+ * A hand-rolled mock backend (house convention: no mock libraries) that —
+ * unlike {@link createMockBackend} — implements the OPTIONAL parts of the
+ * `ParserBackend` contract the ranged-recompute path needs, so it
+ * exercises `highlightService.ts`'s `spliceLineSpans` instead of the
+ * full-recompute fallback:
+ *
+ * - `captures(tree, range?)` honors the range by filtering to captures
+ *   INTERSECTING it (the guaranteed-included part of the real backend's
+ *   superset contract, `ParserQuery.captures`'s TSDoc), preserving
+ *   document order, and records every call's range for assertions.
+ * - `changedRanges` compares the two trees' texts: their common-prefix/
+ *   common-suffix diff as the changed range — extended to the end of the
+ *   text when {@link commentMarkerSignature} differs (the cascading-recolor
+ *   model; a plain `tokenize` language passes `signature: undefined` and
+ *   never cascades, mirroring how a real edit that keeps the syntactic
+ *   structure intact yields tightly-local changed ranges).
+ *
+ * Like {@link createMockBackend}, capture output is a pure function of the
+ * text handed to `parse()` — which is exactly what makes the differential
+ * tests meaningful (incremental splicing and a fresh full parse can only
+ * agree if the service's bookkeeping is right).
+ */
+function createRangedMockBackend(
+  computeCaptures: (text: string) => ParserCapture[],
+  signature?: (text: string) => string,
+): RangedMockBackend {
+  const capturesCalls: Array<ParserRange | undefined> = [];
+  const textOf = (tree: ParserTree): string => (tree as unknown as { text: string }).text;
+  return {
+    capturesCalls,
+    async init() {},
+    async loadLanguage(bytes: Uint8Array): Promise<ParserLanguageHandle> {
+      return { bytes };
+    },
+    compileQuery() {
+      return {
+        captures(tree: ParserTree, range?: ParserRange): ParserCapture[] {
+          capturesCalls.push(range);
+          const all = computeCaptures(textOf(tree));
+          if (!range) return all;
+          return all.filter((c) => c.endIndex > range.startIndex && c.startIndex < range.endIndex);
+        },
+      };
+    },
+    parse(_language: ParserLanguageHandle, text: string): ParserTree {
+      return { text, edit() {} } as unknown as ParserTree;
+    },
+    changedRanges(oldTree: ParserTree, newTree: ParserTree): ParserRange[] {
+      const oldText = textOf(oldTree);
+      const newText = textOf(newTree);
+      if (oldText === newText) return [];
+      const minLen = Math.min(oldText.length, newText.length);
+      let prefix = 0;
+      while (prefix < minLen && oldText[prefix] === newText[prefix]) prefix++;
+      let suffix = 0;
+      while (
+        suffix < minLen - prefix &&
+        oldText[oldText.length - 1 - suffix] === newText[newText.length - 1 - suffix]
+      ) {
+        suffix++;
+      }
+      const startIndex = prefix;
+      let endIndex = newText.length - suffix;
+      if (signature && signature(oldText) !== signature(newText)) endIndex = newText.length;
+      endIndex = Math.max(startIndex, endIndex);
+      const pointAt = (offset: number) => {
+        const before = newText.slice(0, offset).split(/\r\n|\n/);
+        return { row: before.length - 1, column: before[before.length - 1]!.length };
+      };
+      return [{ startIndex, endIndex, startPosition: pointAt(startIndex), endPosition: pointAt(endIndex) }];
+    },
+  };
+}
+
+describe("createHighlightService — ranged incremental recompute (Req 13.1)", () => {
+  /** Spin up a live service+document on `initialText` with a fresh ranged
+   * mock, awaiting the first (full) parse. */
+  async function openLive(initialText: string, computeCaptures: (text: string) => ParserCapture[], signature?: (text: string) => string) {
+    const backend = createRangedMockBackend(computeCaptures, signature);
+    const fakeDocs = createFakeDocuments();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///live.ts", "typescript", initialText);
+    fakeDocs.open(document);
+    await tick();
+    return { backend, service, document };
+  }
+
+  /** The differential oracle: `getSpansForLine` for EVERY line of a
+   * completely fresh service/document full-parsed from `finalText`
+   * directly. */
+  async function freshSpansForAllLines(
+    finalText: string,
+    lineCount: number,
+    computeCaptures: (text: string) => ParserCapture[],
+  ) {
+    const fakeDocs = createFakeDocuments();
+    const service = createHighlightService(
+      buildDeps({
+        documents: fakeDocs,
+        backend: createRangedMockBackend(computeCaptures),
+        languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }),
+      }),
+    );
+    const document = createTestDocument("file:///fresh.ts", "typescript", finalText);
+    fakeDocs.open(document);
+    await tick();
+    return Array.from({ length: lineCount }, (_, line) => service.getSpansForLine(document.uri, line));
+  }
+
+  /** Assert the live service's spans equal the fresh-parse oracle's on
+   * EVERY line (plus a couple past the end, which must be `[]` on both). */
+  async function expectAllLinesMatchFresh(
+    service: ReturnType<typeof createHighlightService>,
+    document: CoreDocument,
+    computeCaptures: (text: string) => ParserCapture[],
+  ): Promise<void> {
+    const lineCount = document.lineCount + 2;
+    const fresh = await freshSpansForAllLines(document.getText(), lineCount, computeCaptures);
+    const live = Array.from({ length: lineCount }, (_, line) => service.getSpansForLine(document.uri, line));
+    expect(live).toEqual(fresh);
+  }
+
+  const fourLines = "let alpha = 1;\nlet beta = 22;\nlet gamma = 333;\nlet delta = 4444;";
+
+  test("a single-line edit recomputes via a RANGE-RESTRICTED captures call and matches a fresh full parse on every line", async () => {
+    const { backend, service, document } = await openLive(fourLines, tokenize);
+    expect(backend.capturesCalls).toEqual([undefined]); // The initial parse is the full pass.
+
+    document.applyEdits([
+      { range: { start: { line: 1, character: 4 }, end: { line: 1, character: 8 } }, newText: "renamed" },
+    ]);
+
+    // The edit's recompute went through the ranged path, restricted to
+    // line 1's own offsets (line 1 starts after "let alpha = 1;\n" = 15).
+    expect(backend.capturesCalls).toHaveLength(2);
+    const range = backend.capturesCalls[1]!;
+    expect(range.startIndex).toBe(15);
+    expect(range.endIndex).toBe(15 + "let renamed = 22;".length);
+    await expectAllLinesMatchFresh(service, document, tokenize);
+  });
+
+  test("a newline insertion shifts cached spans below the edit down and matches a fresh full parse on every line", async () => {
+    const { backend, service, document } = await openLive(fourLines, tokenize);
+
+    document.applyEdits([
+      { range: { start: { line: 1, character: 14 }, end: { line: 1, character: 14 } }, newText: "\nlet inserted = 55;" },
+    ]);
+
+    expect(document.lineCount).toBe(5);
+    expect(backend.capturesCalls).toHaveLength(2);
+    expect(backend.capturesCalls[1]).toBeDefined();
+    await expectAllLinesMatchFresh(service, document, tokenize);
+    // Spot-check the shift: old line 2 ("gamma") is now line 3, untouched.
+    expect(service.getSpansForLine(document.uri, 3)).toEqual([
+      { startCol: 0, endCol: 3, capture: "variable" },
+      { startCol: 4, endCol: 9, capture: "variable" },
+      { startCol: 12, endCol: 15, capture: "number" },
+    ]);
+  });
+
+  test("a line deletion shifts cached spans below the edit up and matches a fresh full parse on every line", async () => {
+    const { backend, service, document } = await openLive(fourLines, tokenize);
+
+    // Delete line 1 entirely (its text plus its trailing newline).
+    document.applyEdits([
+      { range: { start: { line: 1, character: 0 }, end: { line: 2, character: 0 } }, newText: "" },
+    ]);
+
+    expect(document.lineCount).toBe(3);
+    expect(backend.capturesCalls).toHaveLength(2);
+    expect(backend.capturesCalls[1]).toBeDefined();
+    await expectAllLinesMatchFresh(service, document, tokenize);
+  });
+
+  test("a multi-edit batch (insert + replace in one event) still matches a fresh full parse on every line", async () => {
+    const { service, document } = await openLive(fourLines, tokenize);
+
+    document.applyEdits([
+      { range: { start: { line: 0, character: 4 }, end: { line: 0, character: 9 } }, newText: "renamed0" },
+      { range: { start: { line: 2, character: 16 }, end: { line: 2, character: 16 } }, newText: "\nlet added = 5;" },
+    ]);
+
+    await expectAllLinesMatchFresh(service, document, tokenize);
+  });
+
+  test("an edit INSIDE a multi-line capture spanning the edited line keeps every line of the capture correct (the intersecting-capture trap)", async () => {
+    // The "comment" capture spans lines 1-3; the edit touches ONLY line 2,
+    // so the ranged query's dirty range starts mid-capture — the capture
+    // starts BEFORE the range and extends into (and past) it. Lines 1 and
+    // 3 must keep their cached full-line comment spans; line 2 must be
+    // rebuilt from the intersecting capture.
+    const text = "let a = 1;\n/* first\n middle 99\n last */\nlet b = 2;";
+    const { backend, service, document } = await openLive(text, tokenizeWithComments, commentMarkerSignature);
+
+    document.applyEdits([
+      { range: { start: { line: 2, character: 1 }, end: { line: 2, character: 7 } }, newText: "center" },
+    ]);
+
+    expect(backend.capturesCalls).toHaveLength(2);
+    expect(backend.capturesCalls[1]).toBeDefined();
+    await expectAllLinesMatchFresh(service, document, tokenizeWithComments);
+    // The trap's explicit shape: the untouched interior lines of the
+    // comment still carry exactly one full-line "comment" span each.
+    expect(service.getSpansForLine(document.uri, 1)).toEqual([{ startCol: 0, endCol: 8, capture: "comment" }]);
+    expect(service.getSpansForLine(document.uri, 2)).toEqual([{ startCol: 0, endCol: " center 99".length, capture: "comment" }]);
+  });
+
+  test("an edit that GROWS a capture's extent past the old dirty range (deleting the comment terminator) recolors the rest of the file (the cascading-recolor trap)", async () => {
+    const text = "let a = 1;\n/* short */\nlet b = 2;\nlet c = 3;";
+    const { service, document } = await openLive(text, tokenizeWithComments, commentMarkerSignature);
+    // Before: lines 2-3 are ordinary tokens.
+    expect(service.getSpansForLine(document.uri, 2)[0]).toEqual({ startCol: 0, endCol: 3, capture: "variable" });
+
+    // Delete the "*/" — the comment now runs to the end of the file; the
+    // edit touches only line 1, but lines 2-3 must recolor to "comment"
+    // (this is exactly what `changedRanges` widening exists to catch).
+    const closeCol = text.split("\n")[1]!.indexOf("*/");
+    document.applyEdits([
+      { range: { start: { line: 1, character: closeCol }, end: { line: 1, character: closeCol + 2 } }, newText: "" },
+    ]);
+
+    await expectAllLinesMatchFresh(service, document, tokenizeWithComments);
+    expect(service.getSpansForLine(document.uri, 2)).toEqual([{ startCol: 0, endCol: 10, capture: "comment" }]);
+    expect(service.getSpansForLine(document.uri, 3)).toEqual([{ startCol: 0, endCol: 10, capture: "comment" }]);
+
+    // And the inverse — re-terminating the comment SHRINKS the capture
+    // back, un-recoloring the lines below.
+    document.applyEdits([
+      { range: { start: { line: 1, character: closeCol }, end: { line: 1, character: closeCol } }, newText: "*/" },
+    ]);
+    await expectAllLinesMatchFresh(service, document, tokenizeWithComments);
+    expect(service.getSpansForLine(document.uri, 2)[0]).toEqual({ startCol: 0, endCol: 3, capture: "variable" });
+  });
+
+  test("a backend WITHOUT changedRanges keeps the full-recompute fallback (differential still holds)", async () => {
+    // The plain `createMockBackend` has no `changedRanges` — the service
+    // must fall back to the full pass on every edit and stay correct.
+    const backend = createMockBackend();
+    const fakeDocs = createFakeDocuments();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///plain.ts", "typescript", fourLines);
+    fakeDocs.open(document);
+    await tick();
+
+    document.applyEdits([
+      { range: { start: { line: 1, character: 4 }, end: { line: 1, character: 8 } }, newText: "renamed" },
+    ]);
+    await expectAllLinesMatchFresh(service, document, tokenize);
   });
 });
 
