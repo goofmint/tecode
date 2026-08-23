@@ -112,4 +112,18 @@ describe("tabs (Req 6.6: string-width measures \"\\t\" as 0 cells on its own)", 
     // "\t\t" -> columns 0-3 (first tab), 4-7 (second tab): 8 cells total.
     expect(cellWidth("\t\t")).toBe(8);
   });
+
+  test("an invalid tabSize falls back to the default instead of producing NaN columns", () => {
+    // 0 would divide by zero in the tab-stop math (0 % 0 -> NaN).
+    expect(cellWidth("\t", 0)).toBe(4);
+    expect(cellWidth("\tx", -2)).toBe(5);
+    expect(cellWidthUpTo("\tx", 1, Number.NaN)).toBe(4);
+    expect(cellWidth("\t", Number.POSITIVE_INFINITY)).toBe(4);
+  });
+
+  test("a fractional tabSize is truncated to its integer part", () => {
+    expect(cellWidth("\t", 2.9)).toBe(2);
+    // Truncating below 1 (e.g. 0.5 -> 0) is invalid and falls back to 4.
+    expect(cellWidth("\t", 0.5)).toBe(4);
+  });
 });

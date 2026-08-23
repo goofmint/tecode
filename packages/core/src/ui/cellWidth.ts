@@ -38,6 +38,21 @@ import stringWidth from "string-width";
 const DEFAULT_TAB_SIZE = 4;
 
 /**
+ * Normalizes a caller-supplied `tabSize` to a positive integer before it
+ * reaches {@link measureCells}'s `column % tabSize` math: `0` would divide
+ * by zero (`NaN` columns), and negative/fractional/non-finite values would
+ * produce columns that are not valid terminal cells. Fractions are
+ * truncated; anything not at least 1 after truncation falls back to
+ * {@link DEFAULT_TAB_SIZE} — a bad config value is a display-layer concern,
+ * not worth crashing a render over (same policy as `cellWidthUpTo`'s
+ * index clamping).
+ */
+function normalizeTabSize(tabSize: number): number {
+  const truncated = Number.isFinite(tabSize) ? Math.trunc(tabSize) : 0;
+  return truncated >= 1 ? truncated : DEFAULT_TAB_SIZE;
+}
+
+/**
  * The terminal-cell width of `text`, starting at display column 0, with
  * tabs advancing to the next `tabSize`-wide stop (this module's TSDoc's
  * "Tabs" section). Splits `text` into non-tab runs (each measured via
@@ -46,7 +61,8 @@ const DEFAULT_TAB_SIZE = 4;
  * to its stop) — `"\t"` is always its own grapheme cluster, so this split
  * never cuts through a combining mark or a multi-codepoint glyph.
  */
-function measureCells(text: string, tabSize: number): number {
+function measureCells(text: string, rawTabSize: number): number {
+  const tabSize = normalizeTabSize(rawTabSize);
   let column = 0;
   let run = "";
   for (const ch of text) {
