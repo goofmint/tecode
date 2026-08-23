@@ -73,6 +73,16 @@ export interface WindowMessageServiceDeps {
 
 /** {@link createWindowMessageService}'s return shape. */
 export interface WindowMessageService {
+  /**
+   * Identity token: the exact `SlotRegistry` this service registers its
+   * `statusBar.item` views against. `createTecodeApi` compares it against
+   * its own `slotRegistry` dep and falls back to the window stub on a
+   * mismatch — a service registered against registry B while the rendered
+   * `Shell`'s `StatusBar` reads registry A would otherwise accept
+   * `showMessage` calls that never render anywhere (the same
+   * cross-instance guard as `FindService.session`).
+   */
+  readonly registry: WindowMessageServiceDeps["slotRegistry"];
   /** The real `WindowNamespace.setStatusBarItem` backing (this module's
    * TSDoc). */
   setStatusBarItem(item: StatusBarItem): Disposable;
@@ -159,5 +169,5 @@ export function createWindowMessageService(deps: WindowMessageServiceDeps): Wind
     clearPendingMessage();
   }
 
-  return { setStatusBarItem, showMessage, dispose };
+  return { registry: slotRegistry, setStatusBarItem, showMessage, dispose };
 }

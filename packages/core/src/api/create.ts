@@ -200,8 +200,15 @@ export interface CreateTecodeApiDeps {
    * Optional, same fallback shape as every other real-backing dependency
    * above: a caller that omits this keeps the stub's inert `showMessage`
    * and disposable-but-unrendered `setStatusBarItem`.
+   *
+   * Guarded by identity, exactly like `findService.session` vs
+   * `editorSession` below: the real backing is used only when
+   * `windowMessageService.registry` IS this deps object's `slotRegistry` —
+   * a service registered against a different registry than the one the
+   * rendered `Shell`'s `StatusBar` reads would accept `showMessage` calls
+   * that never render anywhere, so a mismatch falls back to the stub.
    */
-  windowMessageService?: Pick<WindowMessageService, "showMessage" | "setStatusBarItem">;
+  windowMessageService?: Pick<WindowMessageService, "registry" | "showMessage" | "setStatusBarItem">;
 }
 
 /**
@@ -275,6 +282,15 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
   });
 
   const windowStub = createWindowStub();
+  // Identity gate (`CreateTecodeApiDeps.windowMessageService`'s TSDoc):
+  // the real message backing applies only when the service's OWN registry
+  // is the exact `slotRegistry` supplied here — the one the rendered
+  // `Shell`'s `StatusBar` reads. Mirrors `findNamespace`'s
+  // `findService.session === editorSession` triple gate below.
+  const windowMessages =
+    deps.windowMessageService && deps.slotRegistry && deps.windowMessageService.registry === deps.slotRegistry
+      ? deps.windowMessageService
+      : undefined;
   const windowNamespace: WindowNamespace = Object.freeze({
     get activeEditor() {
       // Real backing (Task 2.3) when an `editorSession` was supplied;
@@ -300,12 +316,10 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     // the exact pre-Task-3.1 stub (`CreateTecodeApiDeps.modalService`/
     // `windowMessageService`'s own TSDoc) — same real function references,
     // no wrapper closures, matching every other delegated namespace here.
-    showMessage: deps.windowMessageService ? deps.windowMessageService.showMessage : windowStub.showMessage,
+    showMessage: windowMessages ? windowMessages.showMessage : windowStub.showMessage,
     showQuickPick: deps.modalService ? deps.modalService.openQuickPick : windowStub.showQuickPick,
     showInputBox: deps.modalService ? deps.modalService.openInputBox : windowStub.showInputBox,
-    setStatusBarItem: deps.windowMessageService
-      ? deps.windowMessageService.setStatusBarItem
-      : windowStub.setStatusBarItem,
+    setStatusBarItem: windowMessages ? windowMessages.setStatusBarItem : windowStub.setStatusBarItem,
   });
 
   // `tecode.editor.find` (Req 11.1, design.md §13): a ready-made

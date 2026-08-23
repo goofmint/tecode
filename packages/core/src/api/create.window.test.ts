@@ -103,6 +103,28 @@ describe("createTecodeApi's tecode.window (Task 3.1)", () => {
     await expect(api.window.showInputBox()).resolves.toBeUndefined();
   });
 
+  test("showMessage/setStatusBarItem fall back to the stub when windowMessageService was built on a DIFFERENT slot registry (identity gate)", async () => {
+    const deps = await buildBaseDeps();
+    // Registry A backs the API (what the rendered Shell's StatusBar would
+    // read); registry B backs the message service — the cross-instance
+    // wiring bug `WindowMessageService.registry`'s TSDoc guards against.
+    const registryA = createSlotRegistry();
+    const registryB = createSlotRegistry();
+    const windowMessageService = createWindowMessageService({
+      slotRegistry: registryB,
+      setTimeout: () => 0,
+      clearTimeout: () => {},
+    });
+    const api = createTecodeApi({ ...deps, slotRegistry: registryA, windowMessageService });
+
+    api.window.showMessage("lost?", "info");
+    const disposable = api.window.setStatusBarItem({ id: "ext.item", text: "hello", side: "right", priority: 3 });
+    disposable.dispose();
+    // The stub handled both calls — NEITHER registry saw a registration.
+    expect(registryA.getViews("statusBar.item").length).toBe(0);
+    expect(registryB.getViews("statusBar.item").length).toBe(0);
+  });
+
   test("showMessage/setStatusBarItem stay stubbed when only modalService is supplied (independent gating)", async () => {
     const deps = await buildBaseDeps();
     const slotRegistry = createSlotRegistry();
