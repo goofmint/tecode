@@ -14,3 +14,8 @@ export {
   type ConfigServiceDeps,
   type ConfigServiceFs,
 } from "./service";
+export {
+  CORE_CONFIGURATION,
+  registerCoreConfiguration,
+  type CoreConfigRegistrar,
+} from "./coreDefaults";

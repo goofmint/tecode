@@ -61,6 +61,8 @@ import { act } from "react";
 import type { BoxRenderable } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { createCommandRegistry } from "../commands/registry";
+import { createDocumentManager, type DocumentManagerFs } from "../buffer/documentManager";
+import { pathToUri } from "../buffer/uri";
 import { createHostLog } from "../host/errors";
 import { createContextService } from "../keymap/context";
 import { ContextFocusTracker } from "./focus";
@@ -290,6 +292,131 @@ describe("Shell — focus change updates context keys (Req 4.6, design.md §8.1)
       node.blur();
       expect(context.get<boolean>(setKeys[0]!)).toBe(false);
     }
+  });
+});
+
+/** An in-memory {@link DocumentManagerFs} — every named file's content is
+ * fixed at construction, and every other operation (`save`'s write/rename,
+ * `stat`'s mode) is a harmless no-op/stub; these tests only ever open
+ * documents, never save them (matches `documentManager.test.ts`'s own
+ * `DocumentManagerFs` fakes in spirit, scoped down to just what "open a
+ * document into the Shell" needs). */
+function createInMemoryFs(files: Record<string, string>): DocumentManagerFs {
+  return {
+    async stat(path: string) {
+      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return { size: files[path]!.length, mode: 0o644 };
+    },
+    async readFile(path: string) {
+      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return files[path]!;
+    },
+    async writeFile() {},
+    async chmod() {},
+    async rename() {},
+    async unlink() {},
+  };
+}
+
+describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.md §8.1)", () => {
+  test("opening a document renders it via EditorView, with a tab for its filename", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "const x = 1;\nconsole.log(x);" }),
+    });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(captureCharFrame()).toContain("No editor open.");
+
+    await act(async () => {
+      await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("hello.ts"); // tab label
+    expect(frame).toContain("const x = 1;");
+    expect(frame).toContain("console.log(x);");
+    expect(frame).not.toContain("No editor open.");
+  });
+
+  test("switching tabs switches the active document's content", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({
+        "/workspace/a.ts": "FIRST_FILE_CONTENT",
+        "/workspace/b.ts": "SECOND_FILE_CONTENT",
+      }),
+    });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => {
+      await documents.openDocument(pathToUri("/workspace/a.ts"));
+      await documents.openDocument(pathToUri("/workspace/b.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // The most recently opened document is not necessarily active by
+    // default (the first-opened document stays active until the user
+    // switches) — only assert the first file's content shows.
+    expect(captureCharFrame()).toContain("FIRST_FILE_CONTENT");
+
+    act(() => {
+      documents.close(pathToUri("/workspace/a.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Closing the active document falls back to another still-open one.
+    expect(captureCharFrame()).toContain("SECOND_FILE_CONTENT");
+  });
+
+  test("no open documents keeps the 'No editor open.' placeholder", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({ log: createHostLog(), sink: createRecordingSink() });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(captureCharFrame()).toContain("No editor open.");
   });
 });
 

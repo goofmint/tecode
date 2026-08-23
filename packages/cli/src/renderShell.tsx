@@ -17,20 +17,32 @@ import {
   Shell,
   ThemeProvider,
   type CommandRegistry,
+  type ConfigService,
   type ContextService,
+  type DocumentManager,
   type LayoutStateService,
   type SlotRegistry,
 } from "@tecode/core";
 
 /** Everything one `renderShell` call needs to mount the Shell (this
  * module's TSDoc) — exactly the live services `main.ts`'s sync phase has
- * already built by the time it calls this. */
+ * already built by the time it calls this. `documents`/`config` (Req 6.5,
+ * 6.6, 9.5) are already constructed synchronously in `buildAssemblyRoot`
+ * even though the *initial file* is not opened until the deferred phase —
+ * `Shell`'s own `useOpenDocuments` subscription (`ui/shell.tsx`) picks up
+ * that later `onDidOpen` and re-renders, so wiring them in at first-frame
+ * time is enough for the initial file to appear once it opens. Both
+ * optional, mirroring `Shell`'s own optional `documents`/`config` props —
+ * an existing caller/test that builds `ShellRenderDeps` without them keeps
+ * getting the placeholder-only `EditorArea` exactly as before. */
 export interface ShellRenderDeps {
   slotRegistry: SlotRegistry;
   layoutState: LayoutStateService;
   context: ContextService;
   commands: CommandRegistry;
   theme: ResolvedTheme;
+  documents?: DocumentManager;
+  config?: ConfigService;
 }
 
 /** The render seam's shape: resolves once "first frame" has happened (see
@@ -60,7 +72,13 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
   root.render(
     <ThemeProvider theme={deps.theme}>
       <ContextFocusTracker context={deps.context}>
-        <Shell slotRegistry={deps.slotRegistry} layoutState={deps.layoutState} commands={deps.commands} />
+        <Shell
+          slotRegistry={deps.slotRegistry}
+          layoutState={deps.layoutState}
+          commands={deps.commands}
+          documents={deps.documents}
+          config={deps.config}
+        />
       </ContextFocusTracker>
     </ThemeProvider>,
   );

@@ -9,7 +9,8 @@
     "@tecode/api": "workspace:*",
     "@opentui/core": "^0.1.107",
     "@opentui/react": "^0.1.107",
-    "react": "^19.0.0"
+    "react": "^19.0.0",
+    "string-width": "^7.2.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0"

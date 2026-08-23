@@ -786,3 +786,39 @@ describe("createDocument — typing coalescing end-to-end (Req 5.4)", () => {
     expect(() => doc.undo()).not.toThrow();
   });
 });
+
+describe("createDocument — lineCount/getLine (core-internal, EditorView Req 6.5, 6.6)", () => {
+  test("lineCount and getLine delegate to the internal LineBuffer", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "one\ntwo\nthree",
+      sink,
+      log,
+    });
+    expect(doc.lineCount).toBe(3);
+    expect(doc.getLine(0)).toBe("one");
+    expect(doc.getLine(1)).toBe("two");
+    expect(doc.getLine(2)).toBe("three");
+    expect(() => doc.getLine(3)).toThrow(RangeError);
+  });
+
+  test("lineCount and getLine reflect edits applied through applyEdits", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "one\ntwo",
+      sink,
+      log,
+    });
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 3 }, end: { line: 0, character: 3 } }, newText: "\nnew" },
+    ]);
+    expect(doc.lineCount).toBe(3);
+    expect(doc.getLine(0)).toBe("one");
+    expect(doc.getLine(1)).toBe("new");
+    expect(doc.getLine(2)).toBe("two");
+  });
+});

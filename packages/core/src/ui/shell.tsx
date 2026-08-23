@@ -1,9 +1,9 @@
 /**
- * The UI shell (Req 6.1-6.5; design.md §8.1, §8.2; Task 1.14): the VS
- * Code-style arrangement of `ActivityBar` / `Sidebar` / `EditorArea`
- * (`TabBar` + a placeholder `EditorView`) / `Panel` / `StatusBar`, wired to
- * the {@link SlotRegistry} (Req 6.2, 6.3) and the {@link LayoutStateService}
- * (Req 6.4).
+ * The UI shell (Req 6.1-6.6; design.md §8.1, §8.2, §8.3; Task 1.14, Task
+ * 2.1): the VS Code-style arrangement of `ActivityBar` / `Sidebar` /
+ * `EditorArea` (`TabBar` + the real `EditorView`) / `Panel` / `StatusBar`,
+ * wired to the {@link SlotRegistry} (Req 6.2, 6.3) and the
+ * {@link LayoutStateService} (Req 6.4).
  *
  * **Component tree** (design.md §8.1 — `ThemeProvider`/`ContextFocusTracker`
  * wrap this from the outside, at the assembly layer, not inside this
@@ -25,6 +25,9 @@
  * the slot(s) it renders (via {@link useSlotViews}/{@link useSidebarPairs}/
  * {@link useStatusBarItems} below) so a `tecode.ui.registerView` call
  * re-renders exactly the affected region — the Shell itself never polls.
+ * `EditorArea`'s tabs/active-document/`EditorState` are likewise driven
+ * reactively off an optional `DocumentManager` via {@link useOpenDocuments}
+ * (Req 6.5, 6.6, design.md §8.3).
  *
  * **Layout persistence** (Req 6.4): {@link useLayoutState} seeds React state
  * from `LayoutStateService.get()` (already populated with defaults even
@@ -35,18 +38,26 @@
  * the layout service's one and only writer, so no `onDidChange` round-trip
  * is needed to stay in sync with itself.
  *
- * **`EditorView` is a placeholder** (design.md §8.3 — the real
- * cursor/selection/gutter-rendering editor is a later task; tasks.md's
- * Phase 1 exit criterion is explicitly "no visible editing yet"). `TabBar`
- * accordingly renders whatever `tabs` `EditorArea` is given (empty by
- * default) rather than reading from a document manager this task does not
- * wire in.
+ * **`EditorArea`/`EditorView` wiring** (Req 6.5, 6.6, design.md §8.3):
+ * `Shell` accepts an optional `documents: DocumentManager` prop — when
+ * given, tabs, the active tab, and per-tab `EditorState` are all derived
+ * from its open documents (see `ShellProps`' and `EditorArea`'s own TSDoc);
+ * when omitted (existing callers/tests), `EditorArea` keeps its original,
+ * fully decoupled `editorTabs`/`activeEditorTabId`/`onSelectEditorTab` props
+ * and placeholder-only display exactly as before.
  */
 
-import { useCallback, useEffect, useReducer, useState, type ReactNode } from "react";
-import type { Disposable, SlotId } from "@tecode/api";
+import { basename } from "node:path";
+import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
+import type { Disposable, SlotId, Uri } from "@tecode/api";
+import type { CoreDocument } from "../buffer/document";
+import type { DocumentManager } from "../buffer/documentManager";
+import { uriToPath } from "../buffer/uri";
 import type { CommandRegistry } from "../commands/registry";
+import type { ConfigService } from "../config/service";
 import { RegisteredView, Tabs, type TabItem } from "./components";
+import { createInitialEditorState, type EditorState } from "./editorState";
+import { EditorView } from "./editorView";
 import { useFocusTracking } from "./focus";
 import type { LayoutState, LayoutStateService } from "./layoutState";
 import type { SidebarPair, SlotRegistry, SlotViewEntry } from "./slotRegistry";
@@ -119,6 +130,30 @@ function useStatusBarItems(slotRegistry: SlotRegistry): readonly SlotViewEntry[]
     return () => sub.dispose();
   }, [slotRegistry]);
   return slotRegistry.listStatusBarItems();
+}
+
+/** Re-renders on `documents`' `onDidOpen`/`onDidClose` and returns its
+ * current document list (Req 6.5, design.md §8.1's EditorArea wiring) —
+ * same subscribe-then-force-render shape as {@link useSlotViews}, including
+ * the post-subscribe re-render that closes the same render-before-subscribe
+ * race (this module's TSDoc). Returns `[]` when `documents` is
+ * `undefined` — a caller that never wires a `DocumentManager` in gets
+ * exactly the pre-existing "no tabs" placeholder behavior (this module's
+ * TSDoc on `EditorArea`). */
+function useOpenDocuments(documents: DocumentManager | undefined): readonly CoreDocument[] {
+  const [, forceRender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!documents) return undefined;
+    const openSub = documents.onDidOpen(() => forceRender());
+    const closeSub = documents.onDidClose(() => forceRender());
+    // Closes the subscribe-after-render race — see useSlotViews's TSDoc.
+    forceRender();
+    return () => {
+      openSub.dispose();
+      closeSub.dispose();
+    };
+  }, [documents]);
+  return documents?.documents ?? [];
 }
 
 /** Seeds React state from `layoutState.get()` (Req 6.4) and keeps it in
@@ -263,7 +298,7 @@ export function Sidebar(props: SidebarProps): ReactNode {
 }
 
 /* ------------------------------------------------------------------ */
-/* EditorArea (TabBar + placeholder EditorView)                        */
+/* EditorArea (TabBar + EditorView)                                     */
 /* ------------------------------------------------------------------ */
 
 /** Props for {@link EditorArea}. */
@@ -274,10 +309,22 @@ export interface EditorAreaProps {
   tabs?: TabItem[];
   activeTabId?: string;
   onSelectTab?: (id: string) => void;
+  /** The active document `EditorView` renders (Req 6.5, 6.6, design.md
+   * §8.3). `undefined` keeps the "No editor open." placeholder — unchanged
+   * for a caller that never wires a `DocumentManager` into `Shell` (this
+   * module's TSDoc). */
+  activeDocument?: CoreDocument;
+  /** This tab's `EditorState` — required alongside `activeDocument` (both
+   * are set, or neither is, from `Shell`'s wiring below). */
+  activeEditorState?: EditorState;
+  /** Threaded through to `EditorView` for its `editor.lineNumbers` lookup
+   * (Req 9.5). */
+  config?: ConfigService;
 }
 
-/** The editor area (Req 6.1, 6.5): a `TabBar` over a placeholder
- * `EditorView` (design.md §8.3 — the real editor is a later task). */
+/** The editor area (Req 6.1, 6.5, 6.6): a `TabBar` over the real
+ * `EditorView` (design.md §8.3) once a document is active, or the
+ * "No editor open." placeholder otherwise. */
 export function EditorArea(props: EditorAreaProps): ReactNode {
   const theme = useTheme();
   const focusRef = useFocusTracking("editorFocus");
@@ -294,9 +341,22 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
         <Tabs tabs={tabs} activeId={props.activeTabId} onSelect={props.onSelectTab} />
       ) : null}
       <box style={{ flexDirection: "column", flexGrow: 1 }}>
-        <text fg={toColorInput(theme.colors["editor.foreground"])}>
-          {tabs.length > 0 ? "" : "No editor open."}
-        </text>
+        {props.activeDocument && props.activeEditorState ? (
+          // Keyed by the document's uri — the same "switching content
+          // unmounts the old fiber" pattern this module already uses for
+          // Sidebar/Panel's `key={view.id}` (components.tsx's
+          // RegisteredView TSDoc), applied to the active tab's EditorView.
+          <EditorView
+            key={props.activeDocument.uri}
+            document={props.activeDocument}
+            state={props.activeEditorState}
+            config={props.config}
+          />
+        ) : (
+          <text fg={toColorInput(theme.colors["editor.foreground"])}>
+            {tabs.length > 0 ? "" : "No editor open."}
+          </text>
+        )}
       </box>
     </box>
   );
@@ -401,9 +461,25 @@ export interface ShellProps {
    * with no command registry wired yet (e.g. an isolated component test)
    * simply gets activity-bar-click switching without the command. */
   commands?: CommandRegistry;
+  /** Fallback tab list used only when `documents` is not provided (or has
+   * no open documents yet) — this module's original decoupled-from-any-
+   * document-manager tab display, kept for backward compatibility with
+   * existing callers/tests (this module's TSDoc). */
   editorTabs?: TabItem[];
   activeEditorTabId?: string;
   onSelectEditorTab?: (id: string) => void;
+  /** Drives the real `EditorArea`/`EditorView` from open documents (Req
+   * 6.5, 6.6, design.md §8.1) — tabs, the active tab, and per-tab
+   * `EditorState` are all derived from this instead of the
+   * `editorTabs`/`activeEditorTabId`/`onSelectEditorTab` props above once
+   * it is given. Optional and kept that way deliberately: existing
+   * callers/tests that construct a `Shell` without a `DocumentManager`
+   * (there is no core-owned default one to fall back to) keep working
+   * exactly as before (this module's TSDoc). */
+  documents?: DocumentManager;
+  /** Threaded through to `EditorView` for its `editor.lineNumbers` lookup
+   * (Req 9.5). */
+  config?: ConfigService;
 }
 
 /** The UI shell (Req 6.1-6.5, design.md §8.1): the top-level VS Code-style
@@ -413,6 +489,56 @@ export interface ShellProps {
 export function Shell(props: ShellProps): ReactNode {
   const [layout, updateLayout] = useLayoutState(props.layoutState);
   const pairs = useSidebarPairs(props.slotRegistry);
+
+  // Req 6.5, 6.6, design.md §8.1: tabs/active-tab/EditorState derived from
+  // `props.documents` once it's given — see ShellProps' TSDoc for the
+  // fallback when it isn't.
+  const openDocuments = useOpenDocuments(props.documents);
+  const [activeDocumentUri, setActiveDocumentUri] = useState<Uri | undefined>(undefined);
+  const editorStatesRef = useRef<Map<Uri, EditorState>>(new Map());
+
+  useEffect(() => {
+    if (openDocuments.length === 0) {
+      setActiveDocumentUri(undefined);
+      return;
+    }
+    setActiveDocumentUri((current) => {
+      // Keep the current active document if it's still open; otherwise
+      // fall back to the first open one (covers both "nothing selected
+      // yet" and "the active document just closed").
+      if (current && openDocuments.some((d) => d.uri === current)) return current;
+      return openDocuments[0]!.uri;
+    });
+  }, [openDocuments]);
+
+  useEffect(() => {
+    // Drop retained EditorState for documents that are no longer open —
+    // otherwise a long session's Map would grow forever across
+    // open/close cycles.
+    const openUris = new Set(openDocuments.map((d) => d.uri));
+    for (const uri of Array.from(editorStatesRef.current.keys())) {
+      if (!openUris.has(uri)) editorStatesRef.current.delete(uri);
+    }
+  }, [openDocuments]);
+
+  function getOrCreateEditorState(uri: Uri): EditorState {
+    let state = editorStatesRef.current.get(uri);
+    if (!state) {
+      state = createInitialEditorState(uri);
+      editorStatesRef.current.set(uri, state);
+    }
+    return state;
+  }
+
+  const hasOpenDocuments = openDocuments.length > 0;
+  const activeDocument = activeDocumentUri
+    ? openDocuments.find((d) => d.uri === activeDocumentUri)
+    : undefined;
+  const editorTabs: TabItem[] = hasOpenDocuments
+    ? openDocuments.map((d) => ({ id: d.uri, label: basename(uriToPath(d.uri)) }))
+    : (props.editorTabs ?? []);
+  const activeEditorTabId = hasOpenDocuments ? activeDocumentUri : props.activeEditorTabId;
+  const onSelectEditorTab = hasOpenDocuments ? setActiveDocumentUri : props.onSelectEditorTab;
 
   const selectSidebarView = useCallback(
     (id: string) => {
@@ -455,9 +581,12 @@ export function Shell(props: ShellProps): ReactNode {
           activeView={layout.activeView}
         />
         <EditorArea
-          tabs={props.editorTabs}
-          activeTabId={props.activeEditorTabId}
-          onSelectTab={props.onSelectEditorTab}
+          tabs={editorTabs}
+          activeTabId={activeEditorTabId}
+          onSelectTab={onSelectEditorTab}
+          activeDocument={activeDocument}
+          activeEditorState={activeDocument ? getOrCreateEditorState(activeDocument.uri) : undefined}
+          config={props.config}
         />
       </box>
       <Panel slotRegistry={props.slotRegistry} visible={layout.panelVisible} height={layout.panelHeight} />
