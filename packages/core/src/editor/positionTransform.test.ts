@@ -94,4 +94,19 @@ describe("transformPosition (Task 2.2, editor/positionTransform.ts)", () => {
   test("no edits at all is the identity", () => {
     expect(transformPosition(pos(3, 3), [])).toEqual(pos(3, 3));
   });
+
+  test("a clamped position still shifts by a preceding edit, regardless of edit order", () => {
+    // Position (0,6) sits strictly inside the replacement (0,4)-(0,10), so
+    // it clamps to that edit's start (0,4) — which the insert of "x" at
+    // (0,2) then shifts right by one, landing at (0,5). The clamp anchors
+    // FIRST, so the preceding edit's delta must survive in both batch
+    // orders (regression: the old bucket-2 branch overwrote the shift when
+    // the containing edit came second, yielding (0,4)/(0,5) depending on
+    // order).
+    const edits = [edit(0, 2, 0, 2, "x"), edit(0, 4, 0, 10, "")];
+    const forward = transformPosition(pos(0, 6), edits);
+    const reversed = transformPosition(pos(0, 6), [...edits].reverse());
+    expect(forward).toEqual(pos(0, 5));
+    expect(reversed).toEqual(forward);
+  });
 });

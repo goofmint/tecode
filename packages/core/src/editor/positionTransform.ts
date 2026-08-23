@@ -15,30 +15,31 @@
  * **Why a plain per-edit delta works, and why edit order doesn't matter**:
  * `edits` are always non-overlapping (the same precondition
  * `LineBuffer.applyEdits` itself requires) and expressed in one shared
- * *original* (pre-batch) coordinate space. For any given `position`, each
- * edit falls into exactly one of three buckets, decided purely by comparing
- * `position` to that edit's own original `range` — never to any other
- * edit's range, and never to a running "already shifted" position:
+ * *original* (pre-batch) coordinate space. A position strictly inside an
+ * edit's replaced range has no meaningful "where did it go", so it is first
+ * clamped to that edit's `range.start` — the **anchor**. (When no edit
+ * contains the position, the anchor is the position itself; because edits
+ * are non-overlapping, at most one edit can contain it, so the anchor is
+ * well-defined regardless of the order `edits` arrive in.) Every remaining
+ * edit then falls into exactly one of two buckets, decided purely by
+ * comparing the *anchor* to that edit's own original `range`:
  *
- * 1. **Entirely before `position`** (`range.end <= position`in the original
- *    space): `position` shifts by this edit's line/character delta. Because
- *    edits are non-overlapping, at most one such edit shares `position`'s
+ * 1. **Entirely before the anchor** (`range.end <= anchor` in the original
+ *    space): the anchor shifts by this edit's line/character delta. Because
+ *    edits are non-overlapping, at most one such edit shares the anchor's
  *    original line as its `range.end.line`, but several *different* lines'
- *    worth of such edits can all be "before" `position` — each contributes
+ *    worth of such edits can all be "before" the anchor — each contributes
  *    its OWN length delta independently, and, since these deltas are just
- *    fixed integers describing how much text before `position` on its own
+ *    fixed integers describing how much text before the anchor on its own
  *    line changed length, summing them (in any order) gives the correct
  *    total. That is what lets this function loop over `edits` in whatever
- *    order the caller hands them.
- * 2. **Strictly containing `position`** (`range.start < position <
- *    range.end`): `position` sat inside text this edit removed/replaced;
- *    there is no meaningful "where did it go", so it clamps to the edit's
- *    `range.start` (the position also lands there stably no matter how many
- *    more "before" edits get folded in afterwards, since edits are
- *    non-overlapping and sorted — no other edit's range can also touch this
- *    same original position).
- * 3. **At or after `position`** (`range.start >= position`): unaffected —
- *    text below/after `position` is not this edit's concern.
+ *    order the caller hands them: the clamp is resolved *before* the loop,
+ *    so a containing edit encountered mid-loop can no longer overwrite
+ *    shifts already accumulated from preceding "before" edits.
+ * 2. **At or after the anchor** (`range.start >= anchor`): unaffected —
+ *    text below/after the anchor is not this edit's concern. (The
+ *    containing edit itself, if any, also lands here relative to its own
+ *    `range.start` and contributes nothing beyond the clamp.)
  *
  * Every one of Task 2.2's edit shapes (a single-position insert; a
  * `[active-1, active)` or line-join backspace; a `[active, active+1)` or
@@ -78,38 +79,42 @@ function splitIntoLines(text: string): string[] {
  * (this module's TSDoc explains why).
  */
 export function transformPosition(position: Position, edits: readonly TextEdit[]): Position {
-  let line = position.line;
-  let character = position.character;
+  // Resolve the clamp FIRST (this module's TSDoc): a position strictly
+  // inside an edit's replaced range anchors to that edit's `range.start`
+  // in original coordinates, and the loop below then shifts the anchor by
+  // every preceding edit's delta — so the result no longer depends on
+  // where in the batch the containing edit happens to sit.
+  const containingEdit = edits.find(
+    ({ range }) =>
+      comparePositions(range.start, position) < 0 && comparePositions(position, range.end) < 0,
+  );
+  const anchor = containingEdit ? containingEdit.range.start : position;
+  let line = anchor.line;
+  let character = anchor.character;
 
   for (const edit of edits) {
+    if (edit === containingEdit) continue; // contributes nothing beyond the clamp
     const { range, newText } = edit;
     const insertedLines = splitIntoLines(newText);
     const insertedLineCount = insertedLines.length - 1;
     const removedLineCount = range.end.line - range.start.line;
     const netLineDelta = insertedLineCount - removedLineCount;
 
-    if (comparePositions(position, range.end) >= 0) {
-      // Bucket 1 (this module's TSDoc): position is at-or-after this
+    if (comparePositions(anchor, range.end) >= 0) {
+      // Bucket 1 (this module's TSDoc): the anchor is at-or-after this
       // edit's end, in ORIGINAL coordinates.
-      if (position.line === range.end.line) {
+      if (anchor.line === range.end.line) {
         const lastInsertedLineLength = insertedLines[insertedLines.length - 1]!.length;
         const newEndCharacter =
           range.start.character + (insertedLineCount === 0 ? newText.length : lastInsertedLineLength);
         character = character - range.end.character + newEndCharacter;
       }
       line += netLineDelta;
-      continue;
     }
 
-    if (comparePositions(position, range.start) > 0) {
-      // Bucket 2: position was strictly inside text this edit removed —
-      // clamp to where that text used to start.
-      line = range.start.line;
-      character = range.start.character;
-      continue;
-    }
-
-    // Bucket 3: position is before this edit's range.start — unaffected.
+    // Bucket 2: this edit starts at-or-after the anchor — unaffected.
+    // (Non-overlap guarantees no OTHER edit can strictly contain the
+    // anchor once the containing edit has been factored out.)
   }
 
   return { line, character };

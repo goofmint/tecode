@@ -590,9 +590,15 @@ export function Shell(props: ShellProps): ReactNode {
   );
 
   const hasOpenDocuments = openDocuments.length > 0;
-  const activeDocument = activeDocumentUri
-    ? openDocuments.find((d) => d.uri === activeDocumentUri)
-    : undefined;
+  // With an `editorSession`, resolve the active document through the
+  // service itself — `ShellProps` allows `editorSession` without
+  // `documents`, and in that configuration `openDocuments` is empty even
+  // though the session knows the active document.
+  const activeDocument = editorSession
+    ? editorSession.getActiveDocument()
+    : activeDocumentUri
+      ? openDocuments.find((d) => d.uri === activeDocumentUri)
+      : undefined;
   const editorTabs: TabItem[] = hasOpenDocuments
     ? openDocuments.map((d) => ({ id: d.uri, label: basename(uriToPath(d.uri)) }))
     : (props.editorTabs ?? []);
