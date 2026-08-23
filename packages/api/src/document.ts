@@ -2,7 +2,7 @@
  * The document/text-buffer surface (Req 5, design.md §7).
  */
 
-import type { Event, TextEdit, Uri } from "./primitives";
+import type { Event, Selection, TextEdit, Uri } from "./primitives";
 
 /** Line-ending style. Detected on load (first occurrence wins, default
  * `"\n"`) and preserved on save (Req 5.1). */
@@ -93,6 +93,30 @@ export interface Document {
    * comment on N lines") that undo/redo as one operation.
    */
   transaction(fn: () => void): void;
+
+  /**
+   * Undo the most recent undo-stack entry (Req 5.4, design.md §7.1) —
+   * whichever single `applyEdits`/`transaction` call is next in line,
+   * whether that was ordinary typing (coalesced within the 750 ms typing
+   * window), a single command's edit, or a whole `transaction`. Applies
+   * the entry's inverse edits, fires exactly one `onDidChange` (like any
+   * other mutation — Req 5.3), and moves the entry onto the redo stack.
+   *
+   * Returns the selections that were active immediately BEFORE the
+   * original edit was made, so a caller (`editor.action.undo`) can restore
+   * the caret to where it was — `undefined` when the undo stack is empty
+   * (a documented no-op, matching every other boundary case in this API).
+   */
+  undo(): Selection[] | undefined;
+
+  /**
+   * The redo counterpart to {@link Document.undo}: re-applies the most
+   * recently undone entry and moves it back onto the undo stack. Returns
+   * the selections that were active immediately AFTER the original edit,
+   * for the caller to restore; `undefined` when the redo stack is empty
+   * (including whenever a fresh edit has cleared it — Req 5.4).
+   */
+  redo(): Selection[] | undefined;
 
   /** Fired after each `applyEdits` call completes (Req 5.3). */
   onDidChange: Event<DocumentChangeEvent>;

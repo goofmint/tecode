@@ -297,6 +297,10 @@ export interface LanguagesStub extends LanguagesNamespace {
  * registered contributions is the real language registry's job (Task
  * 2.8) — `DocumentManager.resolveLanguageId` already returns the same
  * stub value independently (`buffer/documentManager.ts`) until that lands.
+ * `getLanguage` IS a real lookup by id over whatever has been registered
+ * so far (Task 2.4) — unlike `getLanguageId`, matching a already-known id
+ * against the registry needs no file-extension resolution logic, so there
+ * is nothing here left to stub out.
  */
 export function createLanguagesStub(): LanguagesStub {
   const registrations = createRegistrySet<LanguageContribution>();
@@ -306,6 +310,9 @@ export function createLanguagesStub(): LanguagesStub {
     },
     getLanguageId() {
       return "plaintext";
+    },
+    getLanguage(id: string) {
+      return registrations.entries().find((contribution) => contribution.id === id);
     },
     registeredContributions: registrations.entries,
   };

@@ -312,6 +312,15 @@ export interface LanguagesNamespace {
   /** The language ID resolved for `uri` (`"plaintext"` if none match —
    * Req 8.3). */
   getLanguageId(uri: Uri): string;
+  /**
+   * The registered {@link LanguageContribution} for `id`, or `undefined`
+   * if no extension has registered a language under that id (Req 8.2,
+   * 11.1). Lets a command handler read a language's `comments`/`brackets`
+   * metadata — e.g. `editor-core`'s toggle-line-comment and bracket
+   * auto-close commands — without maintaining its own copy of every
+   * language's declaration.
+   */
+  getLanguage(id: string): LanguageContribution | undefined;
 }
 
 /* ------------------------------------------------------------------ */

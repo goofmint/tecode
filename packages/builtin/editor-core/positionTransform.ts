@@ -61,7 +61,7 @@
  * transform itself.
  */
 
-import type { Position, TextEdit } from "@tecode/api";
+import type { Position, Selection, TextEdit } from "@tecode/api";
 
 /** Ascending comparison for two {@link Position}s — line first, then
  * character within the line. Exported for `editing.ts`'s overlap-dropping
@@ -165,6 +165,30 @@ export function transformPosition(position: Position, edits: readonly TextEdit[]
  * produce colliding ranges; the later one's cursor simply does not move
  * this keystroke.
  */
+/**
+ * Map a WHOLE `selection` (both its `anchor` and `active` endpoints)
+ * through `edits`, rebuilding `start`/`end` from the transformed pair (Task
+ * 2.4: `editor.action.toggleLineComment`). Unlike {@link buildEditBatch}'s
+ * `editing.ts` — whose commands always collapse a selection to a single
+ * post-edit caret — comment-toggling INSERTS/REMOVES a fixed-width prefix
+ * near the start of each affected line without otherwise touching the
+ * selection's extent, so both endpoints need their own independent
+ * transform to keep a non-collapsed selection's span correct across the
+ * edit, exactly like an ordinary selection extends across any other edit
+ * elsewhere on the same lines.
+ */
+export function transformSelection(selection: Selection, edits: readonly TextEdit[]): Selection {
+  const anchor = transformPosition(selection.anchor, edits);
+  const active = transformPosition(selection.active, edits);
+  const forward = comparePositions(anchor, active) <= 0;
+  return {
+    start: forward ? anchor : active,
+    end: forward ? active : anchor,
+    anchor,
+    active,
+  };
+}
+
 export function dropOverlapping(edits: readonly TextEdit[]): TextEdit[] {
   const sorted = [...edits].sort((a, b) => comparePositions(a.range.start, b.range.start));
   const kept: TextEdit[] = [];

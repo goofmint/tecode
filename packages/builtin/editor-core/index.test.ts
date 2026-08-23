@@ -16,6 +16,7 @@ import type {
   Document,
   Editor,
   ExtensionContext,
+  LanguageContribution,
   Selection,
   Tecode,
   TextEdit,
@@ -46,6 +47,7 @@ function createFakeApi(initialLines: string[]) {
   ]);
   const configListeners = new Set<(e: ConfigChangeEvent) => void>();
   const savedUris: string[] = [];
+  const languageContributions = new Map<string, LanguageContribution>();
 
   function applyEditsToLines(edits: TextEdit[]): void {
     // Apply in reverse document order so earlier edits' ranges stay valid
@@ -64,6 +66,29 @@ function createFakeApi(initialLines: string[]) {
     }
   }
 
+  // A minimal snapshot-based undo/redo stack (Task 2.4) — real enough to
+  // exercise `editor.action.undo`/`redo`'s contract (restore buffer content,
+  // one entry per `applyEdits`/`transaction` call) without reimplementing
+  // `@tecode/core`'s real inverse-edit `UndoStack`. Selections are never
+  // recorded here — matching production reality: `editor-core` only ever
+  // reaches the real undo stack through the PUBLIC `Document.applyEdits`
+  // (no `selectionsBefore`/`selectionsAfter` opts on that signature), so its
+  // own commands' undo entries always carry empty selection arrays too
+  // (`index.ts`'s TSDoc on `editor.action.undo`/`redo`).
+  const undoStack: string[][] = [];
+  const redoStack: string[][] = [];
+  let transactionDepth = 0;
+  let transactionSnapshot: string[] | undefined;
+
+  function snapshot(): string[] {
+    return [...lines];
+  }
+
+  function pushUndo(before: string[]): void {
+    undoStack.push(before);
+    redoStack.length = 0;
+  }
+
   const document: Document = {
     uri: "file:///fake.txt",
     languageId: "plaintext",
@@ -73,10 +98,41 @@ function createFakeApi(initialLines: string[]) {
     eol: "\n",
     applyEdits(edits: TextEdit[]) {
       appliedEdits.push(edits);
+      if (transactionDepth > 0) {
+        applyEditsToLines(edits);
+        return;
+      }
+      const before = snapshot();
       applyEditsToLines(edits);
+      pushUndo(before);
     },
     transaction(fn: () => void) {
-      fn();
+      const isOutermost = transactionDepth === 0;
+      if (isOutermost) transactionSnapshot = snapshot();
+      transactionDepth++;
+      try {
+        fn();
+      } finally {
+        transactionDepth--;
+        if (transactionDepth === 0) {
+          pushUndo(transactionSnapshot!);
+          transactionSnapshot = undefined;
+        }
+      }
+    },
+    undo(): Selection[] | undefined {
+      const before = undoStack.pop();
+      if (before === undefined) return undefined;
+      redoStack.push(snapshot());
+      lines.splice(0, lines.length, ...before);
+      return [];
+    },
+    redo(): Selection[] | undefined {
+      const after = redoStack.pop();
+      if (after === undefined) return undefined;
+      undoStack.push(snapshot());
+      lines.splice(0, lines.length, ...after);
+      return [];
     },
     onDidChange: () => ({ dispose() {} }),
   };
@@ -141,7 +197,14 @@ function createFakeApi(initialLines: string[]) {
       },
     },
     context: undefined as never,
-    languages: undefined as never,
+    languages: {
+      register(contribution: LanguageContribution): Disposable {
+        languageContributions.set(contribution.id, contribution);
+        return { dispose: () => languageContributions.delete(contribution.id) };
+      },
+      getLanguageId: () => "plaintext",
+      getLanguage: (id: string) => languageContributions.get(id),
+    },
     themes: undefined as never,
   } as unknown as Tecode;
 
@@ -151,7 +214,15 @@ function createFakeApi(initialLines: string[]) {
     for (const listener of configListeners) listener(event);
   }
 
-  return { api, lines, appliedEdits, savedUris, setConfig, getSelections: () => selections };
+  return {
+    api,
+    lines,
+    appliedEdits,
+    savedUris,
+    setConfig,
+    getSelections: () => selections,
+    languageContributions,
+  };
 }
 
 function activateFixture(initialLines: string[]) {
@@ -249,5 +320,183 @@ describe("editor-core activate() — save (Req 11.1)", () => {
     const { api, savedUris } = activateFixture(["abc"]);
     await api.commands.execute("editor.action.save");
     expect(savedUris).toEqual(["file:///fake.txt"]);
+  });
+});
+
+describe("editor-core activate() — line operations (Req 11.1, Task 2.4)", () => {
+  test("duplicateLine is correct with two cursors on distinct lines — one undo step", async () => {
+    const { api, lines, appliedEdits, getSelections } = activateFixture(["aaa", "bbb", "ccc"]);
+    api.editor.setSelections([cursorAt(0, 1), cursorAt(2, 2)]);
+    await api.commands.execute("editor.action.duplicateLine");
+
+    expect(lines).toEqual(["aaa", "aaa", "bbb", "ccc", "ccc"]);
+    expect(appliedEdits).toHaveLength(1);
+    // Each cursor lands on its own duplicate: line 0's copy is now at line
+    // 1 (shifted by its own group's size); line 2's copy is now at line 4
+    // (shifted by group 0's size (1, above it) plus its own group's size).
+    expect(getSelections()).toEqual([cursorAt(1, 1), cursorAt(4, 2)]);
+
+    await api.commands.execute("editor.action.undo");
+    expect(lines).toEqual(["aaa", "bbb", "ccc"]);
+  });
+
+  test("moveLinesUp/moveLinesDown move a single line, no-op at the buffer boundary", async () => {
+    const { api, lines } = activateFixture(["aaa", "bbb", "ccc"]);
+    await api.commands.execute("editor.action.cursorDown"); // -> line 1
+    await api.commands.execute("editor.action.moveLinesUp");
+    expect(lines).toEqual(["bbb", "aaa", "ccc"]);
+
+    const { api: api2, lines: lines2, appliedEdits: edits2 } = activateFixture(["aaa"]);
+    await api2.commands.execute("editor.action.moveLinesUp"); // already at top
+    expect(lines2).toEqual(["aaa"]);
+    expect(edits2).toHaveLength(0);
+
+    const { api: api3, lines: lines3 } = activateFixture(["aaa", "bbb"]);
+    await api3.commands.execute("editor.action.moveLinesDown");
+    expect(lines3).toEqual(["bbb", "aaa"]);
+  });
+
+  test("deleteLine handles the trailing-newline edge on the last line", async () => {
+    const { api, lines, getSelections } = activateFixture(["aaa", "bbb", "ccc"]);
+    await api.commands.execute("editor.action.cursorBottom"); // -> last line
+    await api.commands.execute("editor.action.deleteLine");
+    expect(lines).toEqual(["aaa", "bbb"]);
+    expect(getSelections()).toEqual([cursorAt(1, 0)]);
+  });
+
+  test("deleteLine on the only line leaves a single empty line", async () => {
+    const { api, lines } = activateFixture(["only"]);
+    await api.commands.execute("editor.action.deleteLine");
+    expect(lines).toEqual([""]);
+  });
+
+  test("deleteLine is correct with two cursors on distinct lines", async () => {
+    const { api, lines, getSelections } = activateFixture(["aaa", "bbb", "ccc", "ddd"]);
+    api.editor.setSelections([cursorAt(0, 0), cursorAt(2, 0)]);
+    await api.commands.execute("editor.action.deleteLine");
+    expect(lines).toEqual(["bbb", "ddd"]);
+    expect(getSelections()).toEqual([cursorAt(0, 0), cursorAt(1, 0)]);
+  });
+});
+
+describe("editor-core activate() — toggleLineComment (Req 11.1, Task 2.4)", () => {
+  test("comments, then uncomments, then round-trips to the original", async () => {
+    const { api, lines } = activateFixture(["const a = 1;", "const b = 2;"]);
+    api.editor.setSelections([
+      { start: pos(0, 0), end: pos(1, 5), anchor: pos(0, 0), active: pos(1, 5) },
+    ]);
+
+    await api.commands.execute("editor.action.toggleLineComment");
+    expect(lines).toEqual(["// const a = 1;", "// const b = 2;"]);
+
+    await api.commands.execute("editor.action.toggleLineComment");
+    expect(lines).toEqual(["const a = 1;", "const b = 2;"]);
+  });
+
+  test("is a no-op with no registered language declaration", async () => {
+    const { api, lines, languageContributions, appliedEdits } = activateFixture(["const a = 1;"]);
+    languageContributions.delete("plaintext");
+
+    await api.commands.execute("editor.action.toggleLineComment");
+    expect(lines).toEqual(["const a = 1;"]);
+    expect(appliedEdits).toHaveLength(0);
+  });
+});
+
+describe("editor-core activate() — undo/redo commands (Req 11.1, Task 2.4)", () => {
+  test("undo restores the buffer; redo re-applies the change", async () => {
+    const { api, lines } = activateFixture([""]);
+    await api.commands.execute("editor.action.tab");
+    expect(lines[0]).toBe("    ");
+
+    await api.commands.execute("editor.action.undo");
+    expect(lines[0]).toBe("");
+
+    await api.commands.execute("editor.action.redo");
+    expect(lines[0]).toBe("    ");
+  });
+
+  test("undo with nothing to undo is a harmless no-op", async () => {
+    const { api, lines } = activateFixture(["abc"]);
+    await api.commands.execute("editor.action.undo");
+    expect(lines).toEqual(["abc"]);
+  });
+});
+
+describe("editor-core activate() — addSelectionToNextFindMatch (ctrl+d, Req 11.1, Task 2.4)", () => {
+  test("word select -> next match -> wraparound -> all-matches no-op", async () => {
+    const { api, getSelections } = activateFixture(["foo bar foo baz foo"]);
+    api.editor.setSelections([cursorAt(0, 9)]); // inside the middle "foo" (8-11)
+
+    await api.commands.execute("editor.action.addSelectionToNextFindMatch");
+    expect(getSelections()).toEqual([
+      { start: pos(0, 8), end: pos(0, 11), anchor: pos(0, 8), active: pos(0, 11) },
+    ]);
+
+    await api.commands.execute("editor.action.addSelectionToNextFindMatch");
+    expect(getSelections()[0]).toEqual({
+      start: pos(0, 16),
+      end: pos(0, 19),
+      anchor: pos(0, 16),
+      active: pos(0, 19),
+    });
+    expect(getSelections()).toHaveLength(2);
+
+    await api.commands.execute("editor.action.addSelectionToNextFindMatch"); // wraparound
+    expect(getSelections()[0]).toEqual({ start: pos(0, 0), end: pos(0, 3), anchor: pos(0, 0), active: pos(0, 3) });
+    expect(getSelections()).toHaveLength(3);
+
+    const beforeNoOp = getSelections();
+    await api.commands.execute("editor.action.addSelectionToNextFindMatch"); // all matches selected
+    expect(getSelections()).toEqual(beforeNoOp);
+  });
+});
+
+describe("editor-core activate() — bracket auto-close (Req 11.1, Task 2.4)", () => {
+  test("insert: an open bracket inserts the pair, caret lands between", async () => {
+    const { api, lines, getSelections } = activateFixture([""]);
+    await api.commands.execute("editor.action.typeOpenParen");
+    expect(lines[0]).toBe("()");
+    expect(getSelections()).toEqual([cursorAt(0, 1)]);
+  });
+
+  test("type-over: typing the closer right before an existing one just advances", async () => {
+    const { api, lines, appliedEdits, getSelections } = activateFixture(["()"]);
+    await api.commands.execute("editor.action.cursorRight"); // caret between ( and )
+    await api.commands.execute("editor.action.typeCloseParen");
+    expect(lines[0]).toBe("()"); // unchanged
+    expect(appliedEdits).toHaveLength(0);
+    expect(getSelections()).toEqual([cursorAt(0, 2)]);
+  });
+
+  test("selection-wrap: an open bracket over a selection wraps it, keeping it selected", async () => {
+    const { api, lines, getSelections } = activateFixture(["abc"]);
+    api.editor.setSelections([{ start: pos(0, 0), end: pos(0, 3), anchor: pos(0, 0), active: pos(0, 3) }]);
+    await api.commands.execute("editor.action.typeOpenParen");
+    expect(lines[0]).toBe("(abc)");
+    expect(getSelections()).toEqual([
+      { start: pos(0, 1), end: pos(0, 4), anchor: pos(0, 1), active: pos(0, 4) },
+    ]);
+  });
+
+  test("a stray closing bracket with no match just inserts plainly", async () => {
+    const { api, lines } = activateFixture([""]);
+    await api.commands.execute("editor.action.typeCloseParen");
+    expect(lines[0]).toBe(")");
+  });
+
+  test("quotes: typing a quote right before an existing one skips over it", async () => {
+    const { api, lines, getSelections } = activateFixture(['""']);
+    await api.commands.execute("editor.action.cursorRight");
+    await api.commands.execute("editor.action.typeDoubleQuote");
+    expect(lines[0]).toBe('""');
+    expect(getSelections()).toEqual([cursorAt(0, 2)]);
+  });
+
+  test("no bracket pairs registered: degrades to plain character insertion", async () => {
+    const { api, lines, languageContributions } = activateFixture([""]);
+    languageContributions.delete("plaintext");
+    await api.commands.execute("editor.action.typeOpenParen");
+    expect(lines[0]).toBe("(");
   });
 });

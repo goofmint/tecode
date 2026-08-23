@@ -150,6 +150,26 @@ test("languages.register: register/dispose symmetry, getLanguageId always 'plain
   expect(() => sub.dispose()).not.toThrow();
 });
 
+test("languages.getLanguage: resolves a registered contribution by id, undefined once unregistered or unknown (Task 2.4)", () => {
+  const languages = createLanguagesStub();
+  const contribution = {
+    id: "fixture-lang",
+    extensions: [".fx"],
+    grammar: "g.wasm",
+    highlights: "h.scm",
+    comments: { line: "//" },
+  };
+
+  expect(languages.getLanguage("fixture-lang")).toBeUndefined();
+
+  const sub = languages.register(contribution);
+  expect(languages.getLanguage("fixture-lang")).toEqual(contribution);
+  expect(languages.getLanguage("no-such-lang")).toBeUndefined();
+
+  sub.dispose();
+  expect(languages.getLanguage("fixture-lang")).toBeUndefined();
+});
+
 test("themes.register: register/dispose symmetry; current is unaffected by registration", () => {
   const themes = createThemesStub();
   const contribution = { id: "fixture-theme", label: "Fixture", path: "theme.json" };
