@@ -62,7 +62,7 @@
 import type { Disposable, DocumentChangeEvent, Event, Listener, TextEdit, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
-import { createLineBuffer } from "../buffer/lineBuffer";
+import { createLineBuffer, type LineBuffer } from "../buffer/lineBuffer";
 import { comparePositions } from "../editor/positionTransform";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import type { AssetResolver } from "./assetResolver";
@@ -262,22 +262,96 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     return load;
   }
 
-  /** Recompute `state.lineSpans` from `tree`'s current captures — called
-   * after every (re)parse. Multi-line captures are split per-line
-   * (`buffer/lineBuffer.ts`'s `positionAt` already gives `{ line,
-   * character }` boundaries; a capture spanning lines N..M contributes one
-   * `HighlightSpan` to each). */
+  /** Per-line start offset table for one `recomputeLineSpans` call —
+   * `starts[i]` is line `i`'s own UTF-16 offset into `buf.getText()`.
+   * Built in one O(line count) pass over `buf` so every capture below
+   * resolves its line via {@link findLineForOffset}'s O(log line count)
+   * binary search instead of `LineBuffer.positionAt`'s O(line count) linear
+   * scan from the document start (this module's Finding, below). Mirrors
+   * `lineBuffer.ts`'s own `positionAtIn`: each line separator counts as
+   * exactly one UTF-16 code unit, matching `buf`'s hardcoded `"\n"` `eol`
+   * (`recomputeLineSpans`'s own `createLineBuffer(text || "\n", "\n")`
+   * below) regardless of the document's real line endings — so `starts`
+   * reproduces the exact same (CRLF-naive) offset math `buf.positionAt`
+   * always has, not a stricter one. */
+  function buildLineStarts(buf: LineBuffer): number[] {
+    const starts: number[] = new Array(buf.lineCount);
+    starts[0] = 0;
+    for (let i = 1; i < buf.lineCount; i++) {
+      starts[i] = starts[i - 1]! + buf.getLine(i - 1).length + 1;
+    }
+    return starts;
+  }
+
+  /** The last line index `i` with `lineStarts[i] <= offset` — binary search
+   * over the strictly-increasing table {@link buildLineStarts} produces
+   * (same technique as `parserBackend.ts`'s own `findLineForOffset` over
+   * its byte-offset index). `lineStarts` always has at least one entry
+   * (`[0]`, line 0 always exists), so this never runs on an empty array. */
+  function findLineForOffset(lineStarts: readonly number[], offset: number): number {
+    let lo = 0;
+    let hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid]! <= offset) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  /** `character - lineStart`, clamped into `[0, lineLength]` — matches
+   * `lineBuffer.ts`'s `positionAtIn`'s own clamping (an offset can only
+   * ever land at or before a line's own EOL character, never past it). */
+  function clampColumn(character: number, lineLength: number): number {
+    return Math.max(0, Math.min(character, lineLength));
+  }
+
+  /**
+   * Recompute `state.lineSpans` from `tree`'s current captures — called
+   * after every (re)parse. Multi-line captures are split per-line (a
+   * capture spanning lines N..M contributes one `HighlightSpan` to each).
+   *
+   * **Finding (measured on a 10,000-line file, `typingBenchmark.test.ts`):**
+   * this used to call `LineBuffer.positionAt` — `lineBuffer.ts`'s
+   * `positionAtIn`, an O(line count) linear scan from line 0 — TWICE per
+   * capture. A generated 10,000-line file produces ~60,000 captures per
+   * keystroke, so that was ~60,000 × 2 × O(10,000) ≈ 1.2 billion scan steps
+   * per keystroke (median ≈ 7.0-7.6s, p95 ≈ 7.2-8.2s against a 16ms
+   * target), even though `query.captures()` itself and tree-sitter's
+   * incremental `parse()` were both already cheap (~350-400ms and ~4-5ms
+   * respectively). The fix: build the {@link buildLineStarts} offset table
+   * ONCE per recompute (O(line count) total, not per capture) and resolve
+   * each capture's line via {@link findLineForOffset}'s O(log line count)
+   * binary search instead — the same index-then-binary-search shape
+   * `parserBackend.ts`'s own `TextIndex`/`resolveByteOffset` already use
+   * for the UTF-8-byte side of this problem.
+   *
+   * **Why not just use `capture.startPosition`/`endPosition` directly**
+   * (`ParserCapture` already carries `{ row, column }` points computed by
+   * the real backend): those points are resolved against tree-sitter's own
+   * `\r\n|\n`-aware line split, not against `buf`'s hardcoded single-UTF-16-
+   * unit `"\n"` `eol` assumption above — using them directly would give a
+   * DIFFERENT (arguably more correct, but different) answer for CRLF
+   * documents than this function has always returned, and every hand-rolled
+   * mock `ParserBackend` in `highlightService.test.ts` fabricates
+   * placeholder positions it never bothered to keep accurate (since nothing
+   * read them before). Resolving purely from `capture.startIndex`/
+   * `endIndex` against `buf`'s own offset table keeps this function's
+   * output bit-for-bit identical to before, for both real and mock
+   * backends.
+   */
   function recomputeLineSpans(state: DocState, assets: LanguageAssets, text: string): void {
     const buf = createLineBuffer(text || "\n", "\n");
+    const lineStarts = buildLineStarts(buf);
     const captures = assets.query.captures(state.tree!);
     const lineSpans = new Map<number, HighlightSpan[]>();
     for (const capture of captures) {
-      const start = buf.positionAt(capture.startIndex);
-      const end = buf.positionAt(capture.endIndex);
-      for (let line = start.line; line <= end.line; line++) {
+      const startLine = findLineForOffset(lineStarts, capture.startIndex);
+      const endLine = findLineForOffset(lineStarts, capture.endIndex);
+      for (let line = startLine; line <= endLine; line++) {
         const lineLength = buf.getLine(line).length;
-        const startCol = line === start.line ? start.character : 0;
-        const endCol = line === end.line ? end.character : lineLength;
+        const startCol = line === startLine ? clampColumn(capture.startIndex - lineStarts[startLine]!, lineLength) : 0;
+        const endCol = line === endLine ? clampColumn(capture.endIndex - lineStarts[endLine]!, lineLength) : lineLength;
         if (endCol <= startCol) continue;
         const existing = lineSpans.get(line);
         const span: HighlightSpan = { startCol, endCol, capture: capture.name };

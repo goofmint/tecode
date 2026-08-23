@@ -49,10 +49,14 @@
  *   whether the 16 ms target itself is met.
  * - **A budget miss must never be silently accepted (design.md §10)**: if a
  *   future change pushes p95 back above whatever threshold is set below,
- *   this test's FAILURE is the intended signal to open a follow-up
- *   implementing design.md §10's own documented contingency — "parsing
- *   moves behind a microtask with stale-token rendering" — not to loosen
- *   this threshold further without first ruling that out.
+ *   this test's FAILURE is the intended signal to open a follow-up — NOT to
+ *   loosen the threshold further without first investigating. Note design.md
+ *   §10's own documented contingency ("parsing moves behind a microtask with
+ *   stale-token rendering") does NOT apply here: profiling (recorded on
+ *   {@link P95_THRESHOLD_MS}'s own comment) traced the cost first to
+ *   `recomputeLineSpans`'s per-capture `LineBuffer.positionAt` scan (fixed)
+ *   and, post-fix, to `query.captures()` itself — parsing was never the
+ *   bottleneck at any point.
  * - **Trend tracking**: one single-line JSON metric is logged per run
  *   (`{ event: "tecode.typingBenchmark", ... }`), matching `main.ts`'s own
  *   `emitMetric` shape, so CI logs carry a parseable time series across
@@ -81,66 +85,61 @@ import {
 const LINE_COUNT = 10_000;
 
 /**
- * Sample size. Task 2.10's plan suggests "100+" keystrokes; this file uses
- * far fewer because the ACTUAL measured per-keystroke cost on a real
- * 10,000-line file is on the order of SECONDS, not milliseconds (this
- * file's TSDoc's "what one sample measures" — the dominant real cost,
- * profiled directly, is `highlightService.ts`'s `recomputeLineSpans`
- * calling `LineBuffer.positionAt` — an O(line count) linear scan,
- * `lineBuffer.ts`'s `positionAtIn` — once per capture, and a 10,000-line
- * generated file has on the order of 60,000 captures: ~60,000 × 2 × O(10,000)
- * ≈ 10^9 operations per keystroke). At ~100+ keystrokes this file's own
- * `bun test` run would take on the order of 15 MINUTES; 20 samples already
- * gives a stable median/p95 read on a cost this large and consistent
- * (measured variance across samples was small — this is a compute-bound,
- * not I/O-timed, cost) while keeping `bun test`'s total runtime bounded.
+ * Sample size. Task 2.10's plan suggests "100+" keystrokes; this file keeps
+ * a smaller count. Historically (before the `recomputeLineSpans` fix
+ * {@link P95_THRESHOLD_MS}'s own comment records), the per-keystroke cost
+ * on a real 10,000-line file was on the order of SECONDS, so 100+ samples
+ * would have taken this file's own `bun test` run ~15 MINUTES; post-fix the
+ * per-keystroke cost is ~350-400 ms (still compute-bound, still low
+ * variance across samples), so 20 samples remains a stable median/p95 read
+ * while keeping `bun test`'s total runtime bounded.
  */
 const KEYSTROKE_COUNT = 20;
 
 /**
  * Enforced p95 threshold, in milliseconds.
  *
- * **The 16 ms target (Req 13.1) is NOT met.** Measured locally (20 samples,
- * steady-state, cursor at line 5,000 of a real 10,000-line file, real
- * `typescript.wasm` grammar, `bun test` on this repo's dev container):
- * **median ≈ 7,005 ms, p95 ≈ 8,197 ms** — roughly 440x-510x over budget, not
- * a marginal miss. Profiling (isolated from the rendering/key-routing
- * layers, directly against `HighlightService`'s own collaborators) traced
- * the cost to one specific hot spot: `highlightService.ts`'s
- * `recomputeLineSpans` calls `LineBuffer.positionAt` (`lineBuffer.ts`'s
- * `positionAtIn`, an O(line count) linear scan from line 0 every single
- * call) TWICE per capture, for every capture the query produced — and a
- * generated 10,000-line file has on the order of 60,000 captures. That is
- * roughly 60,000 × 2 × O(10,000) ≈ 1.2 billion line-scan steps on every
- * keystroke, regardless of how small the actual edit was (confirmed by
- * direct measurement: `query.captures()` itself over the same tree costs
- * only ~350-400 ms; the `positionAt`-per-capture loop around it costs
- * ~7,000+ ms on top). Tree-sitter's own incremental `parse()` is fast
- * (~4-5 ms) — the parser is not the bottleneck; the per-capture coordinate
- * conversion is.
+ * **Fix record**: this benchmark originally measured median ≈ 7,005 ms,
+ * p95 ≈ 8,197 ms — roughly 440x-510x over the 16 ms target (Req 13.1).
+ * Profiling traced that entirely to `highlightService.ts`'s
+ * `recomputeLineSpans` calling `LineBuffer.positionAt` (`lineBuffer.ts`'s
+ * `positionAtIn`, an O(line count) linear scan from line 0) TWICE per
+ * capture — ~60,000 captures on a generated 10,000-line file, so ~1.2
+ * billion line-scan steps per keystroke, regardless of edit size.
+ * `recomputeLineSpans` was fixed to build one line-start offset table per
+ * recompute (O(line count), once) and resolve each capture's line via
+ * binary search (O(log line count)) instead — see its own TSDoc
+ * (`highlightService.ts`) for the fix and why it resolves positions from
+ * `capture.startIndex`/`endIndex` rather than the parser's own
+ * `startPosition`/`endPosition` points (those are resolved against a
+ * different, `\r\n`-aware line split than `LineBuffer`'s own hardcoded
+ * `"\n"`-`eol` assumption, so using them directly would silently change
+ * behavior for CRLF documents instead of just making it faster).
  *
- * This is exactly the situation design.md §10 anticipates ("if profiling
- * shows misses of the 16 ms budget on the 10,000-line target, parsing
- * moves behind a microtask with stale-token rendering") — except the fix
- * implied there (deferring parsing) would not even address THIS bottleneck,
- * since parsing itself is cheap; the real fix belongs to
- * `recomputeLineSpans`/`LineBuffer` (e.g. a precomputed line-start offset
- * table for O(log n) or O(1) position lookups instead of a linear scan) as
- * its own follow-up, tracked separately — Task 2.10's own scope is proving
- * the pipeline works end to end and measuring it honestly, not fixing a
- * pre-existing algorithmic cost in already-merged code (`languageRegistry`/
- * `highlightService`, Task 2.8, PR #62).
+ * **Post-fix, the 16 ms target is still NOT met.** Measured locally (20
+ * samples each, steady-state, same corpus/harness, 4 consecutive runs):
+ * median ≈ 335-383 ms, p95 ≈ 366-404 ms — roughly 21x-23x over budget, but
+ * a ~20x improvement over the pre-fix numbers above and no longer dominated
+ * by an accidental O(n) scan. What remains is `query.captures()` itself
+ * (tree-sitter's own per-keystroke full-tree query cost on ~60,000
+ * captures, independently measured at ~350-400 ms before this fix and
+ * consistent with what's left now) — a real, tracked-separately follow-up
+ * (e.g. incremental/windowed querying), not something this task's fix
+ * (eliminating the `positionAt` scan) was ever going to close on its own.
+ * Tree-sitter's incremental `parse()` remains fast (~4-5 ms) and is still
+ * not the bottleneck.
  *
  * Per Task 2.10's own instruction ("if p95 exceeds 16 ms meaningfully...
  * keep the honest measurement, set the enforced threshold to a level the
  * suite passes reliably, and clearly report the miss"): this threshold is
- * set with headroom over the ACTUAL measured p95 (~8,197 ms) — not over the
- * 16 ms target, which is unreachable without the fix above — comfortably
- * above typical CI-runner slowdown while still catching a genuine further
- * regression (e.g. an accidental O(n²) added somewhere else, or the
- * existing cost doubling).
+ * set with headroom over the ACTUAL measured p95 (worst observed ≈ 404 ms
+ * across 4 runs) — not over the 16 ms target, which is unreachable without
+ * the `query.captures()` follow-up above — comfortably above typical
+ * CI-runner slowdown while still catching a genuine further regression
+ * (e.g. `positionAt`'s O(n) scan creeping back in, or an accidental O(n²)
+ * added elsewhere).
  */
-const P95_THRESHOLD_MS = 20_000;
+const P95_THRESHOLD_MS = 1_000;
 
 /** Nearest-rank percentile over an ALREADY-SORTED ascending array (Task
  * 2.10's "aggregate median and p95"). */
