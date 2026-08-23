@@ -177,48 +177,134 @@ function splitLines(text: string): string[] {
   return text.split(/\r\n|\n/);
 }
 
-/** The UTF-16 `{ row, column }` point at `utf16Offset` into `text`
- * (self-contained: scans `text`'s own line breaks, needing no externally
- * supplied `Eol`). */
-function utf16OffsetToPoint(text: string, utf16Offset: number): ParserPoint {
-  const target = Math.max(0, Math.min(utf16Offset, text.length));
-  const breakRe = /\r\n|\n/g;
-  let row = 0;
-  let lineStart = 0;
-  let match: RegExpExecArray | null;
-  while ((match = breakRe.exec(text))) {
-    if (match.index >= target) break;
-    row += 1;
-    lineStart = match.index + match[0].length;
-  }
-  return { row, column: target - lineStart };
-}
-
 /** The tree-sitter (byte-based) `Point` for a UTF-16 `ParserPoint` into
- * `text` — extracts `text`'s line `point.row` and measures its UTF-8 byte
- * length up to `point.column` UTF-16 units in. */
-function toBytePoint(text: string, point: ParserPoint): { row: number; column: number } {
-  const lines = splitLines(text);
+ * `text`'s pre-split `lines` — extracts line `point.row` and measures its
+ * UTF-8 byte length up to `point.column` UTF-16 units in. Takes the
+ * already-split `lines` array (rather than `text` itself) so a caller with
+ * several points to convert against the SAME text (`wrapTree.edit`, below)
+ * splits it exactly once. */
+function toBytePoint(lines: readonly string[], point: ParserPoint): { row: number; column: number } {
   const lineText = lines[point.row] ?? "";
   const col = Math.max(0, Math.min(point.column, lineText.length));
   return { row: point.row, column: Buffer.byteLength(lineText.slice(0, col), "utf8") };
 }
 
 /** The tree-sitter (byte-based) `Point` immediately after `insertedText`
- * has been spliced in starting at `startPoint` (both in `text`'s terms,
- * `text` being the PRE-edit source `startPoint` was resolved against). */
+ * has been spliced in starting at `startPoint` (both in `lines`' terms,
+ * `lines` being the PRE-edit source `startPoint` was resolved against). */
 function computeNewEndBytePoint(
-  text: string,
+  lines: readonly string[],
   startPoint: ParserPoint,
   insertedText: string,
 ): { row: number; column: number } {
-  const startBytePoint = toBytePoint(text, startPoint);
+  const startBytePoint = toBytePoint(lines, startPoint);
   const parts = splitLines(insertedText);
   if (parts.length === 1) {
     return { row: startBytePoint.row, column: startBytePoint.column + Buffer.byteLength(insertedText, "utf8") };
   }
   const lastPart = parts[parts.length - 1]!;
   return { row: startBytePoint.row + parts.length - 1, column: Buffer.byteLength(lastPart, "utf8") };
+}
+
+/**
+ * A one-pass-built offset index over one document text (Finding: "per
+ * `captures()` invocation, build ONE offset index... then resolve each
+ * capture's start/end via binary search over the line tables + a
+ * within-line scan only"). Parallel arrays, one entry per line:
+ * `lines[i]` is line `i`'s own text (no line-break characters, matching
+ * {@link splitLines}); `utf16LineStarts[i]`/`utf8LineByteStarts[i]` are
+ * that line's starting offset in UTF-16 code units / UTF-8 bytes into the
+ * WHOLE document. Both start-offset arrays are strictly increasing, so a
+ * target offset's line is found by binary search rather than a linear scan
+ * from the document start — the fix for `toParserCapture`'s old O(n) per
+ * conversion (four conversions per capture, `captures()` mapping over every
+ * capture, made highlighting an open document O(n^2) in its length).
+ *
+ * Exported (alongside {@link buildTextIndex}/{@link resolveByteOffset})
+ * purely so `parserBackend.test.ts` can differentially test the indexed
+ * path against {@link utf16OffsetToUtf8Byte}/{@link utf8ByteOffsetToUtf16}
+ * on multi-byte content, the same "exported for testing, otherwise
+ * module-private" treatment those two already get (this module's TSDoc for
+ * them) — nothing outside this module has any other reason to import it.
+ */
+export interface TextIndex {
+  lines: readonly string[];
+  utf16LineStarts: readonly number[];
+  utf8LineByteStarts: readonly number[];
+}
+
+/** Build a {@link TextIndex} for `text` in one pass: `\n`/`\r\n` are the
+ * only line-break bytes tree-sitter/`lineBuffer.ts` recognize here, and
+ * both are pure ASCII, so a break's UTF-16 length (`match[0].length`, 1 or
+ * 2) equals its UTF-8 byte length — no separate byte-measuring pass over
+ * the breaks themselves is needed. */
+export function buildTextIndex(text: string): TextIndex {
+  const lines: string[] = [];
+  const utf16LineStarts: number[] = [0];
+  const utf8LineByteStarts: number[] = [0];
+  const breakRe = /\r\n|\n/g;
+  let lineStartUtf16 = 0;
+  let byteOffset = 0;
+  let match: RegExpExecArray | null;
+  while ((match = breakRe.exec(text))) {
+    const lineText = text.slice(lineStartUtf16, match.index);
+    lines.push(lineText);
+    byteOffset += Buffer.byteLength(lineText, "utf8") + match[0].length;
+    lineStartUtf16 = match.index + match[0].length;
+    utf16LineStarts.push(lineStartUtf16);
+    utf8LineByteStarts.push(byteOffset);
+  }
+  lines.push(text.slice(lineStartUtf16));
+  return { lines, utf16LineStarts, utf8LineByteStarts };
+}
+
+/** The last line index `i` with `starts[i] <= target` (binary search over
+ * the strictly-increasing `starts` — {@link TextIndex.utf8LineByteStarts}).
+ * `starts` always has at least one entry (`[0]`), so this never runs on an
+ * empty array. */
+function findLineForOffset(starts: readonly number[], target: number): number {
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (starts[mid]! <= target) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/** The UTF-16 code-unit offset, within one line's own text, whose UTF-8
+ * byte-encoding prefix length is `byteCol` — the same code-point iteration
+ * {@link utf8ByteOffsetToUtf16} uses, scoped to a single line (the
+ * "within-line scan only" the index above exists to make possible) rather
+ * than the whole document. */
+function byteColumnToUtf16Column(lineText: string, byteCol: number): number {
+  let utf16Index = 0;
+  let byteCount = 0;
+  for (const ch of lineText) {
+    if (byteCount >= byteCol) break;
+    byteCount += Buffer.byteLength(ch, "utf8");
+    utf16Index += ch.length;
+  }
+  return utf16Index;
+}
+
+/** Resolve one UTF-8 `byteOffset` (a tree-sitter node's `startIndex`/
+ * `endIndex`) against `index` into BOTH its UTF-16 offset and its `{ row,
+ * column }` point in a single binary search + within-line scan — the two
+ * results {@link toParserCapture} needs are computed together here so
+ * neither is derived twice (the old code called `utf8ByteOffsetToUtf16`
+ * once for the offset and again, redundantly, inside
+ * `utf16OffsetToPoint`). Exported for testing only (see {@link TextIndex}'s
+ * TSDoc). */
+export function resolveByteOffset(index: TextIndex, byteOffset: number): { utf16Offset: number; point: ParserPoint } {
+  const target = Math.max(0, byteOffset);
+  const row = findLineForOffset(index.utf8LineByteStarts, target);
+  const lineText = index.lines[row] ?? "";
+  const maxLineBytes = Buffer.byteLength(lineText, "utf8");
+  const byteCol = Math.max(0, Math.min(target - index.utf8LineByteStarts[row]!, maxLineBytes));
+  const column = byteColumnToUtf16Column(lineText, byteCol);
+  return { utf16Offset: index.utf16LineStarts[row]! + column, point: { row, column } };
 }
 
 /** {@link ParserTree} plus the (mutable, edit-updated) text it currently
@@ -236,6 +322,20 @@ interface TreeState {
    * edits bottom-up against pre-batch offsets (`highlightService.ts`'s own
    * TSDoc explains why that holds). */
   text: string;
+  /** `text` split into lines, lazily computed and cached the first time
+   * `edit()` needs it, then reused by every further `edit()` call in the
+   * same batch — `text` is never mutated after this `TreeState` is built
+   * (a fresh one is created per {@link ParserBackend.parse} call, this
+   * field's own TSDoc above), so a cached split is valid for this state's
+   * entire lifetime; no invalidation beyond that is needed. Fixes
+   * `wrapTree.edit`'s old 3x-`splitLines`(whole document)-per-edit cost. */
+  lines?: readonly string[];
+}
+
+/** `state.lines`, computing (and caching on `state`) it on first use. */
+function getCachedLines(state: TreeState): readonly string[] {
+  if (!state.lines) state.lines = splitLines(state.text);
+  return state.lines;
 }
 
 function wrapTree(state: TreeState): ParserTree & { readonly state: TreeState } {
@@ -245,25 +345,28 @@ function wrapTree(state: TreeState): ParserTree & { readonly state: TreeState } 
       const startByte = utf16OffsetToUtf8Byte(state.text, edit.startIndex);
       const oldEndByte = utf16OffsetToUtf8Byte(state.text, edit.oldEndIndex);
       const insertedByteLength = Buffer.byteLength(edit.insertedText, "utf8");
+      const lines = getCachedLines(state);
       state.tsTree.edit({
         startIndex: startByte,
         oldEndIndex: oldEndByte,
         newEndIndex: startByte + insertedByteLength,
-        startPosition: toBytePoint(state.text, edit.startPosition),
-        oldEndPosition: toBytePoint(state.text, edit.oldEndPosition),
-        newEndPosition: computeNewEndBytePoint(state.text, edit.startPosition, edit.insertedText),
+        startPosition: toBytePoint(lines, edit.startPosition),
+        oldEndPosition: toBytePoint(lines, edit.oldEndPosition),
+        newEndPosition: computeNewEndBytePoint(lines, edit.startPosition, edit.insertedText),
       });
     },
   };
 }
 
-function toParserCapture(text: string, name: string, node: TSNode): ParserCapture {
+function toParserCapture(index: TextIndex, name: string, node: TSNode): ParserCapture {
+  const start = resolveByteOffset(index, node.startIndex);
+  const end = resolveByteOffset(index, node.endIndex);
   return {
     name,
-    startIndex: utf8ByteOffsetToUtf16(text, node.startIndex),
-    endIndex: utf8ByteOffsetToUtf16(text, node.endIndex),
-    startPosition: utf16OffsetToPoint(text, utf8ByteOffsetToUtf16(text, node.startIndex)),
-    endPosition: utf16OffsetToPoint(text, utf8ByteOffsetToUtf16(text, node.endIndex)),
+    startIndex: start.utf16Offset,
+    endIndex: end.utf16Offset,
+    startPosition: start.point,
+    endPosition: end.point,
   };
 }
 
@@ -295,7 +398,11 @@ export function createWebTreeSitterParserBackend(): ParserBackend {
       captures(tree: ParserTree): ParserCapture[] {
         const state = (tree as ReturnType<typeof wrapTree>).state;
         const raw = query.captures(state.tsTree.rootNode);
-        return raw.map((c) => toParserCapture(state.text, c.name, c.node));
+        // One offset index per `captures()` call (this module's
+        // `TextIndex` TSDoc) — shared by every capture below, rather than
+        // each capture re-scanning the whole document from its start.
+        const index = buildTextIndex(state.text);
+        return raw.map((c) => toParserCapture(index, c.name, c.node));
       },
     };
   }

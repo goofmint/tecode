@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { utf16OffsetToUtf8Byte, utf8ByteOffsetToUtf16 } from "./parserBackend";
+import { buildTextIndex, resolveByteOffset, utf16OffsetToUtf8Byte, utf8ByteOffsetToUtf16 } from "./parserBackend";
 
 describe("utf16OffsetToUtf8Byte", () => {
   test("ASCII text: byte offset equals the UTF-16 offset", () => {
@@ -81,5 +81,53 @@ describe("utf8ByteOffsetToUtf16", () => {
     const text = "abc";
     expect(utf8ByteOffsetToUtf16(text, -5)).toBe(0);
     expect(utf8ByteOffsetToUtf16(text, 999)).toBe(3);
+  });
+});
+
+/** A naive, test-local (i.e. not sharing any code with `parserBackend.ts`)
+ * `{ row, column }` computation for a UTF-16 offset — split the text up to
+ * `utf16Offset` on line breaks and count. Used as the independent oracle
+ * {@link resolveByteOffset}'s point is checked against below. */
+function naivePointAt(text: string, utf16Offset: number): { row: number; column: number } {
+  const before = text.slice(0, utf16Offset);
+  const lines = before.split(/\r\n|\n/);
+  return { row: lines.length - 1, column: lines[lines.length - 1]!.length };
+}
+
+describe("buildTextIndex / resolveByteOffset (the indexed capture-resolution path, Finding: perf)", () => {
+  test("multi-byte, multi-line content (Japanese + emoji): the indexed path agrees with the naive helpers at every code-point boundary", () => {
+    // Mixes 3-byte (Japanese), 4-byte (emoji/surrogate-pair), 2-byte
+    // (accented Latin), and ASCII text across three lines — exactly the
+    // "multi-byte content" this task's finding calls for.
+    const text = "こんにちは\u{1F600} wörld\nsecond \u{1F602} liné\nthird line";
+    const index = buildTextIndex(text);
+
+    let utf16Offset = 0;
+    for (const ch of text) {
+      const byteOffset = utf16OffsetToUtf8Byte(text, utf16Offset);
+      const resolved = resolveByteOffset(index, byteOffset);
+      // Agrees with the naive UTF-8<->UTF-16 offset helpers...
+      expect(resolved.utf16Offset).toBe(utf16Offset);
+      expect(resolved.utf16Offset).toBe(utf8ByteOffsetToUtf16(text, byteOffset));
+      // ...and with an independently-computed row/column split.
+      expect(resolved.point).toEqual(naivePointAt(text, utf16Offset));
+      utf16Offset += ch.length;
+    }
+
+    // The final boundary (end of string) too.
+    const finalByteOffset = utf16OffsetToUtf8Byte(text, text.length);
+    const finalResolved = resolveByteOffset(index, finalByteOffset);
+    expect(finalResolved.utf16Offset).toBe(text.length);
+    expect(finalResolved.utf16Offset).toBe(utf8ByteOffsetToUtf16(text, finalByteOffset));
+    expect(finalResolved.point).toEqual(naivePointAt(text, text.length));
+  });
+
+  test("single-line ASCII text: row is always 0, column equals the offset", () => {
+    const text = "const x = 1;";
+    const index = buildTextIndex(text);
+    for (let i = 0; i <= text.length; i++) {
+      const resolved = resolveByteOffset(index, i);
+      expect(resolved).toEqual({ utf16Offset: i, point: { row: 0, column: i } });
+    }
   });
 });

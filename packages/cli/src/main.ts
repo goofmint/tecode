@@ -677,6 +677,8 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.editorLangIdSync.dispose();
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
+    root.highlightService.dispose();
+    root.languageRegistry.dispose();
     await root.hostRef.current?.disposeAll();
   };
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -814,6 +816,8 @@ export async function runTecode(
     root.editorLangIdSync.dispose();
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
+    root.highlightService.dispose();
+    root.languageRegistry.dispose();
     await deferred.extensionHost.disposeAll();
     process.exit(0);
   }

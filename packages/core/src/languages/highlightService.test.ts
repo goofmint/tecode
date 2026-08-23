@@ -218,9 +218,27 @@ describe("createHighlightService — basic parse + getSpansForLine (Req 8.1)", (
   });
 
   test("multi-line captures split into one span per line", async () => {
+    // A single capture spanning BOTH lines ("foo\nbar", indices 0..7) —
+    // rather than `tokenize`'s usual per-word captures — so this actually
+    // exercises `recomputeLineSpans`'s multi-line splitting (a single
+    // capture contributing one `HighlightSpan` to each line it crosses),
+    // not just two independent single-line captures that happen to land on
+    // different lines.
+    const backend = createMockBackend();
+    backend.compileQuery = () => ({
+      captures: () => [
+        {
+          name: "variable",
+          startIndex: 0,
+          endIndex: 7,
+          startPosition: { row: 0, column: 0 },
+          endPosition: { row: 1, column: 3 },
+        },
+      ],
+    });
     const fakeDocs = createFakeDocuments();
     const service = createHighlightService(
-      buildDeps({ documents: fakeDocs, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
     );
     const document = createTestDocument("file:///a.ts", "typescript", "foo\nbar");
     fakeDocs.open(document);
