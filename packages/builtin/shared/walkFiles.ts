@@ -19,7 +19,9 @@
  * one join operation this module needs — a child name onto a directory
  * URI — using the platform-global `URL` constructor rather than
  * `node:url`'s `pathToFileURL`/`fileURLToPath` round-trip, so this module
- * never has to convert a URI to a filesystem path at all.
+ * never has to convert a URI to a filesystem path at all. Exported (Task
+ * 3.3) so the explorer built-in reuses the exact same join logic for its
+ * own create/rename URI-building rather than duplicating it.
  *
  * **Deterministic ordering** (this task's plan): each directory's entries
  * are sorted by name before recursing/collecting, so two walks over the
@@ -49,10 +51,22 @@
  * can surface that to the user instead of silently showing a partial list
  * with no indication it's incomplete. Omitting `maxResults` walks the whole
  * tree exactly as before (unchanged behavior).
+ *
+ * **Real `.gitignore`-aware ignore logic (Task 3.3, Req 11.2)**: {@link
+ * WalkFilesDeps.ignore} now takes `ignore.ts`'s real {@link IgnoreChecker}
+ * (batched per directory, git-or-glob, `showHidden`-bypassable) rather than
+ * Task 3.2's interim per-entry `Ignorer` stub — the exact "one ignore-aware
+ * walk `ctrl+p` and the explorer both use" this task's issue calls for.
+ * Each directory's sorted entries are handed to {@link IgnoreChecker.
+ * filterEntries} as one batch (matching `git check-ignore --stdin`'s own
+ * batched-per-directory design, `gitRunner.ts`), and only the SURVIVING
+ * entries are recursed into/collected — an ignored directory is never
+ * `readdir`'d at all, the same "don't even look inside an ignored
+ * directory" behavior the interim stub already had.
  */
 
 import type { DirEntry, FileType, Uri } from "@tecode/api";
-import { createDefaultIgnorer, type Ignorer } from "./ignore";
+import { createIgnoreChecker, type IgnoreChecker } from "./ignore";
 
 /** One file found by {@link walkFiles}. */
 export interface WalkedFile {
@@ -71,9 +85,14 @@ export interface WalkedFile {
  * passed directly (this module's TSDoc). */
 export interface WalkFilesDeps {
   readdir(uri: Uri): Promise<DirEntry[]>;
-  /** Defaults to {@link createDefaultIgnorer}'s interim stub (`ignore.ts`'s
-   * TSDoc) when omitted. */
-  ignore?: Ignorer;
+  /** The real ignore-aware visibility helper (Task 3.3, `ignore.ts`'s
+   * TSDoc) — defaults to {@link createIgnoreChecker}'s no-dependencies
+   * form (dotfile hiding + the always-ignored VCS/dependency directory
+   * names, no `.gitignore`/`git` consultation) when omitted. */
+  ignore?: IgnoreChecker;
+  /** Req 9.5's `explorer.showHidden` — bypasses {@link ignore} entirely
+   * for this walk (`ignore.ts`'s TSDoc). Defaults to `false`. */
+  showHidden?: boolean;
   /** Stop collecting once this many files have been found, abandoning the
    * traversal outright rather than walking everything and truncating after
    * (this module's TSDoc's "Bounded scans"). Omit for an unbounded walk
@@ -97,7 +116,7 @@ export interface WalkFilesResult {
  * missing. `name` is percent-encoded so a literal `#`/`?`/`%`/etc. in a
  * real filename round-trips as one path segment rather than being parsed
  * as a fragment/query/escape by `URL`. */
-function joinChildUri(dirUri: Uri, name: string): Uri {
+export function joinChildUri(dirUri: Uri, name: string): Uri {
   const base = dirUri.endsWith("/") ? dirUri : `${dirUri}/`;
   return new URL(encodeURIComponent(name), base).href;
 }
@@ -114,8 +133,8 @@ const DIRECTORY_TYPE: FileType = "directory";
  * {@link WalkFilesResult.truncated}.
  */
 export async function walkFiles(rootUri: Uri, deps: WalkFilesDeps): Promise<WalkFilesResult> {
-  const ignore = deps.ignore ?? createDefaultIgnorer();
-  const { maxResults } = deps;
+  const ignore = deps.ignore ?? createIgnoreChecker();
+  const { maxResults, showHidden } = deps;
   const results: WalkedFile[] = [];
   let truncated = false;
 
@@ -137,15 +156,21 @@ export async function walkFiles(rootUri: Uri, deps: WalkFilesDeps): Promise<Walk
     }
 
     const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
-    for (const entry of sorted) {
+    const visible = await ignore.filterEntries({
+      rootUri,
+      dirUri,
+      relativeDir: relativePrefix,
+      entries: sorted,
+      showHidden,
+    });
+
+    for (const entry of visible) {
       if (capReached()) {
         truncated = true;
         return;
       }
 
       const isDirectory = entry.type === DIRECTORY_TYPE;
-      if (ignore(entry.name, isDirectory)) continue;
-
       const relativePath = relativePrefix.length > 0 ? `${relativePrefix}/${entry.name}` : entry.name;
       const childUri = joinChildUri(dirUri, entry.name);
 

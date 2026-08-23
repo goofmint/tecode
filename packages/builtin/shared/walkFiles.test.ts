@@ -70,7 +70,7 @@ describe("walkFiles (Task 3.2, Req 11.3)", () => {
     expect(first).toEqual(second);
   });
 
-  test("excludes .git and node_modules by default (ignore.ts's interim stub)", async () => {
+  test("excludes .git and node_modules by default (ignore.ts's real ignore-aware default)", async () => {
     const tree: FakeTree = {
       ".git": { HEAD: null },
       node_modules: { "some-pkg": { "index.js": null } },
@@ -80,16 +80,25 @@ describe("walkFiles (Task 3.2, Req 11.3)", () => {
     expect(files.map((f) => f.relativePath)).toEqual(["src/index.ts"]);
   });
 
-  test("a custom ignore predicate overrides the default (swappable interface)", async () => {
+  test("a custom IgnoreChecker overrides the default (swappable interface, Task 3.3)", async () => {
     const tree: FakeTree = {
       "keep.ts": null,
       "skip.ts": null,
     };
     const { files } = await walkFiles(ROOT, {
       readdir: createFakeReaddir(tree),
-      ignore: (name) => name === "skip.ts",
+      ignore: { filterEntries: async ({ entries }) => entries.filter((e) => e.name !== "skip.ts") },
     });
     expect(files.map((f) => f.relativePath)).toEqual(["keep.ts"]);
+  });
+
+  test("showHidden bypasses the default ignore logic entirely (Req 9.5)", async () => {
+    const tree: FakeTree = {
+      ".git": { HEAD: null },
+      "visible.ts": null,
+    };
+    const { files } = await walkFiles(ROOT, { readdir: createFakeReaddir(tree), showHidden: true });
+    expect(files.map((f) => f.relativePath).sort()).toEqual([".git/HEAD", "visible.ts"]);
   });
 
   test("an unreadable directory is skipped rather than throwing", async () => {
