@@ -21,11 +21,14 @@
  * composition point for both halves, not two separate wiring sites to keep
  * in sync.
  *
- * Every other `packages/builtin/*` package (`command-palette`, `explorer`,
- * `keybindings-editor`, `languages-basic`, `statusbar`) is still a
- * placeholder with no `manifest.ts` — each is its own later task
- * (tasks.md's Phase 2/3 built-in tasks). `themes-default` (Task 2.7, Req
- * 11.4) is the second one wired in here.
+ * `command-palette` (Task 3.2, Req 11.3) is the fourth built-in wired in
+ * here — command search (`ctrl+shift+p`) and fuzzy file quick-open
+ * (`ctrl+p`), both thin wrappers over `tecode.window.showQuickPick`. Every
+ * remaining `packages/builtin/*` package (`explorer`, `keybindings-editor`,
+ * `statusbar`) is still a placeholder with no `manifest.ts` — each is its
+ * own later task (tasks.md's Phase 3/4 built-in tasks). `themes-default`
+ * (Task 2.7, Req 11.4) and `languages-basic` (Task 2.9, Req 8.4) are the
+ * second and third.
  *
  * **`builtinThemeAssets`** (Task 2.7, design.md §3): the embedded-JSON
  * counterpart to `builtinModules` above, for a built-in's
@@ -41,6 +44,8 @@
  */
 
 import type { ExtensionContext, Manifest } from "@tecode/api";
+import * as commandPaletteModule from "./command-palette/index";
+import commandPaletteManifest from "./command-palette/manifest";
 import * as editorCoreModule from "./editor-core/index";
 import editorCoreManifest from "./editor-core/manifest";
 import * as themesDefaultModule from "./themes-default/index";
@@ -81,6 +86,7 @@ export const builtinManifests: Manifest[] = [
   editorCoreManifest,
   themesDefaultManifest,
   languagesBasicManifest,
+  commandPaletteManifest,
 ];
 
 /** Every built-in extension's real implementation module, keyed by
@@ -91,6 +97,7 @@ export const builtinModules: Record<string, BuiltinExtensionModule> = {
   [editorCoreManifest.id]: editorCoreModule,
   [themesDefaultManifest.id]: themesDefaultModule,
   [languagesBasicManifest.id]: languagesBasicModule,
+  [commandPaletteManifest.id]: commandPaletteModule,
 };
 
 /** Every built-in extension's embedded theme JSON assets, keyed by the

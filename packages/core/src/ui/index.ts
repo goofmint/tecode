@@ -81,6 +81,14 @@ export {
 } from "./themeSelectCommand";
 
 export {
+  createOpenFileCommandHandler,
+  HIDDEN_FROM_LISTINGS_WHEN,
+  OPEN_FILE_COMMAND_ID,
+  registerOpenFileCommand,
+  type OpenFileCommandDeps,
+} from "./openFileCommand";
+
+export {
   applyConfiguredTheme,
   wireThemeConfigSync,
   type WireThemeConfigSyncDeps,
