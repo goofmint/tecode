@@ -183,11 +183,14 @@ function resolveTokens(json: ThemeJson["tokenColors"]): Partial<Record<CaptureNa
   const tokens: Partial<Record<CaptureName, Style>> = {};
   if (!json) return tokens;
   for (const [capture, styleJson] of Object.entries(json)) {
-    if (!styleJson) continue;
+    if (!styleJson || typeof styleJson !== "object" || Array.isArray(styleJson)) continue;
+    const foreground = typeof styleJson.foreground === "string" ? styleJson.foreground : undefined;
+    const background = typeof styleJson.background === "string" ? styleJson.background : undefined;
+    const fontStyle = typeof styleJson.fontStyle === "string" ? styleJson.fontStyle : undefined;
     const style: Style = {
-      foreground: styleJson.foreground ? parseHexColor(styleJson.foreground) : undefined,
-      background: styleJson.background ? parseHexColor(styleJson.background) : undefined,
-      ...parseFontStyle(styleJson.fontStyle),
+      foreground: foreground ? parseHexColor(foreground) : undefined,
+      background: background ? parseHexColor(background) : undefined,
+      ...parseFontStyle(fontStyle),
     };
     tokens[capture as CaptureName] = style;
   }

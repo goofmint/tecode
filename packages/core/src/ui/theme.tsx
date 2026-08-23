@@ -67,9 +67,9 @@ const ThemeContext = createContext<ResolvedTheme>(createBaseTheme());
 export interface ThemeProviderProps {
   /** A fixed `ResolvedTheme` — kept for backward compatibility (this
    * module's TSDoc). Defaults to {@link createBaseTheme}'s result when
-   * neither this nor `themeService` is given. Ignored (after the first
-   * render) once `themeService` is given and its own `onDidChange` has
-   * fired at least once — see this module's TSDoc. */
+   * neither this nor `themeService` is given. Always ignored, including the
+   * initial render, whenever `themeService` is given — see this module's
+   * TSDoc. */
   theme?: ResolvedTheme;
   /** The live theme service (Task 2.6, `themeService.ts`) — when given,
    * the provided theme tracks `themeService.get()` reactively via

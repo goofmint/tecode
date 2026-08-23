@@ -188,6 +188,16 @@ export function createThemeRegistry(deps: ThemeRegistryDeps = {}): ThemeRegistry
   const entries = new Map<string, ThemeRegistryEntry>();
   const listeners = new Set<Listener<void>>();
   let disposed = false;
+  // Per-id load generation (Req 7.1/7.4's "later registrations win"):
+  // registering the same `id` twice starts two independent async loads: an
+  // older one that settles after a newer one must NOT clobber the newer
+  // registration's theme. Each `startLoad` for a given id bumps this
+  // counter and captures its own generation number; `storeEntry` only
+  // commits when its generation is still the latest one recorded for that
+  // id — a stale load's result is discarded, matching `slotRegistry.ts`'s
+  // "a no-op if a later registration has already superseded it" discipline
+  // this module's TSDoc already cites for `register`.
+  const loadGenerations = new Map<string, number>();
 
   function fireChange(): void {
     // Snapshot before iterating, isolate listener failures — matches
@@ -240,6 +250,12 @@ export function createThemeRegistry(deps: ThemeRegistryDeps = {}): ThemeRegistry
     path: string,
   ): { disposable: Disposable; done: Promise<void> } {
     let loadDisposed = false;
+    // Claim this id's next generation now, synchronously, so two
+    // same-tick `register()` calls for the same id are ordered correctly
+    // regardless of which one's `fs.readFile` settles first (see
+    // `loadGenerations`'s TSDoc above).
+    const generation = (loadGenerations.get(id) ?? 0) + 1;
+    loadGenerations.set(id, generation);
     const done = (async () => {
       let theme: ResolvedTheme;
       try {
@@ -249,6 +265,7 @@ export function createThemeRegistry(deps: ThemeRegistryDeps = {}): ThemeRegistry
         theme = loadThemeFallbackForReadError(cause, { path, log, sink });
       }
       if (loadDisposed) return;
+      if (loadGenerations.get(id) !== generation) return; // Superseded by a later registration.
       storeEntry({ id, label, theme: finalizeTheme(theme) });
     })();
 

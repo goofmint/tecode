@@ -55,6 +55,41 @@ describe("applyColorThemeSetting (Req 7.5, text-replace)", () => {
     if (parsed.ok) expect(parsed.value["workbench.colorTheme"]).toBe('weird "id"');
   });
 
+  test("replaces an existing null value in place rather than appending a duplicate key (regression)", () => {
+    const before = `{\n  "editor.tabSize": 2,\n  "workbench.colorTheme": null,\n  "editor.wordWrap": true\n}\n`;
+    const after = applyColorThemeSetting(before, "dark");
+    expect(after).toBe(
+      `{\n  "editor.tabSize": 2,\n  "workbench.colorTheme": "dark",\n  "editor.wordWrap": true\n}\n`,
+    );
+    const parsed = parseJsonc<Record<string, unknown>>(after);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value["workbench.colorTheme"]).toBe("dark");
+      // Exactly one occurrence of the key — no duplicate was appended.
+      expect(after.match(/"workbench\.colorTheme"/g)).toHaveLength(1);
+    }
+  });
+
+  test("replaces an existing numeric value in place rather than appending a duplicate key (regression)", () => {
+    const before = `{\n  "workbench.colorTheme": 123,\n  "editor.tabSize": 2\n}\n`;
+    const after = applyColorThemeSetting(before, "dark");
+    expect(after).toBe(`{\n  "workbench.colorTheme": "dark",\n  "editor.tabSize": 2\n}\n`);
+    expect(after.match(/"workbench\.colorTheme"/g)).toHaveLength(1);
+  });
+
+  test("inserts the key after the real opening brace, not one that appears inside a leading comment (regression)", () => {
+    const before = `// tip: use { }\n{\n  "editor.tabSize": 2\n}\n`;
+    const after = applyColorThemeSetting(before, "dark");
+    // The comment itself must survive untouched, exactly as written.
+    expect(after.startsWith("// tip: use { }\n")).toBe(true);
+    const parsed = parseJsonc<Record<string, unknown>>(after);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value["workbench.colorTheme"]).toBe("dark");
+      expect(parsed.value["editor.tabSize"]).toBe(2);
+    }
+  });
+
   test("does not disturb a same-named key inside a comment or a different key sharing a suffix", () => {
     // "notWorkbench.colorTheme" must not accidentally match the regex used
     // for the real "workbench.colorTheme" key — this exercises that the

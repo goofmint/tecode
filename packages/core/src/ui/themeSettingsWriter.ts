@@ -38,6 +38,7 @@ import {
 import { dirname } from "node:path";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserSettingsPath } from "../host/paths";
+import { stripComments } from "../config/jsonc";
 
 /** The narrow filesystem seam {@link createThemeSettingsWriter} needs —
  * injectable (matches `layoutState.ts`'s `LayoutStateFs`,
@@ -104,7 +105,46 @@ function errorCode(err: unknown): string | undefined {
   return undefined;
 }
 
-const COLOR_THEME_KEY_RE = /"workbench\.colorTheme"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+// Matches `"workbench.colorTheme"` followed by any single JSON scalar value
+// — a double-quoted string, a number, or `true`/`false`/`null` — so a
+// pre-existing key whose value is not a string (e.g. `null`, written by a
+// hand-edit or a future version that defaults it differently) is still
+// found and replaced in place rather than missed, which would otherwise
+// leave the stale value behind *and* append a duplicate key (this module's
+// TSDoc: byte-preserving in-place replace is the whole point).
+const COLOR_THEME_KEY_RE =
+  /"workbench\.colorTheme"\s*:\s*(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null)/;
+
+/**
+ * Find the offset of the first `{` in `text` that is outside any `//`/`/*`
+ * comment or string literal (JSONC allows leading comments, e.g.
+ * `// tip: use { }`, whose `{` must not be mistaken for the settings
+ * object's opening brace). Reuses `config/jsonc.ts`'s `stripComments` (its
+ * comment-blanking preserves every other character's offset, including
+ * string contents) so this only has to additionally track string state
+ * itself. Returns `-1` if no such `{` exists.
+ */
+function findObjectOpenBrace(text: string): number {
+  const sanitized = stripComments(text);
+  let inString = false;
+  for (let i = 0; i < sanitized.length; i++) {
+    const ch = sanitized[i]!;
+    if (inString) {
+      if (ch === "\\") {
+        i++; // Skip the escaped character (notably `\"`).
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") return i;
+  }
+  return -1;
+}
 
 /**
  * Text-replace `"workbench.colorTheme"`'s value in `text` with `themeId`
@@ -122,7 +162,7 @@ export function applyColorThemeSetting(text: string, themeId: string): string {
     return `${text.slice(0, start)}"workbench.colorTheme": ${encodedId}${text.slice(end)}`;
   }
 
-  const openBrace = text.indexOf("{");
+  const openBrace = findObjectOpenBrace(text);
   if (openBrace === -1) {
     // No object to insert into at all (empty/malformed file) — start a
     // fresh minimal settings file rather than leaving the setting unwritten.

@@ -39,6 +39,28 @@ describe("loadThemeFromJsonText (Req 7.1, 7.2)", () => {
     expect(theme.tokens["keyword"]).toEqual({ foreground: { r: 255, g: 0, b: 0 }, bold: true });
   });
 
+  test("non-string tokenColors fields are ignored rather than throwing (regression)", () => {
+    const theme = loadThemeFromJsonText(
+      JSON.stringify({
+        tokenColors: {
+          // foreground/fontStyle as numbers must not reach parseHexColor's
+          // .trim()/parseFontStyle's .split() — both would throw.
+          keyword: { foreground: 123, fontStyle: 456, background: "#00ff00" },
+        },
+      }),
+    );
+    expect(theme.tokens["keyword"]).toEqual({ background: { r: 0, g: 255, b: 0 } });
+  });
+
+  test("a non-object tokenColors style entry is skipped rather than throwing (regression)", () => {
+    const theme = loadThemeFromJsonText(
+      JSON.stringify({ tokenColors: { keyword: 123, string: ["#ff0000"], comment: { foreground: "#ff0000" } } }),
+    );
+    expect(theme.tokens["keyword"]).toBeUndefined();
+    expect(theme.tokens["string"]).toBeUndefined();
+    expect(theme.tokens["comment"]).toEqual({ foreground: { r: 255, g: 0, b: 0 } });
+  });
+
   test("a partial theme falls back per-key to the base palette (Req 7.2)", () => {
     const base = createBaseTheme();
     const theme = loadThemeFromJsonText(JSON.stringify({ colors: { "editor.background": "#010203" } }));

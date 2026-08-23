@@ -118,6 +118,40 @@ describe("createThemeRegistry (Req 7.1)", () => {
     expect(ids).toContain("a");
   });
 
+  test("a later registration for the same id wins even if the earlier load's read settles after it (regression)", async () => {
+    // Two independent `register()` calls for the same id, each with its
+    // own controllable `readFile` promise, so we can make the FIRST
+    // registration's load settle strictly after the SECOND's has already
+    // stored its theme — reproducing the stale-overwrite race directly
+    // rather than relying on scheduler luck.
+    const deferreds = new Map<string, { resolve: (text: string) => void }>();
+    const fs: ThemeRegistryFs = {
+      readFile: (path) =>
+        new Promise<string>((resolve) => {
+          deferreds.set(path, { resolve });
+        }),
+    };
+    const registry = createThemeRegistry({ fs });
+
+    registry.register({ id: "dupe", label: "First", path: "/first.json" });
+    registry.register({ id: "dupe", label: "Second", path: "/second.json" });
+
+    const secondJson = JSON.stringify({ colors: { "editor.background": "#020202" } });
+    deferreds.get("/second.json")!.resolve(secondJson);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(registry.get("dupe")?.label).toBe("Second");
+
+    // The first registration's read settles LATER, after the second's
+    // load has already committed above — it must not clobber it.
+    const firstJson = JSON.stringify({ colors: { "editor.background": "#010101" } });
+    deferreds.get("/first.json")!.resolve(firstJson);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const entry = registry.get("dupe");
+    expect(entry?.label).toBe("Second");
+    expect(entry?.theme.colors["editor.background"]).toEqual({ r: 2, g: 2, b: 2 });
+  });
+
   test("dispose() stops onDidChange from firing but leaves already-resolved themes queryable", () => {
     const registry = createThemeRegistry();
     let fired = 0;
