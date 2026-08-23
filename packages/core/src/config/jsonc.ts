@@ -41,8 +41,13 @@ export type JsoncParseResult<T = unknown> = JsoncSuccess<T> | JsoncFailure;
  * original offset, so line/column arithmetic on the sanitized text matches
  * the original file exactly — this is what lets {@link lineColAt} below
  * work directly against the post-strip text.
+ *
+ * Exported so other modules that need to scan JSONC text without mistaking
+ * a comment's contents for real syntax (`themeSettingsWriter.ts`'s
+ * comment-aware search for the object's opening `{`) can reuse this same
+ * comment/string tracking rather than re-implementing it.
  */
-function stripComments(text: string): string {
+export function stripComments(text: string): string {
   const n = text.length;
   const out: string[] = new Array(n);
   let i = 0;

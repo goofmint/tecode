@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Manifest } from "@tecode/api";
 import type { LoadedExtension } from "@tecode/core";
-import { buildExtensionRecord, buildExtensionRecords } from "./extensionRecords";
+import { buildExtensionDirMap, buildExtensionRecord, buildExtensionRecords } from "./extensionRecords";
 
 let tempDirs: string[] = [];
 
@@ -123,4 +123,29 @@ test("buildExtensionRecords maps every LoadedExtension", async () => {
 
   const built = buildExtensionRecords(records);
   expect(built.map((r) => r.id)).toEqual(["a", "b"]);
+});
+
+test("buildExtensionDirMap resolves a user/workspace extension's real directory and a builtin's synthetic sourcePath", async () => {
+  const extensionsDir = await makeTempDir();
+  const extensionDir = join(extensionsDir, "demo");
+  await mkdir(extensionDir, { recursive: true });
+  const manifestPath = join(extensionDir, "manifest.ts");
+  await writeFile(manifestPath, "export default {}\n", "utf8");
+
+  const userExtension: LoadedExtension = {
+    extensionId: "demo",
+    manifest: fixtureManifest("demo"),
+    source: "user",
+    sourcePath: manifestPath,
+  };
+  const builtinExtension: LoadedExtension = {
+    extensionId: "fake-builtin",
+    manifest: fixtureManifest("fake-builtin"),
+    source: "builtin",
+    sourcePath: "<builtin>/fake-builtin",
+  };
+
+  const dirs = buildExtensionDirMap([userExtension, builtinExtension]);
+  expect(dirs["demo"]).toBe(extensionDir);
+  expect(dirs["fake-builtin"]).toBe("<builtin>/fake-builtin");
 });

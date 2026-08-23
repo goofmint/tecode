@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir as nodeReaddir, rm, stat as nodeStat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getUserExtensionsDir, pathToUri, type DiscoveryFs } from "@tecode/core";
+import { BASE_THEME_ID, getUserExtensionsDir, pathToUri, type DiscoveryFs } from "@tecode/core";
 import pkg from "../package.json";
 import { buildAssemblyRoot, runDeferredPhase } from "./main";
 
@@ -91,6 +91,19 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     expect(root.keymap.getTable().entries().size).toBe(0);
     expect(root.hostRef.current).toBeUndefined();
 
+    // Task 2.6's theme wiring: the registry always has the built-in base
+    // theme available synchronously, and the service starts on it (the
+    // configured `workbench.colorTheme` is applied by `runTecode` itself,
+    // after `config.ready` — buildAssemblyRoot's own TSDoc), and
+    // `tecode.themes.current` reflects the same live service, not a
+    // hardcoded stub.
+    expect(root.themeRegistry.get(BASE_THEME_ID)).toBeDefined();
+    expect(root.themeService.getActiveThemeId()).toBe(BASE_THEME_ID);
+    expect(root.api.themes.current).toBe(root.themeService.get());
+    expect(root.themeConfigSync).toBeDefined();
+    expect(root.themeSelectCommand).toBeDefined();
+    expect(root.commands.list().some((c) => c.id === "theme.select")).toBe(true);
+
     // Task 2.2's key-routing wiring: the chord machine, editor session, and
     // input router this task adds alongside Task 1.15's original wiring.
     expect(root.chordMachine).toBeDefined();
@@ -114,6 +127,8 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     root.chordMachine.dispose();
     root.editorSession.dispose();
     root.editorLangIdSync.dispose();
+    root.themeConfigSync.dispose();
+    root.themeSelectCommand.dispose();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -275,4 +290,62 @@ test("runDeferredPhase reports a bad extension without failing startup (Req 2.4)
     await rm(workspaceDir, { recursive: true, force: true });
   }
 }, 15_000);
+
+test("buildAssemblyRoot's first-frame theme differs correctly between truecolor and 256-color terminals (Req 7.4)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tecode-cli-colordepth-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  const savedColorTerm = process.env["COLORTERM"];
+  const savedTerm = process.env["TERM"];
+  process.env["HOME"] = dir;
+  process.env["APPDATA"] = dir;
+
+  let truecolorRoot: ReturnType<typeof buildAssemblyRoot>;
+  let quantizedRoot: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    process.env["COLORTERM"] = "truecolor";
+    process.env["TERM"] = "xterm-256color";
+    truecolorRoot = buildAssemblyRoot(dir);
+
+    delete process.env["COLORTERM"];
+    process.env["TERM"] = "xterm-256color";
+    quantizedRoot = buildAssemblyRoot(dir);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    if (savedColorTerm === undefined) delete process.env["COLORTERM"];
+    else process.env["COLORTERM"] = savedColorTerm;
+    if (savedTerm === undefined) delete process.env["TERM"];
+    else process.env["TERM"] = savedTerm;
+  }
+
+  try {
+    // The base palette's own accent color, { r: 0, g: 122, b: 204 }
+    // (`api/stubs.ts`'s BASE_COLORS), is not itself an xterm-256 palette
+    // entry — quantization must visibly change it, proving the detected
+    // color depth actually reached theme construction (this task's plan:
+    // "256-color vs truecolor first-frame snapshots differ correctly").
+    expect(truecolorRoot.theme.colors["statusBar.background"]).toEqual({ r: 0, g: 122, b: 204 });
+    expect(quantizedRoot.theme.colors["statusBar.background"]).not.toEqual({ r: 0, g: 122, b: 204 });
+    expect(quantizedRoot.theme.colors["statusBar.background"]).not.toEqual(
+      truecolorRoot.theme.colors["statusBar.background"],
+    );
+  } finally {
+    truecolorRoot!.config.dispose();
+    truecolorRoot!.chordMachine.dispose();
+    truecolorRoot!.editorSession.dispose();
+    truecolorRoot!.editorLangIdSync.dispose();
+    truecolorRoot!.themeConfigSync.dispose();
+    truecolorRoot!.themeSelectCommand.dispose();
+    quantizedRoot!.config.dispose();
+    quantizedRoot!.chordMachine.dispose();
+    quantizedRoot!.editorSession.dispose();
+    quantizedRoot!.editorLangIdSync.dispose();
+    quantizedRoot!.themeConfigSync.dispose();
+    quantizedRoot!.themeSelectCommand.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 

@@ -27,9 +27,64 @@ export {
   ThemeProvider,
   toColorInput,
   styleToTextColors,
+  useLiveTheme,
   useTheme,
   type ThemeProviderProps,
 } from "./theme";
+
+export {
+  buildXterm256Palette,
+  quantizeTheme,
+  quantizeToXterm256,
+} from "./colorQuantize";
+
+export {
+  loadThemeFallbackForReadError,
+  loadThemeFromJsonText,
+  parseHexColor,
+  resolveCaptureStyle,
+  type LoadThemeOptions,
+  type ThemeJson,
+  type ThemeTokenStyleJson,
+} from "./themeLoader";
+
+export {
+  BASE_THEME_ID,
+  BASE_THEME_LABEL,
+  createThemeRegistry,
+  type ColorDepth,
+  type ThemeListEntry,
+  type ThemeRegistry,
+  type ThemeRegistryDeps,
+  type ThemeRegistryEntry,
+  type ThemeRegistryFs,
+} from "./themeRegistry";
+
+export {
+  createThemeService,
+  type ThemeService,
+  type ThemeServiceDeps,
+} from "./themeService";
+
+export {
+  applyColorThemeSetting,
+  createThemeSettingsWriter,
+  type ThemeSettingsWriter,
+  type ThemeSettingsWriterDeps,
+  type ThemeSettingsWriterFs,
+} from "./themeSettingsWriter";
+
+export {
+  createThemeSelectHandler,
+  registerThemeSelectCommand,
+  type ThemeSelectDeps,
+} from "./themeSelectCommand";
+
+export {
+  applyConfiguredTheme,
+  wireThemeConfigSync,
+  type WireThemeConfigSyncDeps,
+} from "./themeConfigSync";
 
 export {
   ContextFocusTracker,

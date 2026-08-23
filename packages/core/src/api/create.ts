@@ -37,6 +37,7 @@ import type {
   FindNamespace,
   LanguagesNamespace,
   Tecode,
+  ThemeContribution,
   ThemesNamespace,
   UiNamespace,
   Uri,
@@ -52,6 +53,8 @@ import type { EditorSessionService } from "../ui/editorSession";
 import type { FindService } from "../ui/findService";
 import { Input, List, Tabs, Tree } from "../ui/components";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
+import type { ThemeRegistry } from "../ui/themeRegistry";
+import type { ThemeService } from "../ui/themeService";
 import { cloneSelection, createEditorNamespace } from "./editorNamespace";
 import {
   createEditorStub,
@@ -142,6 +145,24 @@ export interface CreateTecodeApiDeps {
     | "replaceCurrent"
     | "replaceAll"
   >;
+  /**
+   * Backs the REAL `tecode.themes` (Task 2.6, `ui/themeRegistry.ts`) —
+   * `register` delegates straight to `ThemeRegistry.register` (no
+   * `baseDir`: a runtime `tecode.themes.register` call carries no
+   * manifest/extension attribution, `themeRegistry.ts`'s own TSDoc on that
+   * trade-off). Optional, and — like `findService` above — only takes
+   * effect when {@link CreateTecodeApiDeps.themeService} is ALSO supplied
+   * (`themesNamespace`'s own construction below): a caller that predates
+   * Task 2.6 (every existing test) omits both and keeps `stubs.ts`'s
+   * `createThemesStub` exactly as before — a real, disposable-returning
+   * `register` with no consumer behind it, and `current` always the
+   * hardcoded base palette.
+   */
+  themeRegistry?: Pick<ThemeRegistry, "register">;
+  /** Backs `tecode.themes.current` (Task 2.6, `ui/themeService.ts`) — see
+   * {@link CreateTecodeApiDeps.themeRegistry}'s TSDoc for the pairing
+   * requirement. */
+  themeService?: Pick<ThemeService, "get">;
 }
 
 /**
@@ -195,10 +216,22 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
   // the namespace's own declared members are copied into the frozen object
   // extensions actually receive.
   const themesStub = createThemesStub();
+  // Real backing (Task 2.6) only when BOTH a registry and a service are
+  // supplied (`CreateTecodeApiDeps.themeRegistry`'s TSDoc) — a caller with
+  // just one (should not happen in practice, but every other paired-deps
+  // gate in this file — `findNamespace`'s `editorSession`+`findService` —
+  // treats a partial pairing as "not wired yet" rather than guessing) gets
+  // the stub instead.
+  const realThemes =
+    deps.themeRegistry && deps.themeService
+      ? { registry: deps.themeRegistry, service: deps.themeService }
+      : undefined;
   const themesNamespace: ThemesNamespace = Object.freeze({
-    register: themesStub.register,
+    register: realThemes
+      ? (contribution: ThemeContribution) => realThemes.registry.register(contribution)
+      : themesStub.register,
     get current() {
-      return themesStub.current;
+      return realThemes ? realThemes.service.get() : themesStub.current;
     },
   });
 
