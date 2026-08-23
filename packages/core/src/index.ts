@@ -234,6 +234,7 @@ export {
   type ParserPoint,
   type ParserQuery,
   type ParserTree,
+  type WebTreeSitterParserBackendDeps,
 } from "./languages/index";
 export {
   CORE_CONFIGURATION,

@@ -49,11 +49,18 @@ import themesDefaultManifest, {
   LIGHT_MODERN_THEME_ID,
 } from "./themes-default/manifest";
 import { builtinThemeAssets as themesDefaultAssets } from "./themes-default/assets";
+import * as languagesBasicModule from "./languages-basic/index";
+import languagesBasicManifest, { LANGUAGES_BASIC_EXTENSION_ID } from "./languages-basic/manifest";
+import {
+  builtinLanguageGrammarAssets as languagesBasicGrammarAssets,
+  builtinLanguageQueryAssets as languagesBasicQueryAssets,
+} from "./languages-basic/assets";
 
 // Re-exported so callers outside this package (`packages/cli`'s tests,
-// mainly) can reference the real built-in theme ids without a package
-// subpath import into `themes-default/manifest.ts` directly.
-export { DARK_MODERN_THEME_ID, LIGHT_MODERN_THEME_ID };
+// mainly) can reference the real built-in theme/language-pack ids without a
+// package subpath import into `themes-default/manifest.ts` or
+// `languages-basic/manifest.ts` directly.
+export { DARK_MODERN_THEME_ID, LIGHT_MODERN_THEME_ID, LANGUAGES_BASIC_EXTENSION_ID };
 
 /**
  * The `activate(ctx)`/`deactivate()` shape a built-in's `index.ts` exports
@@ -70,7 +77,11 @@ interface BuiltinExtensionModule {
 
 /** Every built-in extension's manifest, compiled in as a static import
  * (this module's TSDoc). */
-export const builtinManifests: Manifest[] = [editorCoreManifest, themesDefaultManifest];
+export const builtinManifests: Manifest[] = [
+  editorCoreManifest,
+  themesDefaultManifest,
+  languagesBasicManifest,
+];
 
 /** Every built-in extension's real implementation module, keyed by
  * `manifest.id` (this module's TSDoc's `builtinModules`) — what
@@ -79,6 +90,7 @@ export const builtinManifests: Manifest[] = [editorCoreManifest, themesDefaultMa
 export const builtinModules: Record<string, BuiltinExtensionModule> = {
   [editorCoreManifest.id]: editorCoreModule,
   [themesDefaultManifest.id]: themesDefaultModule,
+  [languagesBasicManifest.id]: languagesBasicModule,
 };
 
 /** Every built-in extension's embedded theme JSON assets, keyed by the
@@ -87,4 +99,24 @@ export const builtinModules: Record<string, BuiltinExtensionModule> = {
  * `themes-default` contributes any today. */
 export const builtinThemeAssets: Record<string, string> = {
   ...themesDefaultAssets,
+};
+
+/** Every built-in extension's embedded language GRAMMAR (WASM) assets,
+ * keyed by the synthetic `<builtin>/<id>/<path>` `AssetResolver` resolves a
+ * manifest language's `grammar` path to (Req 8.4, 8.5;
+ * `languages-basic/assets.ts`'s TSDoc's `builtinLanguageGrammarAssets`) —
+ * one lazy `() => Promise<Uint8Array>` reader per path, not the bytes
+ * themselves (that module's TSDoc explains why). Only `languages-basic`
+ * contributes any today. */
+export const builtinLanguageGrammarAssets: Record<string, () => Promise<Uint8Array>> = {
+  ...languagesBasicGrammarAssets,
+};
+
+/** Every built-in extension's embedded language highlight-QUERY (`.scm`)
+ * assets, keyed the same way as {@link builtinLanguageGrammarAssets} above
+ * — plain already-decoded strings, since Bun's `"text"` loader gives
+ * `languages-basic/assets.ts` the text synchronously at module-eval time.
+ * Only `languages-basic` contributes any today. */
+export const builtinLanguageQueryAssets: Record<string, string> = {
+  ...languagesBasicQueryAssets,
 };

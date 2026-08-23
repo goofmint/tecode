@@ -36,6 +36,7 @@
         "@tecode/builtin": "workspace:*",
         "@tecode/core": "workspace:*",
         "react": "^19.0.0",
+        "web-tree-sitter": "0.25.10",
       },
       "devDependencies": {
         "@types/react": "^19.0.0",

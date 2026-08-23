@@ -28,6 +28,7 @@ export {
   type ParserPoint,
   type ParserQuery,
   type ParserTree,
+  type WebTreeSitterParserBackendDeps,
 } from "./parserBackend";
 
 export {
