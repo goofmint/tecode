@@ -8,10 +8,14 @@
  *   tracking (a later editor task) — design.md §12 says as much for
  *   `window.showQuickPick`/`showInputBox` ("implemented on the shell's
  *   modal layer... since the palette and pickers must exist before any
- *   extension UI"). Until then, every read reports "nothing is active" and
- *   every action reports through the injected {@link StatusSink} rather
- *   than silently doing nothing (Req 10.1's contract stays observable even
- *   before there is a UI to observe).
+ *   extension UI"). Until a `ModalService`/`WindowMessageService` dep is
+ *   supplied (Task 3.1, `create.ts`'s `CreateTecodeApiDeps.modalService`/
+ *   `windowMessageService`), every read here reports "nothing is
+ *   active/no picker" and every action reports through the injected
+ *   {@link StatusSink} rather than silently doing nothing (Req 10.1's
+ *   contract stays observable even before there is a UI to observe) — this
+ *   is `create.ts`'s pre-Task-3.1 fallback path, still exercised by any
+ *   caller/test that omits those deps.
  * - `languages`/`themes` registration is real (a `register` call returns a
  *   working, disposable registration extensions can rely on immediately),
  *   but nothing yet *consumes* the registry — grammar/theme resolution
@@ -205,10 +209,15 @@ export interface WindowStub extends WindowNamespace {
 }
 
 /**
- * Build the `tecode.window` stub (Req 10.1). No UI shell exists yet (Task
- * 1.14) so every read reports "nothing active/no picker" and every action
- * is inert; `setStatusBarItem` is a real, disposable registration with no
- * renderer behind it yet.
+ * Build the `tecode.window` stub (Req 10.1) — `create.ts`'s fallback for
+ * whichever of `showQuickPick`/`showInputBox` (no `modalService` dep) or
+ * `showMessage`/`setStatusBarItem` (no `windowMessageService` dep) has no
+ * real backing supplied (Task 3.1's TSDoc on both). Every read reports
+ * "nothing active/no picker" and every action is inert;
+ * `setStatusBarItem` here is a disposable registration into this stub's
+ * OWN internal `Set` — NOT the real, rendered `SlotRegistry`
+ * (`windowMessageService.ts`'s TSDoc explains why that distinction
+ * matters).
  */
 export function createWindowStub(): WindowStub {
   const statusBarItems = createRegistrySet<StatusBarItem>();

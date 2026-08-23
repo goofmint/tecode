@@ -53,9 +53,11 @@ import type { StatusSink } from "../host/errors";
 import type { EditorSessionService } from "../ui/editorSession";
 import type { FindService } from "../ui/findService";
 import { Input, List, Tabs, Tree } from "../ui/components";
+import type { ModalService } from "../ui/modalService";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
 import type { ThemeRegistry } from "../ui/themeRegistry";
 import type { ThemeService } from "../ui/themeService";
+import type { WindowMessageService } from "../ui/windowMessageService";
 import type { LanguageRegistry } from "../languages/languageRegistry";
 import { cloneSelection, createEditorNamespace } from "./editorNamespace";
 import {
@@ -176,6 +178,37 @@ export interface CreateTecodeApiDeps {
    * `stubs.ts`'s `createLanguagesStub` exactly as before.
    */
   languageRegistry?: Pick<LanguageRegistry, "register" | "getLanguage" | "resolveLanguageId">;
+  /**
+   * Backs the REAL `tecode.window.showQuickPick`/`showInputBox` (Task 3.1,
+   * Req 10.1, design.md §12's "implemented on the shell's modal layer").
+   * `ModalService.openQuickPick`/`openInputBox` already match
+   * `WindowNamespace.showQuickPick`/`showInputBox`'s exact signatures, so
+   * they are wired straight through with no wrapper closures (this module's
+   * TSDoc's "narrowing, not re-implementing" — same "same function
+   * references" freezing as `commandsNamespace`). Optional: a caller that
+   * omits this (every test that predates Task 3.1) keeps `stubs.ts`'s
+   * `createWindowStub()` pickers — both always resolve `undefined`
+   * immediately, exactly as before.
+   */
+  modalService?: Pick<ModalService, "openQuickPick" | "openInputBox">;
+  /**
+   * Backs the REAL `tecode.window.showMessage`/`setStatusBarItem` (Task
+   * 3.1, Req 10.1) — a real, disposable `statusBar.item` registration
+   * against the SAME `slotRegistry` the rendered `Shell`'s `StatusBar`
+   * reads from (`windowMessageService.ts`'s TSDoc), rather than
+   * `stubs.ts`'s `createWindowStub()`'s own internal, never-rendered `Set`.
+   * Optional, same fallback shape as every other real-backing dependency
+   * above: a caller that omits this keeps the stub's inert `showMessage`
+   * and disposable-but-unrendered `setStatusBarItem`.
+   *
+   * Guarded by identity, exactly like `findService.session` vs
+   * `editorSession` below: the real backing is used only when
+   * `windowMessageService.registry` IS this deps object's `slotRegistry` —
+   * a service registered against a different registry than the one the
+   * rendered `Shell`'s `StatusBar` reads would accept `showMessage` calls
+   * that never render anywhere, so a mismatch falls back to the stub.
+   */
+  windowMessageService?: Pick<WindowMessageService, "registry" | "showMessage" | "setStatusBarItem">;
 }
 
 /**
@@ -249,6 +282,15 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
   });
 
   const windowStub = createWindowStub();
+  // Identity gate (`CreateTecodeApiDeps.windowMessageService`'s TSDoc):
+  // the real message backing applies only when the service's OWN registry
+  // is the exact `slotRegistry` supplied here — the one the rendered
+  // `Shell`'s `StatusBar` reads. Mirrors `findNamespace`'s
+  // `findService.session === editorSession` triple gate below.
+  const windowMessages =
+    deps.windowMessageService && deps.slotRegistry && deps.windowMessageService.registry === deps.slotRegistry
+      ? deps.windowMessageService
+      : undefined;
   const windowNamespace: WindowNamespace = Object.freeze({
     get activeEditor() {
       // Real backing (Task 2.3) when an `editorSession` was supplied;
@@ -270,10 +312,14 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
         selections: deps.editorSession.getState(document.uri).selections.map(cloneSelection),
       };
     },
-    showMessage: windowStub.showMessage,
-    showQuickPick: windowStub.showQuickPick,
-    showInputBox: windowStub.showInputBox,
-    setStatusBarItem: windowStub.setStatusBarItem,
+    // Task 3.1: real backing when the corresponding dep is supplied, else
+    // the exact pre-Task-3.1 stub (`CreateTecodeApiDeps.modalService`/
+    // `windowMessageService`'s own TSDoc) — same real function references,
+    // no wrapper closures, matching every other delegated namespace here.
+    showMessage: windowMessages ? windowMessages.showMessage : windowStub.showMessage,
+    showQuickPick: deps.modalService ? deps.modalService.openQuickPick : windowStub.showQuickPick,
+    showInputBox: deps.modalService ? deps.modalService.openInputBox : windowStub.showInputBox,
+    setStatusBarItem: windowMessages ? windowMessages.setStatusBarItem : windowStub.setStatusBarItem,
   });
 
   // `tecode.editor.find` (Req 11.1, design.md §13): a ready-made

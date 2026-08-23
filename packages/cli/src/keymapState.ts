@@ -1,30 +1,30 @@
 /**
  * Keeps the layered `BindingTable` up to date across the CLI's startup
  * phases (Req 4.1-4.3; design.md §6.2; CodeRabbit's Phase 2 plan): the
- * sync phase builds one with whatever is known synchronously (nothing —
- * `defaults`/`fallback` have no source yet, see below), `ConfigService`'s
+ * sync phase builds one with whatever is known synchronously (`defaults` —
+ * see below — and an empty `fallback`), `ConfigService`'s
  * `onKeybindingsChange` hook rebuilds it with the `user` layer once the
  * user's `keybindings.json` has loaded (and again on every live reload),
  * and the deferred phase rebuilds it again once `loadExtensions`'s
  * `extensionKeybindings` are known.
  *
- * **`defaults`/`fallback` are `[]` today, deliberately.** `KeymapLayers`
- * (`@tecode/core`'s `bindingTable.ts`) requires all four layers regardless
- * of which are populated yet:
- * - `defaults` — core commands' own default bindings. No core command
- *   contributes one yet (editor-core's movement/editing commands are
- *   Phase 2 tasks, command-palette's `ctrl+shift+p`/`ctrl+p` are Phase 3) —
- *   there is nothing to seed this layer with until those land.
- * - `fallback` — the terminal-capability fallback overlay (Req 4.7).
- *   `terminalCapabilities.ts`'s stub result feeds this once Task 4.2 wires
- *   real detection; until then it stays empty, exactly like
- *   `bindingTable.ts`'s own TSDoc says it may.
+ * **`defaults` — core commands' own default bindings** (Task 3.1): fixed
+ * at construction via {@link createKeymapState}'s second parameter, never
+ * mutated afterward (unlike `user`/`extension`, which change over the
+ * app's lifetime) — core commands' own bindings are static data known at
+ * startup, not something that reloads. `main.ts`'s composition root passes
+ * `@tecode/core`'s `MODAL_DEFAULT_KEYBINDINGS` (`modal.selectNext`/
+ * `selectPrevious`/`accept`/`close`, Req 10.1) as this task's first real
+ * occupant of a layer `bindingTable.ts` has reserved since Task 1.5.
+ * Defaults to `[]` for a caller with nothing to seed it with (every test
+ * that predates Task 3.1) — `KeymapLayers` (`@tecode/core`'s
+ * `bindingTable.ts`) requires all four layers regardless of which are
+ * populated.
  *
- * `@tecode/core` has no OpenTUI key-event pipeline consuming this table
- * yet (routing key input into editing is tasks.md's Task 2.2) — this
- * module's job for Task 1.15 is only to keep the table itself correctly
- * assembled and rebuildable end to end, the same way `ui/slotRegistry.ts`
- * is kept live before any view consumes it.
+ * **`fallback` is `[]` today, deliberately** — the terminal-capability
+ * fallback overlay (Req 4.7). `terminalCapabilities.ts`'s stub result
+ * feeds this once Task 4.2 wires real detection; until then it stays
+ * empty, exactly like `bindingTable.ts`'s own TSDoc says it may.
  */
 
 import { createBindingTable, type BindingTable, type HostLog } from "@tecode/core";
@@ -50,17 +50,23 @@ export interface KeymapState {
   setExtensionEntries(entries: readonly KeybindingContribution[]): void;
 }
 
-/** Build a {@link KeymapState} (Req 4.1-4.3). Starts with every layer
- * empty; `getTable()` is always safe to call, even before either setter
- * has ever run. */
-export function createKeymapState(log: HostLog): KeymapState {
+/** Build a {@link KeymapState} (Req 4.1-4.3). `defaults` seeds the
+ * `defaults` layer once and for all (this module's TSDoc) — omit it (or
+ * pass `[]`) for the pre-Task-3.1 behavior of an empty defaults layer.
+ * `user`/`extension` start empty regardless; `getTable()` is always safe to
+ * call, even before either setter has ever run. */
+export function createKeymapState(
+  log: HostLog,
+  defaults: readonly KeybindingContribution[] = [],
+): KeymapState {
+  const defaultEntries = defaults.slice();
   let userEntries: KeybindingContribution[] = [];
   let extensionEntries: KeybindingContribution[] = [];
   let table = build();
 
   function build(): BindingTable {
     return createBindingTable(
-      { defaults: [], fallback: [], extension: extensionEntries, user: userEntries },
+      { defaults: defaultEntries, fallback: [], extension: extensionEntries, user: userEntries },
       { log },
     );
   }

@@ -14,6 +14,7 @@ import { createRoot } from "@opentui/react";
 import type { ResolvedTheme } from "@tecode/api";
 import {
   ContextFocusTracker,
+  ModalOverlay,
   Shell,
   ThemeProvider,
   type ChordStateMachine,
@@ -26,6 +27,7 @@ import {
   type FindService,
   type HighlightService,
   type LayoutStateService,
+  type ModalService,
   type SlotRegistry,
   type ThemeService,
 } from "@tecode/core";
@@ -96,6 +98,14 @@ export interface ShellRenderDeps {
    * See {@link chordMachine}'s TSDoc for when the listener is actually
    * wired. */
   editorInputRouter?: Pick<EditorInputRouter, "routeKeyEvent">;
+  /** The core-owned modal overlay's state/logic (Task 3.1, Req 10.1,
+   * design.md §12) — when given, rendered as the LAST sibling of `<Shell>`,
+   * inside the same `<ThemeProvider>`/`<ContextFocusTracker>`, via
+   * `ModalOverlay` (`ui/modalOverlay.tsx`). Optional, matching every other
+   * service dependency above: a caller/test that omits it renders `<Shell>`
+   * alone, with no modal overlay at all (not even an inert one) — exactly
+   * the pre-Task-3.1 behavior. */
+  modalService?: Pick<ModalService, "getState" | "onDidChange" | "setFilter" | "setInputValue">;
 }
 
 /** The render seam's shape: resolves once "first frame" has happened (see
@@ -135,6 +145,11 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
           findService={deps.findService}
           highlightService={deps.highlightService}
         />
+        {/* LAST sibling of <Shell> (Task 3.1, `ui/modalOverlay.tsx`'s
+         * TSDoc's "Mount point") — omitted entirely (not even an inert
+         * render) when no `modalService` is given, matching every other
+         * optional-dependency fallback in this module. */}
+        {deps.modalService ? <ModalOverlay modalService={deps.modalService} /> : null}
       </ContextFocusTracker>
     </ThemeProvider>,
   );

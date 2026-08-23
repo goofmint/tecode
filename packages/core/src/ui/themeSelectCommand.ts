@@ -15,16 +15,16 @@
  * same privilege boundary `workbench.view.<id>`'s handler has over
  * `LayoutStateService`.
  *
- * **Structured around preview/commit/revert, ahead of the real quick-pick
- * UI** (this task's plan): `WindowNamespace.showQuickPick` is still
- * `createWindowStub`'s inert stub (Task 3.1 gives it a real implementation
- * with a live "highlighted item changed" callback) — so today's handler can
- * only preview-then-immediately-commit on accept, or revert on cancel, not
- * preview *while the user is still browsing*. This module is written so
- * that upgrade is additive: {@link createThemeSelectHandler} takes
- * `showQuickPick` as an injected dependency (not hardcoded to
- * `window.showQuickPick`), so Task 3.1's real picker — once it can report
- * "the active item changed" — only needs a new call site here, not a
+ * **Structured around preview/commit/revert, ahead of live-preview-while-
+ * browsing** (this task's plan): Task 3.1 gave `WindowNamespace.
+ * showQuickPick` a real implementation (`ui/modalService.ts`), but
+ * `QuickPickOptions` still carries no "the highlighted item changed"
+ * callback — so this handler can only preview-then-immediately-commit on
+ * accept, or revert on cancel, not preview *while the user is still
+ * browsing*. This module is written so that upgrade is additive:
+ * {@link createThemeSelectHandler} takes `showQuickPick` as an injected
+ * dependency (not hardcoded to `window.showQuickPick`), so a future
+ * "active item changed" callback only needs a new call site here, not a
  * rewrite of the preview/commit/revert sequencing itself.
  */
 

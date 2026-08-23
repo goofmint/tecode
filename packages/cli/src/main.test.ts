@@ -88,7 +88,16 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     expect(root.slotRegistry).toBeDefined();
     expect(root.layoutState).toBeDefined();
     expect(root.theme.colors).toBeDefined();
-    expect(root.keymap.getTable().entries().size).toBe(0);
+    // Task 3.1: the `defaults` layer is no longer empty — `modal.*`'s 4
+    // keybindings (`down`/`up`/`return`/`escape`) are seeded synchronously
+    // by `createKeymapState(log, MODAL_DEFAULT_KEYBINDINGS)`, ahead of any
+    // extension/user layer.
+    expect(root.keymap.getTable().entries().size).toBe(4);
+    const resolvedModalClose = root.keymap
+      .getTable()
+      .lookup("escape", (key) => key === "quickPickFocus" || key === "inputBoxFocus");
+    expect(resolvedModalClose?.command).toBe("modal.close");
+    expect(resolvedModalClose?.layer).toBe("defaults");
     expect(root.hostRef.current).toBeUndefined();
 
     // Task 2.6's theme wiring: the registry always has the built-in base

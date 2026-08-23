@@ -155,6 +155,15 @@ export interface InputBoxOptions {
   placeHolder?: string;
   /** Mask the input, for secrets. */
   password?: boolean;
+  /**
+   * Validate the current value on every keystroke (Task 3.1, design.md
+   * §12). A returned string is shown as a validation message and blocks
+   * `showInputBox`'s promise from resolving on accept (Enter); `undefined`
+   * means the current value is valid. Called once with the initial `value`
+   * (or `""`) when the input box opens, so a required-field validator can
+   * report immediately rather than only after the first keystroke.
+   */
+  validateInput?: (value: string) => string | undefined;
 }
 
 /** Which side of the status bar an item renders on, and its sort

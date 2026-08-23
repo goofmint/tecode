@@ -135,11 +135,21 @@ export interface SlotRegistry {
    * unless `meta` overrides them. Returns a {@link Disposable} that removes
    * the entry; idempotent, and a no-op if a later registration has already
    * superseded it (identity-checked, same as `storeEntry`).
+   *
+   * `component` is optional here — wider than `@tecode/api`'s
+   * `UiNamespace.registerView`, which always requires one (a function
+   * assignable to a required-parameter type may itself accept `undefined`
+   * too; `create.ts`'s `uiNamespace.registerView` stays exactly as strict as
+   * extensions see). A core-internal caller with no component to render
+   * (Task 3.1's `windowService.ts` backing `tecode.window.setStatusBarItem`
+   * with a plain text item) omits it and gets `SlotViewEntry.component:
+   * undefined` — `StatusBar` (`shell.tsx`) already falls back to rendering
+   * `item.title` as plain text in exactly that case.
    */
   registerView(
     slot: SlotId,
     id: string,
-    component: ComponentType,
+    component?: ComponentType,
     meta?: RegisterViewMeta,
   ): Disposable;
   /** Every entry currently registered in `slot`, in registration order. */
@@ -287,7 +297,7 @@ export function createSlotRegistry(deps: SlotRegistryDeps = {}): SlotRegistry {
   function registerView(
     slot: SlotId,
     id: string,
-    component: ComponentType,
+    component?: ComponentType,
     meta?: RegisterViewMeta,
   ): Disposable {
     const existing = slots.get(slot)?.get(id);

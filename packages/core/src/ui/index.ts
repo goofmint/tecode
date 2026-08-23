@@ -162,3 +162,32 @@ export {
   wireEditorLangIdContext,
   type WireEditorLangIdContextDeps,
 } from "./editorLangId";
+
+export {
+  createModalService,
+  filterQuickPickItems,
+  type ModalService,
+  type ModalState,
+} from "./modalService";
+
+export {
+  INPUT_BOX_FOCUS_CONTEXT_KEY,
+  MODAL_ACCEPT_COMMAND,
+  MODAL_CLOSE_COMMAND,
+  MODAL_DEFAULT_KEYBINDINGS,
+  MODAL_SELECT_NEXT_COMMAND,
+  MODAL_SELECT_PREVIOUS_COMMAND,
+  QUICK_PICK_FOCUS_CONTEXT_KEY,
+  registerModalCommands,
+  type ModalCommandsRegistrar,
+} from "./modalCommands";
+
+export { ModalOverlay, type ModalOverlayProps } from "./modalOverlay";
+
+export {
+  createWindowMessageService,
+  DEFAULT_MESSAGE_TIMEOUT_MS,
+  WINDOW_MESSAGE_STATUS_BAR_ITEM_ID,
+  type WindowMessageService,
+  type WindowMessageServiceDeps,
+} from "./windowMessageService";
