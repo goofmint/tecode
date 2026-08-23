@@ -6,6 +6,8 @@
     "target": "ESNext",
     "lib": ["ESNext"],
     "types": ["bun"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react",
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,

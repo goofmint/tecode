@@ -44,11 +44,12 @@ import type { DocumentManager } from "../buffer/documentManager";
 import type { ConfigService } from "../config/service";
 import type { ContextService } from "../keymap/context";
 import type { StatusSink } from "../host/errors";
+import { Input, List, Tabs, Tree } from "../ui/components";
+import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
 import {
   createEditorStub,
   createLanguagesStub,
   createThemesStub,
-  createUiStub,
   createWindowStub,
 } from "./stubs";
 
@@ -77,6 +78,20 @@ export interface CreateTecodeApiDeps {
    * 10.1, design.md §12's "no-active-editor no-ops with a status-bar
    * notice"). */
   sink: StatusSink;
+  /**
+   * Backs `tecode.ui.registerView` (Req 6.3, 10.1; design.md §8.2; Task
+   * 1.14) — the live slot registry the Shell's regions render from.
+   * Optional: a caller that has not wired discovery/activation yet (every
+   * existing test in this suite, and any future caller that only needs the
+   * namespace's shape) gets a registry built with no pending manifest
+   * views and no activation hook — `registerView`'s register/dispose
+   * symmetry still holds fully; only lazy-view activation
+   * (`ui/slotRegistry.ts`'s `requestActivation`) has nothing to do. `cli`'s
+   * real startup wiring (Task 1.15) passes the registry built alongside
+   * `host/registration.ts`'s `LoadExtensionsResult.pendingViews` and
+   * `host/activation.ts`'s `activateExtension`.
+   */
+  slotRegistry?: SlotRegistry;
 }
 
 /**
@@ -144,14 +159,25 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
 
   const editorNamespace: EditorNamespace = Object.freeze(createEditorStub({ sink: deps.sink }));
 
-  const uiStub = createUiStub({ getTheme: () => themesNamespace.current });
+  // No slot registry injected (see CreateTecodeApiDeps.slotRegistry's
+  // TSDoc) — build one with no pending manifest views and no activation
+  // hook rather than falling back to a disposable-only stub; registerView
+  // still round-trips correctly, and callers that DO need lazy-view
+  // activation (the real CLI startup, Task 1.15) pass their own.
+  const slotRegistry = deps.slotRegistry ?? createSlotRegistry({});
   const uiNamespace: UiNamespace = Object.freeze({
-    registerView: uiStub.registerView,
-    useTheme: uiStub.useTheme,
-    List: uiStub.List,
-    Tree: uiStub.Tree,
-    Input: uiStub.Input,
-    Tabs: uiStub.Tabs,
+    registerView: slotRegistry.registerView,
+    // A plain, non-hook getter (Req 10.1) — NOT the real React hook
+    // `ui/theme.ts` exports under the same conceptual name. See
+    // `ui/theme.ts`'s TSDoc ("Two different useThemes, deliberately") for
+    // why `tecode.ui.useTheme()` must stay callable from plain extension
+    // code (the contract test's fixture extension calls it from
+    // `activate(ctx)`, outside any React render).
+    useTheme: () => themesNamespace.current,
+    List,
+    Tree,
+    Input,
+    Tabs,
   });
 
   const languagesStub = createLanguagesStub();

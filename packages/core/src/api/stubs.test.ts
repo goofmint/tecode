@@ -5,7 +5,6 @@ import {
   createEditorStub,
   createLanguagesStub,
   createThemesStub,
-  createUiStub,
   createWindowStub,
 } from "./stubs";
 
@@ -126,33 +125,11 @@ test("editor stub: a throwing sink does not make revealLine/insertSnippet/applyE
   expect(() => editor.applyEdits([])).not.toThrow();
 });
 
-test("ui.registerView: register/dispose symmetry", () => {
-  const ui = createUiStub({ getTheme: createBaseTheme });
-  const component = () => undefined;
-
-  const sub = ui.registerView("sidebar.view", "test.view", component);
-  expect(ui.registeredViews()).toEqual([{ slot: "sidebar.view", id: "test.view", component }]);
-
-  sub.dispose();
-  expect(ui.registeredViews()).toEqual([]);
-  expect(() => sub.dispose()).not.toThrow();
-});
-
-test("ui.useTheme delegates to the injected getTheme", () => {
-  const theme = createBaseTheme();
-  const ui = createUiStub({ getTheme: () => theme });
-
-  expect(ui.useTheme()).toBe(theme);
-});
-
-test("ui stub's List/Tree/Input/Tabs are inert placeholder components", () => {
-  const ui = createUiStub({ getTheme: createBaseTheme });
-
-  expect(ui.List({})).toBeUndefined();
-  expect(ui.Tree({})).toBeUndefined();
-  expect(ui.Input({})).toBeUndefined();
-  expect(ui.Tabs({})).toBeUndefined();
-});
+// `ui.registerView`/`useTheme`/`List`/`Tree`/`Input`/`Tabs` were stubbed
+// here through Task 1.13; Task 1.14 gives them real backing instead (the
+// slot registry, `ui/slotRegistry.test.ts`; the real components,
+// `ui/components.test.tsx`) — see `stubs.ts`'s and `create.ts`'s TSDoc for
+// the wiring.
 
 test("languages.register: register/dispose symmetry, getLanguageId always 'plaintext'", () => {
   const languages = createLanguagesStub();

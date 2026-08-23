@@ -17,6 +17,7 @@ export {
   getUserConfigDir,
   getUserExtensionsDir,
   getUserKeybindingsPath,
+  getUserLayoutStatePath,
   getUserSettingsPath,
   getWorkspaceExtensionsDir,
   getWorkspaceSettingsPath,
