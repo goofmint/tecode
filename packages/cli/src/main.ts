@@ -18,6 +18,7 @@ import {
   createHostLog,
   createLanguageRegistry,
   createLayoutStateService,
+  createModalService,
   createNoopStatusSink,
   createSlotRegistry,
   createTecodeApi,
@@ -25,9 +26,12 @@ import {
   createThemeService,
   createThemeSettingsWriter,
   createWebTreeSitterParserBackend,
+  createWindowMessageService,
   loadExtensions,
+  MODAL_DEFAULT_KEYBINDINGS,
   pathToUri,
   registerCoreConfiguration,
+  registerModalCommands,
   registerTecodeAlias,
   registerThemeSelectCommand,
   wireEditorLangIdContext,
@@ -48,11 +52,13 @@ import {
   type LanguageRegistry,
   type LayoutStateService,
   type LoadExtensionsResult,
+  type ModalService,
   type PendingThemeContribution,
   type SlotRegistry,
   type StatusSink,
   type ThemeRegistry,
   type ThemeService,
+  type WindowMessageService,
 } from "@tecode/core";
 import {
   builtinLanguageGrammarAssets,
@@ -259,6 +265,21 @@ export interface AssemblyRoot {
    * Disposed alongside every other startup-owned subscription in
    * {@link wireProcessExit}. */
   editorLangIdSync: Disposable;
+  /** The core-owned modal overlay's state/logic (Task 3.1, Req 10.1,
+   * design.md §12) — backs the real `tecode.window.showQuickPick`/
+   * `showInputBox` (via `api` above) and the rendered `ModalOverlay`
+   * sibling (`renderShell.tsx`'s `ShellRenderDeps.modalService`). */
+  modalService: ModalService;
+  /** The `modal.*` commands' registration (Task 3.1, `ui/modalCommands.
+   * ts`) — disposed alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  modalCommands: Disposable;
+  /** Backs the real `tecode.window.showMessage`/`setStatusBarItem` (Task
+   * 3.1, Req 10.1, `ui/windowMessageService.ts`) against the SAME
+   * `slotRegistry` above. Disposed alongside every other startup-owned
+   * subscription in {@link wireProcessExit} so a pending `showMessage`
+   * notice doesn't linger past shutdown. */
+  windowMessageService: WindowMessageService;
   /**
    * Forward-reference box for the extension host (this module's TSDoc,
    * "Forward-referenced host wiring"): `undefined` until the deferred
@@ -379,7 +400,11 @@ export function buildAssemblyRoot(
   });
   const fs = createFileSystem({ log });
 
-  const keymap = createKeymapState(log);
+  // `MODAL_DEFAULT_KEYBINDINGS` (Task 3.1, `ui/modalCommands.ts`) is this
+  // codebase's first real occupant of the `defaults` layer
+  // (`keymapState.ts`'s TSDoc) — core-owned bindings, not an extension
+  // manifest's.
+  const keymap = createKeymapState(log, MODAL_DEFAULT_KEYBINDINGS);
   const config = createConfigService({
     log,
     sink,
@@ -473,6 +498,15 @@ export function buildAssemblyRoot(
   // `editorSession` itself is shared above.
   const findService = createFindService({ editorSession });
 
+  // Task 3.1's core-owned modal overlay layer (Req 10.1, design.md §12):
+  // built before `createTecodeApi` so the REAL `tecode.window.
+  // showQuickPick`/`showInputBox` can be wired against it below, exactly
+  // like `editorSession`/`findService` above. `windowMessageService` backs
+  // `showMessage`/`setStatusBarItem` against the SAME `slotRegistry`
+  // instance the rendered `Shell`'s `StatusBar` reads from.
+  const modalService = createModalService();
+  const windowMessageService = createWindowMessageService({ slotRegistry });
+
   const api = createTecodeApi({
     commands,
     documents,
@@ -487,18 +521,29 @@ export function buildAssemblyRoot(
     themeRegistry,
     themeService,
     languageRegistry,
+    modalService,
+    windowMessageService,
   });
 
   // Must run before any extension module is imported (see this function's
   // TSDoc).
   registerTecodeAlias(api);
 
+  // The `modal.*` commands + their default keybindings (Task 3.1, `ui/
+  // modalCommands.ts`'s TSDoc): registered directly on `commands`, NOT
+  // through an extension manifest — the modal overlay is core-owned
+  // infrastructure `theme.select`/`editor-core`'s find widget already
+  // depend on existing. The default keybindings themselves were already
+  // fed into `keymap`'s `defaults` layer above, ahead of `config`'s own
+  // construction.
+  const modalCommands = registerModalCommands(commands, modalService);
+
   // `theme.select` (Req 7.5, `ui/themeSelectCommand.ts`'s TSDoc): a
   // PRIVILEGED registration straight on `commands`, closing over
   // `themeService`'s preview/commit/revert directly — no equivalent exists
   // on `tecode.themes` (extensions never get this). `showQuickPick` comes
-  // from `api.window` — still `createWindowStub`'s inert stub until Task
-  // 3.1's real quick-pick UI lands (that module's TSDoc).
+  // from `api.window`, now genuinely backed by `modalService` above (Task
+  // 3.1) — live, real quick-pick UI, not a stub.
   const themeSelectCommand = registerThemeSelectCommand(commands, {
     themeRegistry,
     themeService,
@@ -557,6 +602,9 @@ export function buildAssemblyRoot(
     highlightService,
     editorInputRouter,
     editorLangIdSync,
+    modalService,
+    modalCommands,
+    windowMessageService,
     hostRef,
   };
 }
@@ -722,6 +770,9 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.editorLangIdSync.dispose();
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
+    root.modalCommands.dispose();
+    root.modalService.dispose();
+    root.windowMessageService.dispose();
     root.highlightService.dispose();
     root.languageRegistry.dispose();
     await root.hostRef.current?.disposeAll();
@@ -821,6 +872,7 @@ export async function runTecode(
     highlightService: root.highlightService,
     chordMachine: root.chordMachine,
     editorInputRouter: root.editorInputRouter,
+    modalService: root.modalService,
   });
 
   const firstFrameMs = performance.now() - startedAt;
@@ -861,6 +913,9 @@ export async function runTecode(
     root.editorLangIdSync.dispose();
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
+    root.modalCommands.dispose();
+    root.modalService.dispose();
+    root.windowMessageService.dispose();
     root.highlightService.dispose();
     root.languageRegistry.dispose();
     await deferred.extensionHost.disposeAll();

@@ -48,6 +48,25 @@ test("a malformed raw user entry is skipped rather than thrown", () => {
   expect(log.entries().some((e) => e.level === "warning")).toBe(true);
 });
 
+test("a defaults layer, when given, is present from the very first getTable() call and outranks nothing (lowest precedence)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log, [{ key: "escape", command: "modal.close", when: "quickPickFocus" }]);
+
+  const resolved = state.getTable().lookup("escape", (key) => key === "quickPickFocus");
+  expect(resolved?.command).toBe("modal.close");
+  expect(resolved?.layer).toBe("defaults");
+});
+
+test("user entries outrank a defaults-layer binding on the same key", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log, [{ key: "ctrl+s", command: "modal.accept" }]);
+  state.setUserEntries([{ key: "ctrl+s", command: "user.save" }]);
+
+  const resolved = state.getTable().lookup("ctrl+s", () => undefined);
+  expect(resolved?.command).toBe("user.save");
+  expect(resolved?.layer).toBe("user");
+});
+
 test("later setUserEntries calls fully replace the previous user layer", () => {
   const log = createHostLog();
   const state = createKeymapState(log);
