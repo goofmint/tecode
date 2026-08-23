@@ -98,6 +98,25 @@ export interface CoreDocument extends Document {
    * `DocumentManager.save`, never exposed to extensions.
    */
   markSaved(): void;
+  /**
+   * Number of lines currently in the document (always >= 1). Delegates
+   * straight to the internal {@link LineBuffer}'s `lineCount`. Internal to
+   * core — not part of the public `@tecode/api` `Document` — since the
+   * `EditorView` (Req 6.5, 6.6, design.md §8.3) is the only consumer that
+   * needs a whole-document line count today; extensions read content
+   * per-edit through `onDidChange`'s `dirtyRange`, not by scanning line by
+   * line. An extra property is additive over `@tecode/api`'s `Document`
+   * shape, so `CoreDocument` still structurally satisfies it (matches
+   * `getText`/`markSaved`'s policy above).
+   */
+  readonly lineCount: number;
+  /**
+   * The text of line `n` (0-based), without its line terminator. Throws
+   * `RangeError` if `n` is out of bounds (delegates straight to the
+   * internal {@link LineBuffer}). Internal to core — see {@link lineCount}'s
+   * TSDoc for why this is not part of the public `Document` type.
+   */
+  getLine(n: number): string;
 }
 
 /**
@@ -371,6 +390,10 @@ export function createDocument(options: CreateDocumentOptions): CoreDocument {
     redo,
     getText,
     markSaved,
+    get lineCount() {
+      return buffer.lineCount;
+    },
+    getLine: (n: number) => buffer.getLine(n),
   };
 
   return document;

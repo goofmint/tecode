@@ -49,6 +49,7 @@
         "@opentui/react": "^0.1.107",
         "@tecode/api": "workspace:*",
         "react": "^19.0.0",
+        "string-width": "^7.2.0",
       },
       "devDependencies": {
         "@types/react": "^19.0.0",

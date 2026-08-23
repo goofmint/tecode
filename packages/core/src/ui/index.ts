@@ -67,3 +67,21 @@ export {
   type SidebarProps,
   type StatusBarProps,
 } from "./shell";
+
+export { cellWidth, cellWidthUpTo } from "./cellWidth";
+
+export {
+  computeVisibleLineRange,
+  gutterDigitWidth,
+  revealLine,
+  type VisibleLineRange,
+} from "./viewport";
+
+export {
+  createInitialEditorState,
+  useLineTicks,
+  type EditorState,
+  type LineTicks,
+} from "./editorState";
+
+export { cursorCellColumn, EditorView, type EditorViewProps } from "./editorView";

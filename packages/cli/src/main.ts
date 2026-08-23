@@ -15,6 +15,7 @@ import {
   createTecodeApi,
   loadExtensions,
   pathToUri,
+  registerCoreConfiguration,
   registerTecodeAlias,
   type CommandRegistry,
   type ConfigService,
@@ -138,6 +139,14 @@ export function buildAssemblyRoot(
     workspaceRoot,
     onKeybindingsChange: (entries) => keymap.setUserEntries(entries),
   });
+  // Core's own settings (`editor.lineNumbers`, `editor.tabSize` — Req 9.5,
+  // design.md §8.3's EditorView gutter/indentation) have no extension
+  // manifest to flow through `loadExtensions`' `contributes.configuration`
+  // handling (`host/registration.ts`), so register them directly, right
+  // after the service exists — same seam an extension's schema would use,
+  // just called once from the composition root instead of from manifest
+  // registration (`config/coreDefaults.ts`'s TSDoc).
+  registerCoreConfiguration(config);
   const context = createContextService();
 
   const slotRegistry = createSlotRegistry({
@@ -374,6 +383,8 @@ export async function runTecode(
     context: root.context,
     commands: root.commands,
     theme: root.theme,
+    documents: root.documents,
+    config: root.config,
   });
 
   const firstFrameMs = performance.now() - startedAt;
