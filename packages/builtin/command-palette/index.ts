@@ -50,32 +50,53 @@
  * readdir(uri): Promise<DirEntry[]>`, `namespaces.ts`) rooted at
  * `api.workspace.rootUri`, with `createDefaultIgnorer()`'s interim stub
  * (`../shared/ignore.ts`, superseded by Task 3.3's real explorer ignore
- * logic). The walked list is already deterministically sorted
- * (`walkFiles.ts`'s own TSDoc); {@link fuzzyMatch} against an empty query
- * pre-ranks it before any typing happens (a documented no-op today — see
- * this function's own comment at the call site — but keeps the shape
- * ready for a future "rank by recency" or similar initial-query heuristic
- * with no call-site rewrite). `ModalService`'s own `filterQuickPickItems`
- * (case-insensitive substring match on label/description/detail) is what
- * actually narrows the list as the user types (design.md §12) — this
- * built-in does not re-filter on every keystroke itself; `QuickPickItem.
- * label` is the file's path relative to the workspace root, `description`
- * its absolute uri (round-tripped back on pick). On accept,
- * `api.commands.execute("workbench.action.files.openUri", uri)` — the
- * privileged core bridge command (`@tecode/core`'s `ui/
+ * logic) and a `maxResults` cap (`QUICK_OPEN_MAX_RESULTS`) that stops the
+ * traversal outright once hit rather than walking the whole tree first
+ * (code review finding, "bounded workspace scan" — see `../shared/
+ * walkFiles.ts`'s "Bounded scans"); a cap-truncated walk surfaces a
+ * `window.showMessage` info note before the picker opens, in addition to
+ * (not instead of) showing the partial list. The walked list is already
+ * deterministically sorted (`walkFiles.ts`'s own TSDoc); {@link fuzzyMatch}
+ * against an empty query pre-ranks it before any typing happens (a
+ * documented no-op today — see this function's own comment at the call
+ * site — but keeps the shape ready for a future "rank by recency" or
+ * similar initial-query heuristic with no call-site rewrite). `ModalService`'s
+ * own `filterQuickPickItems` (case-insensitive substring match on
+ * label/description/detail) is what actually narrows the list as the user
+ * types (design.md §12) — this built-in does not re-filter on every
+ * keystroke itself; `QuickPickItem.label` is the file's path relative to
+ * the workspace root, `description` its absolute uri (round-tripped back on
+ * pick). On accept, `api.commands.execute("workbench.action.files.openUri",
+ * uri)` — the privileged core bridge command (`@tecode/core`'s `ui/
  * openFileCommand.ts`) that actually opens the file and makes it the
  * active tab. No workspace root, or zero files found, surfaces a
  * `window.showMessage` notice instead of opening an empty/useless picker.
  *
- * **Never throws** (design.md §14's "Command handler throws -> Caught,
- * logged"): every `showQuickPick`/`commands.execute` call is wrapped so a
- * throwing dependency degrades to a no-op rather than propagating —
- * cancelling the picker (Escape) is likewise a plain no-op, not an error.
+ * **Never throws, out of this module** (design.md §14's "Command handler
+ * throws -> Caught, logged"): neither handler wraps its own body in a
+ * local `try`/`catch` — `@tecode/core`'s `CommandRegistry.execute` (`
+ * commands/registry.ts`) already catches whatever a registered handler
+ * throws, logs it, notifies the user, and resolves to `undefined`, which is
+ * this codebase's one documented "handler threw" path; a second catch here
+ * would only swallow the exception a layer earlier with no behavioral
+ * difference, and (worse) risk masking a real bug during development. This
+ * built-in relies on that registry behavior rather than re-implementing it.
+ * Cancelling the picker (Escape, `picked` is `undefined`) is a plain no-op
+ * either way, never an error.
  */
 
 import type { CommandDescriptor, ExtensionContext, QuickPickItem } from "@tecode/api";
 import { createDefaultIgnorer, filterByWhen, fuzzyMatch, walkFiles } from "../shared";
 import { QUICK_OPEN_COMMAND_ID, SHOW_COMMANDS_COMMAND_ID } from "./manifest";
+
+/** Cap on how many files {@link registerQuickOpen}'s workspace walk collects
+ * before giving up on the rest of the tree (code review finding, "bounded
+ * workspace scan") — large enough that a real project's quick-open list is
+ * never visibly cut short in practice, small enough that a workspace with a
+ * huge untracked subtree (a `node_modules`-sized `dist/`, a stray `.venv`)
+ * can't make `ctrl+p` hang walking it to completion before the picker opens.
+ * See `../shared/walkFiles.ts`'s `maxResults`. */
+const QUICK_OPEN_MAX_RESULTS = 5000;
 
 /**
  * The privileged bridge command `@tecode/core`'s `ui/openFileCommand.ts`
@@ -102,22 +123,18 @@ function registerShowCommands(ctx: ExtensionContext): void {
   const { api } = ctx;
   ctx.subscriptions.push(
     api.commands.register(SHOW_COMMANDS_COMMAND_ID, async () => {
-      try {
-        const visible = filterByWhen(api.commands.list(), (key) => api.context.get(key));
+      const visible = filterByWhen(api.commands.list(), (key) => api.context.get(key));
 
-        const items: QuickPickItem[] = visible.map((command) => ({
-          label: buildCommandLabel(command),
-          description: command.id,
-        }));
+      const items: QuickPickItem[] = visible.map((command) => ({
+        label: buildCommandLabel(command),
+        description: command.id,
+      }));
 
-        const picked = await api.window.showQuickPick(items, {
-          placeHolder: "Type a command name",
-        });
-        if (!picked?.description) return;
-        await api.commands.execute(picked.description);
-      } catch {
-        // Never throw out of a command handler (this module's TSDoc).
-      }
+      const picked = await api.window.showQuickPick(items, {
+        placeHolder: "Type a command name",
+      });
+      if (!picked?.description) return;
+      await api.commands.execute(picked.description);
     }),
   );
 }
@@ -127,50 +144,57 @@ function registerQuickOpen(ctx: ExtensionContext): void {
   const { api } = ctx;
   ctx.subscriptions.push(
     api.commands.register(QUICK_OPEN_COMMAND_ID, async () => {
-      try {
-        const rootUri = api.workspace.rootUri;
-        if (!rootUri) {
-          api.window.showMessage("No folder is open to search.", "info");
-          return;
-        }
-
-        const files = await walkFiles(rootUri, {
-          readdir: (uri) => api.workspace.fs.readdir(uri),
-          ignore: createDefaultIgnorer(),
-        });
-        if (files.length === 0) {
-          api.window.showMessage("No files found in this workspace.", "info");
-          return;
-        }
-
-        // Pre-rank with fuzzyMatch against an empty query (this module's
-        // TSDoc): with no typed text yet, every candidate scores equally
-        // (`fuzzyMatch("", x)` always returns `{ score: 0 }`), so this is a
-        // stable no-op over `walkFiles`'s already-deterministic order
-        // today — kept in this shape so a future initial-ranking signal
-        // (e.g. recently opened files) only changes what's passed as the
-        // query/scored against, not this call site.
-        const ranked = files
-          .map((file) => ({ file, match: fuzzyMatch("", file.relativePath) }))
-          .filter((r): r is { file: (typeof files)[number]; match: NonNullable<typeof r.match> } =>
-            r.match !== undefined,
-          )
-          .sort((a, b) => b.match.score - a.match.score)
-          .map((r) => r.file);
-
-        const items: QuickPickItem[] = ranked.map((file) => ({
-          label: file.relativePath,
-          description: file.uri,
-        }));
-
-        const picked = await api.window.showQuickPick(items, {
-          placeHolder: "Go to file...",
-        });
-        if (!picked?.description) return;
-        await api.commands.execute(OPEN_FILE_COMMAND_ID, picked.description);
-      } catch {
-        // Never throw out of a command handler (this module's TSDoc).
+      const rootUri = api.workspace.rootUri;
+      if (!rootUri) {
+        api.window.showMessage("No folder is open to search.", "info");
+        return;
       }
+
+      const { files, truncated } = await walkFiles(rootUri, {
+        readdir: (uri) => api.workspace.fs.readdir(uri),
+        ignore: createDefaultIgnorer(),
+        maxResults: QUICK_OPEN_MAX_RESULTS,
+      });
+      if (files.length === 0) {
+        api.window.showMessage("No files found in this workspace.", "info");
+        return;
+      }
+      if (truncated) {
+        // The scan hit `QUICK_OPEN_MAX_RESULTS` before finishing the whole
+        // tree (`../shared/walkFiles.ts`'s "Bounded scans") — say so rather
+        // than silently showing a partial list with no indication it's
+        // incomplete (code review finding, "bounded workspace scan").
+        api.window.showMessage(
+          `Showing the first ${QUICK_OPEN_MAX_RESULTS} files found; the workspace has more.`,
+          "info",
+        );
+      }
+
+      // Pre-rank with fuzzyMatch against an empty query (this module's
+      // TSDoc): with no typed text yet, every candidate scores equally
+      // (`fuzzyMatch("", x)` always returns `{ score: 0 }`), so this is a
+      // stable no-op over `walkFiles`'s already-deterministic order
+      // today — kept in this shape so a future initial-ranking signal
+      // (e.g. recently opened files) only changes what's passed as the
+      // query/scored against, not this call site.
+      const ranked = files
+        .map((file) => ({ file, match: fuzzyMatch("", file.relativePath) }))
+        .filter((r): r is { file: (typeof files)[number]; match: NonNullable<typeof r.match> } =>
+          r.match !== undefined,
+        )
+        .sort((a, b) => b.match.score - a.match.score)
+        .map((r) => r.file);
+
+      const items: QuickPickItem[] = ranked.map((file) => ({
+        label: file.relativePath,
+        description: file.uri,
+      }));
+
+      const picked = await api.window.showQuickPick(items, {
+        placeHolder: "Go to file...",
+      });
+      if (!picked?.description) return;
+      await api.commands.execute(OPEN_FILE_COMMAND_ID, picked.description);
     }),
   );
 }

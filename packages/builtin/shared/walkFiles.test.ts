@@ -45,18 +45,19 @@ describe("walkFiles (Task 3.2, Req 11.3)", () => {
         nested: { "deep.ts": null },
       },
     };
-    const files = await walkFiles(ROOT, { readdir: createFakeReaddir(tree) });
+    const { files, truncated } = await walkFiles(ROOT, { readdir: createFakeReaddir(tree) });
     expect(files.map((f) => f.relativePath)).toEqual([
       "a.ts",
       "b.ts",
       "src/index.ts",
       "src/nested/deep.ts",
     ]);
+    expect(truncated).toBe(false);
   });
 
   test("produces absolute file:// URIs for each entry", async () => {
     const tree: FakeTree = { src: { "index.ts": null } };
-    const files = await walkFiles(ROOT, { readdir: createFakeReaddir(tree) });
+    const { files } = await walkFiles(ROOT, { readdir: createFakeReaddir(tree) });
     expect(files).toHaveLength(1);
     expect(files[0]!.uri).toBe("file:///workspace/src/index.ts");
   });
@@ -75,7 +76,7 @@ describe("walkFiles (Task 3.2, Req 11.3)", () => {
       node_modules: { "some-pkg": { "index.js": null } },
       src: { "index.ts": null },
     };
-    const files = await walkFiles(ROOT, { readdir: createFakeReaddir(tree) });
+    const { files } = await walkFiles(ROOT, { readdir: createFakeReaddir(tree) });
     expect(files.map((f) => f.relativePath)).toEqual(["src/index.ts"]);
   });
 
@@ -84,7 +85,7 @@ describe("walkFiles (Task 3.2, Req 11.3)", () => {
       "keep.ts": null,
       "skip.ts": null,
     };
-    const files = await walkFiles(ROOT, {
+    const { files } = await walkFiles(ROOT, {
       readdir: createFakeReaddir(tree),
       ignore: (name) => name === "skip.ts",
     });
@@ -98,11 +99,70 @@ describe("walkFiles (Task 3.2, Req 11.3)", () => {
         throw new Error("permission denied");
       },
     };
-    await expect(walkFiles(ROOT, deps)).resolves.toEqual([]);
+    await expect(walkFiles(ROOT, deps)).resolves.toEqual({ files: [], truncated: false });
   });
 
   test("an empty workspace yields an empty list", async () => {
-    const files = await walkFiles(ROOT, { readdir: createFakeReaddir({}) });
+    const { files, truncated } = await walkFiles(ROOT, { readdir: createFakeReaddir({}) });
     expect(files).toEqual([]);
+    expect(truncated).toBe(false);
+  });
+
+  describe("maxResults (code review finding, bounded workspace scan)", () => {
+    /** Wraps `readdir` counting how many times each directory URI is read,
+     * so a test can prove a directory past the cap is never even opened —
+     * not merely that the final file list was truncated after a full walk. */
+    function createCountingReaddir(tree: FakeTree): {
+      readdir: WalkFilesDeps["readdir"];
+      callsFor: (uri: Uri) => number;
+    } {
+      const inner = createFakeReaddir(tree);
+      const counts = new Map<string, number>();
+      return {
+        readdir: async (uri) => {
+          counts.set(uri, (counts.get(uri) ?? 0) + 1);
+          return inner(uri);
+        },
+        callsFor: (uri) => counts.get(uri) ?? 0,
+      };
+    }
+
+    test("stops traversal entirely once the cap is reached — deeper directories are never read", async () => {
+      const tree: FakeTree = {
+        a: { "1.ts": null },
+        b: { "2.ts": null },
+        // Sorts after "a" and "b" — with maxResults: 2 hit inside "b", this
+        // directory must never be `readdir`'d at all.
+        c: { "3.ts": null },
+      };
+      const { readdir, callsFor } = createCountingReaddir(tree);
+
+      const { files, truncated } = await walkFiles(ROOT, { readdir, maxResults: 2 });
+
+      expect(files.map((f) => f.relativePath)).toEqual(["a/1.ts", "b/2.ts"]);
+      expect(truncated).toBe(true);
+      expect(callsFor("file:///workspace/c")).toBe(0);
+    });
+
+    test("truncated is false when the cap is never reached", async () => {
+      const tree: FakeTree = { "a.ts": null, "b.ts": null };
+      const { files, truncated } = await walkFiles(ROOT, {
+        readdir: createFakeReaddir(tree),
+        maxResults: 10,
+      });
+      expect(files).toHaveLength(2);
+      expect(truncated).toBe(false);
+    });
+
+    test("omitting maxResults walks the whole tree, unchanged from before", async () => {
+      const tree: FakeTree = {
+        a: { "1.ts": null },
+        b: { "2.ts": null },
+        c: { "3.ts": null },
+      };
+      const { files, truncated } = await walkFiles(ROOT, { readdir: createFakeReaddir(tree) });
+      expect(files.map((f) => f.relativePath)).toEqual(["a/1.ts", "b/2.ts", "c/3.ts"]);
+      expect(truncated).toBe(false);
+    });
   });
 });

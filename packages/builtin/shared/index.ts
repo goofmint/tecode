@@ -11,4 +11,4 @@
 export { fuzzyMatch, type FuzzyMatchResult } from "./fuzzyMatch";
 export { evaluateWhen, filterByWhen, type WhenContextGetter } from "./whenFilter";
 export { createDefaultIgnorer, type Ignorer } from "./ignore";
-export { walkFiles, type WalkedFile, type WalkFilesDeps } from "./walkFiles";
+export { walkFiles, type WalkedFile, type WalkFilesDeps, type WalkFilesResult } from "./walkFiles";

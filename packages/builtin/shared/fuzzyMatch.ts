@@ -21,14 +21,19 @@
  * 3. **Word-boundary subsequence** — every character of `query` can be
  *    matched, in order, against characters of `candidate` that each START a
  *    "word" (see {@link isWordBoundary}) — the classic acronym-style match
- *    (`"gsw"` against `"Go to Symbol in Workspace"`, one letter per word) or
- *    a run beginning at a boundary (`"app"` against `"MyApplication"` — the
- *    `A` starts a word after the `y`→`A` case transition; VS Code's own
- *    matcher treats a boundary-anchored run this favorably too). Checked by
- *    testing whether `query` is a subsequence of the STRING OF JUST
- *    `candidate`'s boundary characters — a clean, independent-of-greediness
- *    way to ask "does some alignment exist that only touches boundaries",
- *    without a full dynamic-programming search.
+ *    (`"gsw"` against `"Go to Symbol in Workspace"`, one letter per word, or
+ *    `"ma"` against `"MyApplication"`: `M` is the first character and `A`
+ *    starts a word after the `y`→`A` case transition, so both matched
+ *    characters land on boundaries). Checked by testing whether `query` is a
+ *    subsequence of the STRING OF JUST `candidate`'s boundary characters — a
+ *    clean, independent-of-greediness way to ask "does some alignment exist
+ *    that only touches boundaries", without a full dynamic-programming
+ *    search. Note this means `"app"` against `"MyApplication"` is NOT tier
+ *    3: `candidate`'s boundary characters are only `"MA"`, and `"app"` is
+ *    not a subsequence of that two-character string — it falls through to
+ *    tier 4 instead, picking up just the {@link BOUNDARY_BONUS} tie-breaker
+ *    below for the one matched position (`A`) that happens to be a
+ *    boundary.
  * 4. **Scattered subsequence** — `query`'s characters appear in order
  *    somewhere in `candidate`, but not every matched position is a
  *    boundary. Found by the same leftmost-greedy subsequence scan

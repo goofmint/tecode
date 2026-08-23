@@ -220,26 +220,24 @@ describe("command-palette activate() — workbench.action.showCommands (Task 3.2
     expect(shown.some((i) => i.description === OPEN_FILE_COMMAND_ID)).toBe(false);
   });
 
-  test("a command whose when clause evaluates false against context is hidden", () => {
-    return (async () => {
-      const fake = activateFixture();
-      fake.api.commands.register("explorer.reveal", () => {}, {
-        title: "Reveal in Explorer",
-        when: "explorerFocus",
-      });
-      fake.api.commands.register("editor.action.find", () => {}, {
-        title: "Find",
-        when: "editorTextFocus",
-      });
-      fake.setContext("editorTextFocus", true);
-      fake.setContext("explorerFocus", false);
-      fake.setNextPick(undefined);
-      await fake.api.commands.execute(SHOW_COMMANDS_COMMAND_ID);
+  test("a command whose when clause evaluates false against context is hidden", async () => {
+    const fake = activateFixture();
+    fake.api.commands.register("explorer.reveal", () => {}, {
+      title: "Reveal in Explorer",
+      when: "explorerFocus",
+    });
+    fake.api.commands.register("editor.action.find", () => {}, {
+      title: "Find",
+      when: "editorTextFocus",
+    });
+    fake.setContext("editorTextFocus", true);
+    fake.setContext("explorerFocus", false);
+    fake.setNextPick(undefined);
+    await fake.api.commands.execute(SHOW_COMMANDS_COMMAND_ID);
 
-      const shownIds = fake.getLastQuickPick()!.items.map((i) => i.description);
-      expect(shownIds).toContain("editor.action.find");
-      expect(shownIds).not.toContain("explorer.reveal");
-    })();
+    const shownIds = fake.getLastQuickPick()!.items.map((i) => i.description);
+    expect(shownIds).toContain("editor.action.find");
+    expect(shownIds).not.toContain("explorer.reveal");
   });
 
   test("picking an item executes its command id, activating a still-lazy owner first", async () => {
@@ -277,10 +275,17 @@ describe("command-palette activate() — workbench.action.showCommands (Task 3.2
     expect(called).toBe(false);
   });
 
-  test("a throwing showQuickPick is caught, never propagates", async () => {
+  test("a throwing showQuickPick rejects — no local catch swallows it (code review finding: the registry's own execute() is the one documented catch point)", async () => {
     const fake = activateFixture();
     fake.setQuickPickThrows(new Error("picker exploded"));
-    await expect(fake.api.commands.execute(SHOW_COMMANDS_COMMAND_ID)).resolves.toBeUndefined();
+    // This fake `commands.execute` (unlike the real `CommandRegistry.
+    // execute`, `@tecode/core`'s `commands/registry.ts`) does not itself
+    // catch a thrown handler — so the handler's own promise rejecting here
+    // is exactly what proves `registerShowCommands` no longer has a local
+    // `try`/`catch` swallowing it before it would reach the registry.
+    await expect(fake.api.commands.execute(SHOW_COMMANDS_COMMAND_ID)).rejects.toThrow(
+      "picker exploded",
+    );
   });
 });
 
@@ -353,5 +358,32 @@ describe("command-palette activate() — workbench.action.quickOpen (Task 3.2, R
     await fake.api.commands.execute(QUICK_OPEN_COMMAND_ID);
 
     expect(called).toBe(false);
+  });
+
+  test("a throwing showQuickPick rejects — no local catch swallows it (code review finding)", async () => {
+    const fake = activateFixture({ "a.ts": null });
+    fake.setQuickPickThrows(new Error("picker exploded"));
+    await expect(fake.api.commands.execute(QUICK_OPEN_COMMAND_ID)).rejects.toThrow(
+      "picker exploded",
+    );
+  });
+
+  test("a workspace with more files than the walk's cap surfaces a truncation note (code review finding: bounded workspace scan)", async () => {
+    // Flat tree of more files than command-palette's internal
+    // `QUICK_OPEN_MAX_RESULTS` cap (5000) — all siblings under root, so one
+    // `readdir` call is enough to exceed it.
+    const tree: FakeTree = {};
+    for (let i = 0; i < 5001; i++) {
+      tree[`file-${String(i).padStart(5, "0")}.ts`] = null;
+    }
+    const fake = activateFixture(tree);
+    fake.setNextPick(undefined);
+
+    await fake.api.commands.execute(QUICK_OPEN_COMMAND_ID);
+
+    const items = fake.getLastQuickPick()!.items;
+    expect(items.length).toBe(5000);
+    const messages = fake.getMessages();
+    expect(messages.some((m) => /more/i.test(m.message) && m.kind === "info")).toBe(true);
   });
 });

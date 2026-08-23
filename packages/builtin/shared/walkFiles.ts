@@ -36,6 +36,19 @@
  * `"file"`/`"directory"` are skipped entirely (not walked, not listed) —
  * safely conservative for the MVP; Task 3.3's real explorer may need finer
  * symlink handling later.
+ *
+ * **Bounded scans** (code review finding, "bounded workspace scan"):
+ * {@link WalkFilesDeps.maxResults}, when set, stops the traversal entirely
+ * the moment {@link WalkedFile}s collected reach the cap — not just a
+ * truncate-after-the-fact slice of an already-fully-walked tree. A directory
+ * is only ever `readdir`'d if the cap has not yet been hit at the moment its
+ * own `walk()` call begins, so a huge subtree sitting past the cap (a giant
+ * `dist/` full of generated files, say) never has a single one of its
+ * descendant directories read. {@link WalkFilesResult.truncated} reports
+ * whether the cap actually cut the walk short, so a caller (file quick-open)
+ * can surface that to the user instead of silently showing a partial list
+ * with no indication it's incomplete. Omitting `maxResults` walks the whole
+ * tree exactly as before (unchanged behavior).
  */
 
 import type { DirEntry, FileType, Uri } from "@tecode/api";
@@ -61,6 +74,22 @@ export interface WalkFilesDeps {
   /** Defaults to {@link createDefaultIgnorer}'s interim stub (`ignore.ts`'s
    * TSDoc) when omitted. */
   ignore?: Ignorer;
+  /** Stop collecting once this many files have been found, abandoning the
+   * traversal outright rather than walking everything and truncating after
+   * (this module's TSDoc's "Bounded scans"). Omit for an unbounded walk
+   * (unchanged behavior). */
+  maxResults?: number;
+}
+
+/** {@link walkFiles}'s return value. */
+export interface WalkFilesResult {
+  /** Every non-ignored file found, sorted deterministically — capped at
+   * {@link WalkFilesDeps.maxResults} when set. */
+  files: WalkedFile[];
+  /** `true` when {@link WalkFilesDeps.maxResults} was set and cut the walk
+   * short before the whole tree was visited; `false` when the walk ran to
+   * completion (including whenever `maxResults` is omitted). */
+  truncated: boolean;
 }
 
 /** Join a single path segment `name` onto directory `dirUri` (this
@@ -80,13 +109,26 @@ const DIRECTORY_TYPE: FileType = "directory";
  * Recursively walk `rootUri` (this module's TSDoc), returning every
  * non-ignored file found, sorted deterministically. Never throws — an
  * unreadable directory is skipped (this module's TSDoc's "Failure
- * handling").
+ * handling"). Stops early once {@link WalkFilesDeps.maxResults} files have
+ * been collected (this module's TSDoc's "Bounded scans"), reporting that in
+ * {@link WalkFilesResult.truncated}.
  */
-export async function walkFiles(rootUri: Uri, deps: WalkFilesDeps): Promise<WalkedFile[]> {
+export async function walkFiles(rootUri: Uri, deps: WalkFilesDeps): Promise<WalkFilesResult> {
   const ignore = deps.ignore ?? createDefaultIgnorer();
+  const { maxResults } = deps;
   const results: WalkedFile[] = [];
+  let truncated = false;
+
+  function capReached(): boolean {
+    return maxResults !== undefined && results.length >= maxResults;
+  }
 
   async function walk(dirUri: Uri, relativePrefix: string): Promise<void> {
+    if (capReached()) {
+      truncated = true;
+      return;
+    }
+
     let entries: DirEntry[];
     try {
       entries = await deps.readdir(dirUri);
@@ -96,6 +138,11 @@ export async function walkFiles(rootUri: Uri, deps: WalkFilesDeps): Promise<Walk
 
     const sorted = [...entries].sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of sorted) {
+      if (capReached()) {
+        truncated = true;
+        return;
+      }
+
       const isDirectory = entry.type === DIRECTORY_TYPE;
       if (ignore(entry.name, isDirectory)) continue;
 
@@ -113,5 +160,5 @@ export async function walkFiles(rootUri: Uri, deps: WalkFilesDeps): Promise<Walk
   }
 
   await walk(rootUri, "");
-  return results;
+  return { files: results, truncated };
 }
