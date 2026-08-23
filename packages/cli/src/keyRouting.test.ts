@@ -300,6 +300,111 @@ describe("editor-core's Task 2.4 keybindings — verified strokes (manifest.ts's
   });
 });
 
+describe("editor-core's Task 2.5 find/replace keybindings (Req 11.1, manifest.ts's TSDoc)", () => {
+  /** Same shape as `fireEditorCoreKeybinding` above, but with the calling
+   * context supplied by the test (rather than hardcoded to
+   * `editorTextFocus: true`) — Task 2.5's find keybindings are gated on
+   * TWO different context keys depending on the stroke, unlike every
+   * earlier binding in this file. */
+  function fireWithContext(
+    event: RoutableKeyEvent,
+    setContext: (context: ReturnType<typeof createContextService>) => void,
+  ): { executed: string[]; routed: boolean } {
+    const log = createHostLog();
+    const context = createContextService();
+    setContext(context);
+
+    const layers: KeymapLayers = {
+      defaults: [],
+      fallback: [],
+      extension: editorCoreManifest.contributes.keybindings ?? [],
+      user: [],
+    };
+    const table = createBindingTable(layers, { log });
+
+    const executed: string[] = [];
+    const chordMachine = createChordStateMachine({
+      table,
+      execute: (id) => {
+        executed.push(id);
+        return Promise.resolve(undefined);
+      },
+      getContext: (key) => context.get(key),
+      log,
+    });
+
+    let routed = false;
+    handleKeyEvent(
+      { chordMachine, editorInputRouter: { routeKeyEvent: () => (routed = true) } },
+      event,
+    );
+    chordMachine.dispose();
+    return { executed, routed };
+  }
+
+  test("ctrl+f under editorTextFocus is consumed and reaches editor.action.find", () => {
+    const { executed, routed } = fireWithContext(keyOf({ name: "f", ctrl: true }), (context) =>
+      context.set("editorTextFocus", true),
+    );
+    expect(executed).toEqual(["editor.action.find"]);
+    expect(routed).toBe(false); // never reached the editor router (consumed)
+  });
+
+  test("ctrl+f with NEITHER context key set falls through untouched (not consumed, not routed to an insert)", () => {
+    // No active editor / nothing focused at all — a documented no-op
+    // shape: the chord machine reports passthrough (no binding's `when`
+    // passed), and the editor router's own `editorTextFocus` gate (checked
+    // inside `routeKeyEvent`, not exercised by this fake) would also
+    // refuse it — this test only proves the KEYMAP layer's half.
+    const { executed } = fireWithContext(keyOf({ name: "f", ctrl: true }), () => {
+      // Neither editorTextFocus nor findWidgetFocus set.
+    });
+    expect(executed).toEqual([]);
+  });
+
+  test("return under findWidgetFocus is consumed and reaches editor.action.findNext, NOT insertNewLine", () => {
+    const { executed, routed } = fireWithContext(keyOf({ name: "return", sequence: "\r" }), (context) =>
+      context.set("findWidgetFocus", true),
+    );
+    expect(executed).toEqual(["editor.action.findNext"]);
+    expect(routed).toBe(false);
+  });
+
+  test("return under editorTextFocus (findWidgetFocus absent) still reaches insertNewLine — the two 'return' bindings don't collide", () => {
+    const { executed } = fireWithContext(keyOf({ name: "return", sequence: "\r" }), (context) =>
+      context.set("editorTextFocus", true),
+    );
+    expect(executed).toEqual(["editor.action.insertNewLine"]);
+  });
+
+  test("shift+return under findWidgetFocus reaches editor.action.findPrevious", () => {
+    const { executed } = fireWithContext(
+      keyOf({ name: "return", sequence: "\r", shift: true }),
+      (context) => context.set("findWidgetFocus", true),
+    );
+    expect(executed).toEqual(["editor.action.findPrevious"]);
+  });
+
+  test("escape under findWidgetFocus is consumed and reaches editor.action.closeFind", () => {
+    const { executed, routed } = fireWithContext(keyOf({ name: "escape", sequence: "\x1b" }), (context) =>
+      context.set("findWidgetFocus", true),
+    );
+    expect(executed).toEqual(["editor.action.closeFind"]);
+    expect(routed).toBe(false);
+  });
+
+  test("escape under editorTextFocus (findWidgetFocus absent) matches no binding — passes through", () => {
+    // No `escape` binding exists under `editorTextFocus` in this manifest
+    // — proves `closeFind`'s binding is genuinely gated on
+    // `findWidgetFocus`, not simply "escape always closes find".
+    const { executed, routed } = fireWithContext(keyOf({ name: "escape", sequence: "\x1b" }), (context) =>
+      context.set("editorTextFocus", true),
+    );
+    expect(executed).toEqual([]);
+    expect(routed).toBe(true); // falls through to the editor router
+  });
+});
+
 /**
  * End-to-end version of the same pipeline, wired against the REAL
  * `ChordStateMachine`/`BindingTable`/`createEditorInputRouter`/`CoreDocument`

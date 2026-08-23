@@ -14,6 +14,7 @@ export {
 export {
   createBaseTheme,
   createEditorStub,
+  createFindStub,
   createLanguagesStub,
   createThemesStub,
   createWindowStub,

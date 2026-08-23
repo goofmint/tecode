@@ -191,6 +191,51 @@ export interface WindowNamespace {
 }
 
 /* ------------------------------------------------------------------ */
+/* tecode.editor.find                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Per-editor in-buffer find/replace (Req 11.1, design.md §13's "Find/replace
+ * state is per-editor, rendered as a ... inline widget"). All state — the
+ * query, replacement text, current matches, case sensitivity, and whether
+ * the widget is open — lives host-side, per document; this namespace is
+ * only the action surface `editor-core`'s commands delegate to (design.md
+ * §13's "pure command handlers"), never a place extension code reads state
+ * back from directly. Every method no-ops with no active editor, the same
+ * as the rest of {@link EditorNamespace}.
+ */
+export interface FindNamespace {
+  /** Open the find widget for the active editor, preserving whatever
+   * query/matches/case-sensitivity it already had (Req 11.1). */
+  open(): void;
+  /** Close the find widget. Query, matches, and case-sensitivity are left
+   * intact for a subsequent {@link open} — only visibility toggles. */
+  close(): void;
+  /** Set the search query, recomputing matches against the active
+   * document's current text and jumping to the nearest match at/after the
+   * cursor (Req 11.1's "live match updates as the buffer changes"). */
+  setQuery(query: string): void;
+  /** Set the replacement text used by {@link replaceCurrent}/
+   * {@link replaceAll}. Does not affect matches. */
+  setReplaceQuery(query: string): void;
+  /** Flip case-sensitive matching and recompute matches. */
+  toggleCaseSensitive(): void;
+  /** Advance to the next match, wrapping past the last one back to the
+   * first (Req 11.1). A no-op with no matches. */
+  next(): void;
+  /** Move to the previous match, wrapping past the first one back to the
+   * last (Req 11.1). A no-op with no matches. */
+  previous(): void;
+  /** Replace the current match with the replacement text, then advance to
+   * whatever match now occupies its place (Req 11.1). A no-op with no
+   * active match or a readonly document. */
+  replaceCurrent(): void;
+  /** Replace every match with the replacement text as a single undo step
+   * (Req 11.1). A no-op with no matches or a readonly document. */
+  replaceAll(): void;
+}
+
+/* ------------------------------------------------------------------ */
 /* tecode.editor                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -228,6 +273,8 @@ export interface EditorNamespace {
    * always has at least one selection): no-op.
    */
   setSelections(selections: readonly Selection[]): void;
+  /** In-buffer find/replace (Req 11.1, design.md §13). */
+  find: FindNamespace;
 }
 
 /* ------------------------------------------------------------------ */

@@ -34,6 +34,7 @@ import type {
   ContextNamespace,
   EditorNamespace,
   FileSystem,
+  FindNamespace,
   LanguagesNamespace,
   Tecode,
   ThemesNamespace,
@@ -48,6 +49,7 @@ import type { ConfigService } from "../config/service";
 import type { ContextService } from "../keymap/context";
 import type { StatusSink } from "../host/errors";
 import type { EditorSessionService } from "../ui/editorSession";
+import type { FindService } from "../ui/findService";
 import { Input, List, Tabs, Tree } from "../ui/components";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
 import { cloneSelection, createEditorNamespace } from "./editorNamespace";
@@ -109,6 +111,37 @@ export interface CreateTecodeApiDeps {
    * 2.3 adds a real backing, not a breaking change to the stub contract.
    */
   editorSession?: Pick<EditorSessionService, "getActiveDocument" | "getState" | "setState">;
+  /**
+   * Backs `tecode.editor.find` (Req 11.1, design.md §13's "pure command
+   * handlers... Find/replace state is per-editor, rendered as a...
+   * inline widget"). Narrowed to the 9 actions `FindNamespace` declares —
+   * `editor-core`'s find/replace commands delegate straight through them.
+   * Optional, and ALSO requires `editorSession` above to be supplied AND
+   * to be the very session this service is bound to (`create.ts`'s
+   * `findNamespace` construction compares `findService.session` against
+   * `editorSession` by identity) — a `FindService` is built around its own
+   * `editorSession` reference (`findService.ts`'s
+   * `FindServiceDeps.editorSession`), and one bound to a DIFFERENT session
+   * would let `api.editor.find.replaceAll()` mutate documents
+   * `window.activeEditor` never reports. A caller that omits either, or
+   * passes a mismatched pair (every test that predates this task, and any
+   * future caller with genuinely no find/replace UI to back it), gets
+   * `createFindStub()`'s inert no-op surface instead of a breaking change
+   * to the namespace shape.
+   */
+  findService?: Pick<
+    FindService,
+    | "session"
+    | "open"
+    | "close"
+    | "setQuery"
+    | "setReplaceQuery"
+    | "toggleCaseSensitive"
+    | "next"
+    | "previous"
+    | "replaceCurrent"
+    | "replaceAll"
+  >;
 }
 
 /**
@@ -197,13 +230,47 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     setStatusBarItem: windowStub.setStatusBarItem,
   });
 
+  // `tecode.editor.find` (Req 11.1, design.md §13): a ready-made
+  // `FindNamespace` delegating straight to `deps.findService`'s methods
+  // when supplied, so freezing it below has no wrapper closures to make —
+  // `undefined` otherwise, which both `createEditorNamespace`/
+  // `createEditorStub` default to `createFindStub()`'s inert surface
+  // (`CreateTecodeApiDeps.findService`'s TSDoc). Gated on `deps.
+  // editorSession`, `deps.findService`, AND their sessions being the SAME
+  // instance (CodeRabbit findings on PR #59) — a `FindService` is built
+  // around its OWN `editorSession` reference (`findService.ts`'s
+  // `FindServiceDeps.editorSession`, surfaced as `findService.session`
+  // exactly for this identity check). Wiring the real find methods
+  // through against a different (or absent) session would let
+  // `api.editor.find.replaceAll()` mutate a document via that other
+  // session while `window.activeEditor`/`tecode.editor` (both driven only
+  // by `deps.editorSession`) report a different active document or none
+  // at all — breaking the no-active-editor no-op contract
+  // `createEditorStub`'s TSDoc documents. On any mismatch, `findNamespace`
+  // stays `undefined` and the editor namespace falls back to
+  // `createFindStub()`'s fully inert surface.
+  const findNamespace: FindNamespace | undefined =
+    deps.editorSession && deps.findService && deps.findService.session === deps.editorSession
+    ? Object.freeze({
+        open: deps.findService.open,
+        close: deps.findService.close,
+        setQuery: deps.findService.setQuery,
+        setReplaceQuery: deps.findService.setReplaceQuery,
+        toggleCaseSensitive: deps.findService.toggleCaseSensitive,
+        next: deps.findService.next,
+        previous: deps.findService.previous,
+        replaceCurrent: deps.findService.replaceCurrent,
+        replaceAll: deps.findService.replaceAll,
+      })
+    : undefined;
+
   // Real backing (Task 2.3's `editorNamespace.ts`) when an `editorSession`
   // was supplied; otherwise the exact same stub as before (this module's
   // TSDoc, `CreateTecodeApiDeps.editorSession`'s TSDoc).
   const editorNamespace: EditorNamespace = Object.freeze(
     deps.editorSession
-      ? createEditorNamespace({ sink: deps.sink, editorSession: deps.editorSession })
-      : createEditorStub({ sink: deps.sink }),
+      ? createEditorNamespace({ sink: deps.sink, editorSession: deps.editorSession, find: findNamespace })
+      : createEditorStub({ sink: deps.sink, find: findNamespace }),
   );
 
   // No slot registry injected (see CreateTecodeApiDeps.slotRegistry's

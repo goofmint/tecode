@@ -68,6 +68,25 @@
  *   movement-adjacent command that does NOT go through `registerMovement`
  *   — `mergeSelections`' re-sorting would destroy the "index 0 is primary"
  *   invariant this command depends on (`multiCursor.ts`'s own TSDoc).
+ *
+ * **Task 2.5 additions — in-buffer find/replace (Req 11.1, design.md
+ * §13)**: unlike every command above, `editor.action.find`/`findNext`/
+ * `findPrevious`/`replaceOne`/`replaceAll`/`toggleFindCaseSensitive`/
+ * `closeFind` hold NO logic of their own at all — each is a ONE-LINE
+ * delegate straight to `ctx.api.editor.find.*` (`@tecode/api`'s
+ * `FindNamespace`, `@tecode/core`'s `ui/findService.ts`). This is design.md
+ * §13's explicit architecture decision: "Find/replace state is per-editor,
+ * rendered as a... inline widget" owned entirely by core (state, matching,
+ * the widget component itself), with `editor-core` contributing nothing
+ * but the manifest's commands/keybindings that name which `tecode.editor.
+ * find` method each one calls — the same "pure command handlers over
+ * `tecode.editor`" shape every other command in this file already follows,
+ * just with an even thinner body since there is no per-selection/
+ * per-line builder to run first. No active-editor/no-op guard is needed
+ * at this call site either: every `FindNamespace` method already
+ * documents its own no-op behavior with no active editor (`@tecode/api`'s
+ * `FindNamespace` TSDoc), exactly like `tecode.editor.setSelections` does
+ * for the commands above.
  */
 
 import type {
@@ -386,6 +405,26 @@ export function activate(ctx: ExtensionContext): void {
       await api.workspace.save(editor.document.uri);
     }),
   );
+
+  // Task 2.5: in-buffer find/replace (Req 11.1) — pure one-line delegates
+  // to `tecode.editor.find.*` (this module's TSDoc's "Task 2.5 additions").
+  ctx.subscriptions.push(api.commands.register("editor.action.find", () => api.editor.find.open()));
+  ctx.subscriptions.push(api.commands.register("editor.action.findNext", () => api.editor.find.next()));
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.findPrevious", () => api.editor.find.previous()),
+  );
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.replaceOne", () => api.editor.find.replaceCurrent()),
+  );
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.replaceAll", () => api.editor.find.replaceAll()),
+  );
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.toggleFindCaseSensitive", () =>
+      api.editor.find.toggleCaseSensitive(),
+    ),
+  );
+  ctx.subscriptions.push(api.commands.register("editor.action.closeFind", () => api.editor.find.close()));
 }
 
 export function deactivate(): void {

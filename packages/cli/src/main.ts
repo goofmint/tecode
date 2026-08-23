@@ -10,6 +10,7 @@ import {
   createEditorSessionService,
   createExtensionHost,
   createFileSystem,
+  createFindService,
   createHostLog,
   createLayoutStateService,
   createNoopStatusSink,
@@ -31,6 +32,7 @@ import {
   type EditorInputRouter,
   type EditorSessionService,
   type ExtensionHost,
+  type FindService,
   type HostLog,
   type LayoutStateService,
   type LoadExtensionsResult,
@@ -86,6 +88,13 @@ export interface AssemblyRoot {
    * editorSession` above), and {@link editorInputRouter} below, which reads/
    * writes it directly, from outside React. */
   editorSession: EditorSessionService;
+  /** Owns every tab's in-buffer find/replace state (Req 11.1, design.md
+   * §13, `ui/findService.ts`) — backs `tecode.editor.find` (via `api`
+   * below) and the rendered `Shell`'s `FindWidget` sibling (`renderShell.
+   * tsx`'s `ShellRenderDeps`), so a command executed through `commands.
+   * execute` and a keystroke typed into the widget both operate on the
+   * exact same live state. */
+  findService: FindService;
   /** Turns a keymap-fallthrough key event into a multi-cursor
    * `applyEdits` call (Req 4.6, 6.6, design.md §6.1, §8.3, Task 2.2) —
    * wired into `renderShellToTerminal`'s real `renderer.keyInput` listener
@@ -209,6 +218,11 @@ export function buildAssemblyRoot(
   // updates exactly what `Shell` (and every extension reading `tecode.
   // editor`) sees.
   const editorSession = createEditorSessionService({ documents });
+  // Task 2.5's find/replace service (Req 11.1, design.md §13) — built
+  // against the SAME `editorSession` so `tecode.editor.find` and the
+  // rendered `Shell`'s `FindWidget` share one live state, exactly like
+  // `editorSession` itself is shared above.
+  const findService = createFindService({ editorSession });
 
   const api = createTecodeApi({
     commands,
@@ -220,6 +234,7 @@ export function buildAssemblyRoot(
     sink,
     slotRegistry,
     editorSession,
+    findService,
   });
 
   // Must run before any extension module is imported (see this function's
@@ -262,6 +277,7 @@ export function buildAssemblyRoot(
     keymap,
     chordMachine,
     editorSession,
+    findService,
     editorInputRouter,
     editorLangIdSync,
     hostRef,
@@ -395,6 +411,7 @@ function wireProcessExit(root: AssemblyRoot): void {
     await root.layoutState.flush();
     root.config.dispose();
     root.chordMachine.dispose();
+    root.findService.dispose();
     root.editorSession.dispose();
     root.editorLangIdSync.dispose();
     await root.hostRef.current?.disposeAll();
@@ -468,6 +485,7 @@ export async function runTecode(
     documents: root.documents,
     config: root.config,
     editorSession: root.editorSession,
+    findService: root.findService,
     chordMachine: root.chordMachine,
     editorInputRouter: root.editorInputRouter,
   });
@@ -505,6 +523,7 @@ export async function runTecode(
     await root.layoutState.flush();
     root.config.dispose();
     root.chordMachine.dispose();
+    root.findService.dispose();
     root.editorSession.dispose();
     root.editorLangIdSync.dispose();
     await deferred.extensionHost.disposeAll();

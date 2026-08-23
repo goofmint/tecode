@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useReducer, useRef } from "react";
-import type { Selection, Uri } from "@tecode/api";
+import type { Range, Selection, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 
 /**
@@ -25,6 +25,55 @@ export interface EditorState {
    * representable (there is always at least a collapsed cursor somewhere). */
   selections: Selection[];
   scrollTop: number;
+  /**
+   * In-buffer find/replace state (Req 11.1, design.md §13) — `undefined`
+   * until the find widget is opened for this tab at least once
+   * (`createInitialEditorState` leaves it unset rather than eagerly
+   * allocating a closed, query-less `FindState` nobody asked for yet).
+   * Owned entirely by `ui/findService.ts`'s `FindService`; `EditorView`/
+   * `findWidget.tsx` only ever READ it off the active tab's `EditorState`.
+   */
+  find?: FindState;
+}
+
+/**
+ * Per-tab find/replace state (Req 11.1, design.md §13's inline overlay
+ * widget). `matches`/`activeMatchIndex` are the LIVE result of the most
+ * recent {@link FindState.query} against the document's current text —
+ * `ui/findService.ts` keeps them current as the buffer changes, not just
+ * when the query itself changes.
+ */
+export interface FindState {
+  /** The search text. An empty query always produces zero matches
+   * (`editor/find.ts`'s `computeMatches`). */
+  query: string;
+  /** The replacement text for replace-one/replace-all. Independent of
+   * `matches` — changing it never recomputes anything. */
+  replaceQuery: string;
+  /** Every current match, in document order, kept live as the buffer
+   * changes (`ui/findService.ts`). Search is line-by-line (`editor/
+   * find.ts`'s TSDoc): a query containing a line break can never match. */
+  matches: Range[];
+  /** Index into {@link matches} of the "current" match the find widget
+   * highlights distinctly and `next`/`previous`/`replaceCurrent` act on.
+   * `-1` when `matches` is empty — never a stale in-range index into an
+   * empty array. */
+  activeMatchIndex: number;
+  /** Whether matching is case-sensitive (Req 11.1). */
+  caseSensitive: boolean;
+  /** Whether the find widget is currently shown for this tab (Req 11.1's
+   * `ctrl+f` open / Escape close). Closing does not clear `query`/
+   * `matches`/`replaceQuery` — reopening resumes exactly where it left
+   * off. */
+  isOpen: boolean;
+}
+
+/** A closed find widget with no query and no matches — the state a tab's
+ * `EditorState.find` starts in the first time it is ever touched
+ * (`ui/findService.ts`). Not part of {@link createInitialEditorState}
+ * itself (see {@link EditorState.find}'s TSDoc for why). */
+export function createInitialFindState(): FindState {
+  return { query: "", replaceQuery: "", matches: [], activeMatchIndex: -1, caseSensitive: false, isOpen: false };
 }
 
 /** A single-cursor {@link EditorState} at the document origin (line 0,

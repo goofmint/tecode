@@ -84,4 +84,44 @@ describe("ContextFocusTracker / useFocusTracking (Req 4.6)", () => {
 
     expect(() => trackingRef!(null)).not.toThrow();
   });
+
+  test("detaching a STILL-FOCUSED node (unmounting without a prior blur) resets the key to false (Req 11.1)", async () => {
+    // Simulates the find widget's exact situation (this module's TSDoc's
+    // "Detaching a still-focused node"): a node gains focus, then is
+    // detached (its OWN ref callback called with `null`, matching React's
+    // unmount cleanup) WITHOUT ever emitting `RenderableEvents.BLURRED`
+    // first — proving the context key doesn't stay stuck `true` forever.
+    const context = createContextService();
+    let captured: BoxRenderable | null = null;
+    let trackingRef: ((node: FocusEmitter | null) => void) | undefined;
+
+    function ProbeWithRef(props: { onNode: (node: BoxRenderable | null) => void }) {
+      trackingRef = useFocusTracking("testFocus");
+      return (
+        <box
+          focusable
+          ref={(node: BoxRenderable | null) => {
+            trackingRef!(node as unknown as FocusEmitter | null);
+            props.onNode(node);
+          }}
+        />
+      );
+    }
+
+    const { renderOnce } = await testRender(
+      <ContextFocusTracker context={context}>
+        <ProbeWithRef onNode={(node) => (captured = node)} />
+      </ContextFocusTracker>,
+      { width: 10, height: 3 },
+    );
+    await renderOnce();
+
+    captured!.focus();
+    expect(context.get<boolean>("testFocus")).toBe(true);
+
+    // Detach without blurring first — the ref callback itself (not a real
+    // unmount) exercises exactly the code path React's cleanup would hit.
+    trackingRef!(null);
+    expect(context.get<boolean>("testFocus")).toBe(false);
+  });
 });

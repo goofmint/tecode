@@ -23,6 +23,7 @@ import {
   type DocumentManager,
   type EditorInputRouter,
   type EditorSessionService,
+  type FindService,
   type LayoutStateService,
   type SlotRegistry,
 } from "@tecode/core";
@@ -53,6 +54,12 @@ export interface ShellRenderDeps {
    * above: a caller/test that omits it gets `Shell`'s original
    * component-local fallback (`shell.tsx`'s TSDoc). */
   editorSession?: EditorSessionService;
+  /** Backs the rendered `Shell`'s `FindWidget` sibling (Req 11.1, design.md
+   * §13) — threaded straight through to `Shell`'s own `findService` prop.
+   * Optional, matching `editorSession` above: a caller/test that omits it
+   * gets no `FindWidget` regardless of `find?.isOpen` (`shell.tsx`'s
+   * `EditorAreaProps.findService` TSDoc). */
+  findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
   /** The live chord state machine (Req 4.4, design.md §6.1) —
    * {@link renderShellToTerminal} wires `renderer.keyInput` through it (and
    * `editorInputRouter` below) only when BOTH are given; either omitted
@@ -100,6 +107,7 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
           documents={deps.documents}
           config={deps.config}
           editorSession={deps.editorSession}
+          findService={deps.findService}
         />
       </ContextFocusTracker>
     </ThemeProvider>,

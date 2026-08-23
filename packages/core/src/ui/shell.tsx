@@ -59,6 +59,9 @@ import { RegisteredView, Tabs, type TabItem } from "./components";
 import type { EditorSessionService } from "./editorSession";
 import { createInitialEditorState, type EditorState } from "./editorState";
 import { EditorView } from "./editorView";
+import type { FindService } from "./findService";
+import { FindWidget } from "./findWidget";
+import type { FocusableNode } from "./focus";
 import { useFocusTracking } from "./focus";
 import type { LayoutState, LayoutStateService } from "./layoutState";
 import type { SidebarPair, SlotRegistry, SlotViewEntry } from "./slotRegistry";
@@ -331,15 +334,72 @@ export interface EditorAreaProps {
   /** Threaded through to `EditorView` for its `editor.lineNumbers` lookup
    * (Req 9.5). */
   config?: ConfigService;
+  /**
+   * Backs the `FindWidget` sibling (Req 11.1, design.md §13) — omitted
+   * entirely (no `<FindWidget>` renders, regardless of `find?.isOpen`) for
+   * a caller that never wires a `FindService` into `Shell`, matching every
+   * other optional-dependency fallback in this module (`editorSession`'s
+   * own TSDoc). Narrowed to the 3 actions `findWidget.tsx` actually calls.
+   */
+  findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
 }
 
-/** The editor area (Req 6.1, 6.5, 6.6): a `TabBar` over the real
+/** The editor area (Req 6.1, 6.5, 6.6, 11.1): a `TabBar` over the real
  * `EditorView` (design.md §8.3) once a document is active, or the
- * "No editor open." placeholder otherwise. */
+ * "No editor open." placeholder otherwise — plus, when the active tab's
+ * `find?.isOpen` is true, a `FindWidget` sibling underneath the tab bar
+ * (Req 11.1, design.md §13).
+ *
+ * **Returning focus to the text on close** (Req 11.1's "Escape closes
+ * returning focus to the text", `findWidget.tsx`'s TSDoc): this component
+ * — not the widget itself, which has already unmounted by the time `find.
+ * isOpen` flips back to `false` — captures `EditorView`'s text-plane node
+ * via `onTextPlaneNode` and imperatively `.focus()`s it back on exactly
+ * that true→false transition (an edge-triggered `useEffect`, not a
+ * level-triggered one — this must fire ONCE per close, not on every render
+ * where find happens to already be closed, which would otherwise fight
+ * the user clicking anywhere else in the shell while find stays shut).
+ */
 export function EditorArea(props: EditorAreaProps): ReactNode {
   const theme = useTheme();
   const focusRef = useFocusTracking("editorFocus");
   const tabs = props.tabs ?? [];
+  const find = props.activeEditorState?.find;
+  const isFindOpen = find?.isOpen ?? false;
+
+  const textPlaneNodeRef = useRef<FocusableNode | null>(null);
+  const wasFindOpenRef = useRef(false);
+  useEffect(() => {
+    if (wasFindOpenRef.current && !isFindOpen) {
+      textPlaneNodeRef.current?.focus();
+    }
+    wasFindOpenRef.current = isFindOpen;
+  }, [isFindOpen]);
+  // Stable identity across every render (CodeRabbit finding on PR #59) — a
+  // fresh inline arrow here would give `EditorView`'s own `textPlaneRef`
+  // `useCallback` (`editorView.tsx`, deps include `onTextPlaneNode`) a new
+  // function identity on every `EditorArea` re-render, and React detaches/
+  // reattaches a `ref` callback (calling the OLD one with `null`, then the
+  // NEW one with the node) whenever ITS OWN identity changes — even though
+  // the underlying OpenTUI node never actually changed. `editorView.tsx`'s
+  // `textPlaneRef` also carries `useFocusTracking("editorTextFocus")`
+  // (`contextFocusRef`): detaching a node `useFocusTracking` currently
+  // believes is focused force-reports `editorTextFocus` FALSE (`focus.tsx`'s
+  // "detaching a still-focused node" fix, from this same PR) — so an
+  // `editorSession.setState`-driven re-render while the user is mid-typing
+  // in the buffer would spuriously blur it, discarding every keystroke that
+  // arrives before the immediately-following re-render re-attaches (and
+  // still never refocuses, since the node's OWN `_focused` flag never
+  // changed — no new `FOCUSED` event fires to flip `useFocusTracking`'s
+  // tracked state back). An empty-deps `useCallback` (this closes only over
+  // the ref, never over any per-render value) keeps the SAME function
+  // identity for `EditorArea`'s whole lifetime, so `EditorView`'s ref only
+  // ever attaches/detaches on a REAL mount/unmount (e.g. switching the
+  // active document, `key={props.activeDocument.uri}` below), never on an
+  // unrelated re-render.
+  const handleTextPlaneNode = useCallback((node: FocusableNode | null) => {
+    textPlaneNodeRef.current = node;
+  }, []);
 
   return (
     <box
@@ -350,6 +410,9 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
     >
       {tabs.length > 0 ? (
         <Tabs tabs={tabs} activeId={props.activeTabId} onSelect={props.onSelectTab} />
+      ) : null}
+      {find && isFindOpen && props.findService ? (
+        <FindWidget find={find} findService={props.findService} />
       ) : null}
       <box style={{ flexDirection: "column", flexGrow: 1 }}>
         {props.activeDocument && props.activeEditorState ? (
@@ -362,6 +425,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
             document={props.activeDocument}
             state={props.activeEditorState}
             config={props.config}
+            onTextPlaneNode={handleTextPlaneNode}
           />
         ) : (
           <text fg={toColorInput(theme.colors["editor.foreground"])}>
@@ -503,6 +567,10 @@ export interface ShellProps {
    * so an existing caller/test that never passes one keeps its exact prior
    * behavior. */
   editorSession?: EditorSessionService;
+  /** Threaded straight through to `EditorArea` for its `FindWidget`
+   * sibling (Req 11.1, design.md §13) — see `EditorAreaProps.findService`'s
+   * TSDoc. */
+  findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
 }
 
 /** Re-renders the calling component whenever `session` reports a change
@@ -652,6 +720,7 @@ export function Shell(props: ShellProps): ReactNode {
           activeDocument={activeDocument}
           activeEditorState={activeDocument ? getOrCreateEditorState(activeDocument.uri) : undefined}
           config={props.config}
+          findService={props.findService}
         />
       </box>
       <Panel slotRegistry={props.slotRegistry} visible={layout.panelVisible} height={layout.panelHeight} />

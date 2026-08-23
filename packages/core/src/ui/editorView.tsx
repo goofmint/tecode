@@ -28,6 +28,20 @@
  *    block cursor: `bg = editorCursor.foreground`, `fg = editor.background`
  *    (inverted, so the character underneath stays legible).
  *
+ * **Find-match overlay** (Req 11.1, design.md §13) — a fifth layer, added
+ * on top of the four above, driven by `EditorState.find` (`editorState.ts`)
+ * rather than `selections`, and rendered ONLY while `find.isOpen` is true
+ * (closing the widget hides highlighting without discarding the computed
+ * `matches`): every range in `find.matches` gets `editor.
+ * findMatchHighlightBackground`; the one at `find.activeMatchIndex` gets
+ * the distinct `editor.findMatchBackground` instead — deliberately a
+ * DIFFERENT color from `editor.selectionBackground` in either case, so a
+ * search result never reads as a normal user selection even where the two
+ * happen to coincide. Full priority order for one character cell, highest
+ * first: **cursor > current find match > selection > other find matches >
+ * base text** — a bracket-matching-style "am I the special one" cascade,
+ * same shape `buildLineRuns` already used for cursor-over-selection.
+ *
  * **Virtualization** (Req 13.1): only lines in `computeVisibleLineRange`'s
  * window (`viewport.ts`) ever become OpenTUI nodes — `EditorLineRow` is
  * created and destroyed as the window moves, never held for the whole
@@ -54,12 +68,12 @@
 
 import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { RenderableEvents, type RGBA } from "@opentui/core";
-import type { Selection } from "@tecode/api";
+import type { Range, Selection } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { ConfigService } from "../config/service";
 import { cellWidthUpTo } from "./cellWidth";
 import { useLineTicks, type EditorState } from "./editorState";
-import type { FocusEmitter } from "./focus";
+import type { FocusableNode, FocusEmitter } from "./focus";
 import { useFocusTracking } from "./focus";
 import { computeVisibleLineRange, gutterDigitWidth, revealLine } from "./viewport";
 import { styleToTextColors, toColorInput, useTheme } from "./theme";
@@ -89,6 +103,12 @@ interface EditorLineColors {
   cursorFg: RGBA;
   lineNumberFg: RGBA;
   lineNumberActiveFg: RGBA;
+  /** The CURRENT find match's background (Req 11.1) — distinct from
+   * `selectionBg` (this module's TSDoc's "find-match overlay"). */
+  findMatchBg: RGBA;
+  /** Every OTHER find match's background (Req 11.1) — distinct from both
+   * `selectionBg` and `findMatchBg`. */
+  findMatchOtherBg: RGBA;
 }
 
 function isCollapsed(selection: Selection): boolean {
@@ -102,20 +122,60 @@ function clampCol(value: number, length: number): number {
   return Math.max(0, Math.min(value, length));
 }
 
+/** One line-clamped `[start, end)` column range — the shared shape {@link
+ * buildLineRuns} clips selections/cursors/find matches into before sorting
+ * them into boundaries. */
+interface ColRange {
+  start: number;
+  end: number;
+}
+
+/** Clip `range` (in document line/character coordinates) to the columns it
+ * covers on `lineIndex` within a line of `length` characters, or `undefined`
+ * if `range` doesn't touch `lineIndex` at all, or clips down to nothing
+ * (this module's shared helper for selection AND find-match ranges — both
+ * are `{ start: Position; end: Position }` shapes). */
+function clipRangeToLine(
+  range: { start: { line: number; character: number }; end: { line: number; character: number } },
+  lineIndex: number,
+  length: number,
+): ColRange | undefined {
+  if (lineIndex < range.start.line || lineIndex > range.end.line) return undefined;
+  const start = clampCol(range.start.line === lineIndex ? range.start.character : 0, length);
+  const end = clampCol(range.end.line === lineIndex ? range.end.character : length, length);
+  if (end <= start) return undefined;
+  return { start, end };
+}
+
 /**
- * Merge the text/selection/cursor layers for one document line into a
- * sequence of colored runs (this module's TSDoc's "three pieces of DOM, not
- * four"). `lineText` is padded with one trailing space when a cursor sits
- * at end-of-line (`character === lineText.length`), so that a collapsed
- * cursor at the end of a line still has a cell to render its block into.
+ * Merge the text/selection/cursor/find-match layers for one document line
+ * into a sequence of colored runs (this module's TSDoc's "three pieces of
+ * DOM, not four" plus the find-match overlay). `lineText` is padded with
+ * one trailing space when a cursor sits at end-of-line (`character ===
+ * lineText.length`), so that a collapsed cursor at the end of a line still
+ * has a cell to render its block into.
  */
 function buildLineRuns(params: {
   lineText: string;
   lineIndex: number;
   selections: readonly Selection[];
   colors: EditorLineColors;
+  /** Every current find match (Req 11.1), in document order — empty when
+   * find is closed or has no matches (this module's TSDoc's "find-match
+   * overlay"). */
+  findMatches?: readonly Range[];
+  /** Index into `findMatches` of the CURRENT match, or `-1`/out-of-range
+   * for "no active match" (renders every entry as an "other" match). */
+  activeFindMatchIndex?: number;
 }): LineRun[] {
-  const { lineText, lineIndex, selections, colors } = params;
+  const {
+    lineText,
+    lineIndex,
+    selections,
+    colors,
+    findMatches = [],
+    activeFindMatchIndex = -1,
+  } = params;
   const cursorCols = selections
     .filter((s) => s.active.line === lineIndex)
     .map((s) => s.active.character);
@@ -131,21 +191,16 @@ function buildLineRuns(params: {
   const baseFg = styleToTextColors(undefined).fg ?? colors.fg;
 
   const boundaries = new Set<number>([0, length]);
-  const selectionRanges: Array<{ start: number; end: number }> = [];
+  const selectionRanges: ColRange[] = [];
   for (const selection of selections) {
     if (isCollapsed(selection)) continue;
-    if (lineIndex < selection.start.line || lineIndex > selection.end.line) continue;
-    const start = clampCol(selection.start.line === lineIndex ? selection.start.character : 0, length);
-    const end = clampCol(
-      selection.end.line === lineIndex ? selection.end.character : length,
-      length,
-    );
-    if (end <= start) continue;
-    selectionRanges.push({ start, end });
-    boundaries.add(start);
-    boundaries.add(end);
+    const clipped = clipRangeToLine(selection, lineIndex, length);
+    if (!clipped) continue;
+    selectionRanges.push(clipped);
+    boundaries.add(clipped.start);
+    boundaries.add(clipped.end);
   }
-  const cursorCells: Array<{ start: number; end: number }> = [];
+  const cursorCells: ColRange[] = [];
   for (const col of cursorCols) {
     const start = clampCol(col, length);
     const end = clampCol(start + 1, length);
@@ -154,6 +209,18 @@ function buildLineRuns(params: {
     boundaries.add(start);
     boundaries.add(end);
   }
+  // Find-match overlay (this module's TSDoc): split into "the active one"
+  // vs "every other one" up front so the render loop below is a flat
+  // priority check, not a per-segment index lookup.
+  const activeMatchRanges: ColRange[] = [];
+  const otherMatchRanges: ColRange[] = [];
+  findMatches.forEach((match, index) => {
+    const clipped = clipRangeToLine(match, lineIndex, length);
+    if (!clipped) return;
+    (index === activeFindMatchIndex ? activeMatchRanges : otherMatchRanges).push(clipped);
+    boundaries.add(clipped.start);
+    boundaries.add(clipped.end);
+  });
 
   const sorted = Array.from(boundaries).sort((a, b) => a - b);
   const runs: LineRun[] = [];
@@ -164,12 +231,20 @@ function buildLineRuns(params: {
     const segment = text.slice(start, end);
 
     const isCursorCell = cursorCells.some((c) => c.start === start && c.end === end);
+    const isActiveMatch = activeMatchRanges.some((r) => start >= r.start && end <= r.end);
     const isSelected = selectionRanges.some((r) => start >= r.start && end <= r.end);
+    const isOtherMatch = otherMatchRanges.some((r) => start >= r.start && end <= r.end);
 
+    // Priority, highest first (this module's TSDoc): cursor > current find
+    // match > selection > other find matches > base text.
     if (isCursorCell) {
       runs.push({ text: segment, fg: colors.cursorFg, bg: colors.cursorBg });
+    } else if (isActiveMatch) {
+      runs.push({ text: segment, fg: baseFg, bg: colors.findMatchBg });
     } else if (isSelected) {
       runs.push({ text: segment, fg: baseFg, bg: colors.selectionBg });
+    } else if (isOtherMatch) {
+      runs.push({ text: segment, fg: baseFg, bg: colors.findMatchOtherBg });
     } else {
       runs.push({ text: segment, fg: baseFg });
     }
@@ -177,11 +252,20 @@ function buildLineRuns(params: {
   return runs;
 }
 
-/** A stable-across-renders summary of which selections/cursors touch
- * `lineIndex`, used as an `EditorLineRow` memo key (this module's TSDoc):
- * equal strings for two renders mean this line's overlay is unchanged, even
- * though `selections` itself is a fresh array reference every render. */
-function lineOverlayKey(lineIndex: number, selections: readonly Selection[]): string {
+/** A stable-across-renders summary of which selections/cursors/find matches
+ * touch `lineIndex`, used as an `EditorLineRow` memo key (this module's
+ * TSDoc): equal strings for two renders mean this line's overlay is
+ * unchanged, even though `selections`/`findMatches` are fresh array
+ * references every render. Find matches are folded into the SAME key as
+ * selections (Req 11.1) — one line's memo signal, not two separately
+ * compared props — so a match appearing/disappearing/becoming-active on a
+ * line re-renders exactly that line, same as a selection change would. */
+function lineOverlayKey(
+  lineIndex: number,
+  selections: readonly Selection[],
+  findMatches: readonly Range[],
+  activeFindMatchIndex: number,
+): string {
   const parts: string[] = [];
   for (const s of selections) {
     const touches =
@@ -190,6 +274,11 @@ function lineOverlayKey(lineIndex: number, selections: readonly Selection[]): st
     if (!touches) continue;
     parts.push(`${s.start.line}:${s.start.character}-${s.end.line}:${s.end.character}@${s.active.character}`);
   }
+  findMatches.forEach((m, index) => {
+    if (lineIndex < m.start.line || lineIndex > m.end.line) return;
+    const marker = index === activeFindMatchIndex ? "*" : "";
+    parts.push(`f${marker}:${m.start.line}:${m.start.character}-${m.end.line}:${m.end.character}`);
+  });
   return parts.join("|");
 }
 
@@ -203,12 +292,18 @@ interface EditorLineRowProps {
    * backstop that keeps such a row from rendering stale content. */
   text: string;
   selections: readonly Selection[];
+  /** Every current find match (Req 11.1) — passed through to
+   * {@link buildLineRuns} for the render body; {@link overlayKey} (not this
+   * array's identity) is what the memo comparator actually relies on. */
+  findMatches: readonly Range[];
+  /** Index into `findMatches` of the CURRENT match, `-1` for none. */
+  activeFindMatchIndex: number;
   /** From {@link useLineTicks} — the primary "this line's text changed" memo
    * signal for observed rows (this module's TSDoc); see `text` above for why
    * it isn't sufficient alone. */
   tick: number;
-  /** From {@link lineOverlayKey} — the sole "this line's selection/cursor
-   * overlay changed" memo signal. */
+  /** From {@link lineOverlayKey} — the sole "this line's selection/cursor/
+   * find-match overlay changed" memo signal. */
   overlayKey: string;
   gutterWidth: number;
   showLineNumbers: boolean;
@@ -246,6 +341,8 @@ const EditorLineRow = memo(function EditorLineRow(props: EditorLineRowProps): Re
     lineIndex: props.lineIndex,
     selections: props.selections,
     colors: props.colors,
+    findMatches: props.findMatches,
+    activeFindMatchIndex: props.activeFindMatchIndex,
   });
   const lineNumberText =
     String(props.lineIndex + 1).padStart(Math.max(0, props.gutterWidth - 1), " ") + " ";
@@ -322,6 +419,15 @@ export interface EditorViewProps {
   config?: ConfigService;
   /** Test-only instrumentation — see {@link EditorLineRowProps.onDebugRender}. */
   onDebugLineRender?: (line: number) => void;
+  /**
+   * Reports the text plane's underlying OpenTUI node (or `null` on
+   * detach/unmount) alongside this component's own internal focus-tracking
+   * ref callbacks (Req 11.1) — `shell.tsx`'s `EditorArea` captures it so
+   * that closing the find widget can call `.focus()` on it directly and
+   * return focus to the buffer (`findWidget.tsx`'s TSDoc explains why THIS
+   * component, not the widget itself, owns that edge-triggered call).
+   */
+  onTextPlaneNode?: (node: FocusableNode | null) => void;
 }
 
 /**
@@ -340,20 +446,36 @@ export function EditorView(props: EditorViewProps): ReactNode {
   const lineTicks = useLineTicks(document);
   const contextFocusRef = useFocusTracking("editorTextFocus");
   const [isFocused, isFocusedRef] = useIsFocused();
+  const onTextPlaneNode = props.onTextPlaneNode;
   const textPlaneRef = useCallback(
-    (node: FocusEmitter | null) => {
+    (node: FocusableNode | null) => {
       contextFocusRef(node);
       isFocusedRef(node);
+      onTextPlaneNode?.(node);
     },
-    [contextFocusRef, isFocusedRef],
+    [contextFocusRef, isFocusedRef, onTextPlaneNode],
   );
 
   const lineCount = Math.max(1, document.lineCount);
   const primary = state.selections[0];
-  const scrollTop = primary
-    ? revealLine(primary.active.line, state.scrollTop, viewportHeight, lineCount)
-    : Math.max(0, Math.min(state.scrollTop, lineCount - 1));
+  // Find's active match takes over reveal-target duty from the primary
+  // cursor while the widget is open (Req 11.1, this module's TSDoc's
+  // "find-match overlay"/`findService.ts`'s "Reveal-on-navigate" — that
+  // service only ever updates `find.activeMatchIndex`, relying on THIS
+  // per-render derivation to do the actual `revealLine` viewport math, same
+  // as it already does for the primary cursor).
+  const activeFindMatch =
+    state.find?.isOpen && state.find.activeMatchIndex >= 0
+      ? state.find.matches[state.find.activeMatchIndex]
+      : undefined;
+  const revealTargetLine = activeFindMatch ? activeFindMatch.start.line : primary?.active.line;
+  const scrollTop =
+    revealTargetLine !== undefined
+      ? revealLine(revealTargetLine, state.scrollTop, viewportHeight, lineCount)
+      : Math.max(0, Math.min(state.scrollTop, lineCount - 1));
   const { startLine, endLine } = computeVisibleLineRange(scrollTop, viewportHeight, lineCount);
+  const findMatches = state.find?.isOpen ? state.find.matches : [];
+  const activeFindMatchIndex = state.find?.isOpen ? state.find.activeMatchIndex : -1;
 
   const digitWidth = gutterDigitWidth(lineCount);
   const gutterWidth = showLineNumbers ? digitWidth + 1 : 0;
@@ -374,6 +496,8 @@ export function EditorView(props: EditorViewProps): ReactNode {
       cursorFg: toColorInput(theme.colors["editor.background"]),
       lineNumberFg: toColorInput(theme.colors["editorLineNumber.foreground"]),
       lineNumberActiveFg: toColorInput(theme.colors["editorLineNumber.activeForeground"]),
+      findMatchBg: toColorInput(theme.colors["editor.findMatchBackground"]),
+      findMatchOtherBg: toColorInput(theme.colors["editor.findMatchHighlightBackground"]),
     }),
     [theme, isFocused],
   );
@@ -386,8 +510,10 @@ export function EditorView(props: EditorViewProps): ReactNode {
         lineIndex={line}
         text={document.getLine(line)}
         selections={state.selections}
+        findMatches={findMatches}
+        activeFindMatchIndex={activeFindMatchIndex}
         tick={lineTicks.getLineTick(line)}
-        overlayKey={lineOverlayKey(line, state.selections)}
+        overlayKey={lineOverlayKey(line, state.selections, findMatches, activeFindMatchIndex)}
         gutterWidth={gutterWidth}
         showLineNumbers={showLineNumbers}
         isActiveLine={primary ? primary.active.line === line : false}

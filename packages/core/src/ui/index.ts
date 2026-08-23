@@ -35,6 +35,7 @@ export {
   ContextFocusTracker,
   useFocusTracking,
   type ContextFocusTrackerProps,
+  type FocusableNode,
   type FocusEmitter,
 } from "./focus";
 
@@ -79,10 +80,20 @@ export {
 
 export {
   createInitialEditorState,
+  createInitialFindState,
   useLineTicks,
   type EditorState,
+  type FindState,
   type LineTicks,
 } from "./editorState";
+
+export {
+  createFindService,
+  type FindService,
+  type FindServiceDeps,
+} from "./findService";
+
+export { FindWidget, type FindWidgetProps } from "./findWidget";
 
 export { cursorCellColumn, EditorView, type EditorViewProps } from "./editorView";
 

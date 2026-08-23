@@ -15,7 +15,7 @@ import { createBaseTheme } from "../api/stubs";
 import { createHostLog } from "../host/errors";
 import { createDocument, type CoreDocument } from "../buffer/document";
 import { toColorInput } from "./theme";
-import { createInitialEditorState, type EditorState } from "./editorState";
+import { createInitialEditorState, createInitialFindState, type EditorState, type FindState } from "./editorState";
 import { EditorView } from "./editorView";
 
 function createRecordingSink() {
@@ -47,6 +47,16 @@ function selectionAt(startLine: number, startChar: number, endLine: number, endC
 
 function stateWith(documentUri: string, selections: Selection[], scrollTop = 0): EditorState {
   return { documentUri, selections, scrollTop };
+}
+
+/** {@link stateWith} plus an open `find` state — for the find-match overlay
+ * tests below (Req 11.1). */
+function stateWithFind(
+  documentUri: string,
+  selections: Selection[],
+  find: Partial<FindState>,
+): EditorState {
+  return { ...stateWith(documentUri, selections), find: { ...createInitialFindState(), isOpen: true, ...find } };
 }
 
 /** All spans across every row of a captured frame, flattened with their row
@@ -173,6 +183,96 @@ describe("EditorView — selection rendering (Req 6.6, design.md §8.3's selecti
     // Exactly the selected "hello" text carries the highlight — " world"
     // (unselected) does not.
     expect(highlighted.map((s) => s.text).join("")).toBe("hello");
+  });
+});
+
+describe("EditorView — find-match highlighting (Req 11.1, design.md §13)", () => {
+  test("the active match gets findMatchBackground; other matches get findMatchHighlightBackground", async () => {
+    const document = createTestDocument("foo bar foo baz foo");
+    const matches = [
+      { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
+      { start: { line: 0, character: 8 }, end: { line: 0, character: 11 } },
+      { start: { line: 0, character: 16 }, end: { line: 0, character: 19 } },
+    ];
+    const state = stateWithFind(document.uri, [cursorAt(0, 5)], {
+      query: "foo",
+      matches,
+      activeMatchIndex: 1,
+    });
+
+    const { renderOnce, captureSpans } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={3} />,
+      { width: 40, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const spans = flatten(captureSpans());
+    const activeBg = toColorInput(baseTheme.colors["editor.findMatchBackground"]);
+    const otherBg = toColorInput(baseTheme.colors["editor.findMatchHighlightBackground"]);
+    const activeSpans = spans.filter((s) => JSON.stringify(s.bg) === JSON.stringify(activeBg));
+    const otherSpans = spans.filter((s) => JSON.stringify(s.bg) === JSON.stringify(otherBg));
+
+    // Exactly the SECOND "foo" (the active match, index 1) carries the
+    // active color...
+    expect(activeSpans.map((s) => s.text).join("")).toBe("foo");
+    expect(activeSpans.length).toBe(1);
+    // ...and the OTHER two "foo"s carry the dimmer highlight color, not the
+    // active one and not plain selection background.
+    expect(otherSpans.map((s) => s.text).sort()).toEqual(["foo", "foo"]);
+  });
+
+  test("closing the find widget (isOpen: false) hides all match highlighting", async () => {
+    const document = createTestDocument("foo bar foo");
+    const matches = [
+      { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
+      { start: { line: 0, character: 8 }, end: { line: 0, character: 11 } },
+    ];
+    const state = stateWithFind(document.uri, [cursorAt(0, 0)], {
+      query: "foo",
+      matches,
+      activeMatchIndex: 0,
+      isOpen: false,
+    });
+
+    const { renderOnce, captureSpans } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={3} />,
+      { width: 40, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const spans = flatten(captureSpans());
+    const activeBg = toColorInput(baseTheme.colors["editor.findMatchBackground"]);
+    const otherBg = toColorInput(baseTheme.colors["editor.findMatchHighlightBackground"]);
+    expect(spans.some((s) => JSON.stringify(s.bg) === JSON.stringify(activeBg))).toBe(false);
+    expect(spans.some((s) => JSON.stringify(s.bg) === JSON.stringify(otherBg))).toBe(false);
+  });
+
+  test("an open find widget reveals the active match's line even when the cursor is elsewhere", async () => {
+    const lines = Array.from({ length: 50 }, (_, i) => (i === 40 ? "target foo" : `line${i}`));
+    const document = createTestDocument(lines.join("\n"));
+    const match = { start: { line: 40, character: 7 }, end: { line: 40, character: 10 } };
+    const state = stateWithFind(document.uri, [cursorAt(0, 0)], {
+      query: "foo",
+      matches: [match],
+      activeMatchIndex: 0,
+    });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={5} />,
+      { width: 30, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // The cursor sits on line 0, but the viewport scrolled to reveal the
+    // active match on line 40 instead — proof `EditorView`'s reveal
+    // derivation follows the active find match, not the (unmoved) cursor.
+    expect(captureCharFrame()).toContain("target foo");
   });
 });
 

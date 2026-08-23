@@ -63,8 +63,11 @@ import { testRender } from "@opentui/react/test-utils";
 import { createCommandRegistry } from "../commands/registry";
 import { createDocumentManager, type DocumentManagerFs } from "../buffer/documentManager";
 import { pathToUri } from "../buffer/uri";
+import { createEditorInputRouter } from "../editor/inputRouter";
 import { createHostLog } from "../host/errors";
 import { createContextService } from "../keymap/context";
+import { createEditorSessionService } from "./editorSession";
+import { createFindService } from "./findService";
 import { ContextFocusTracker } from "./focus";
 import { createLayoutStateService, type LayoutStateFs } from "./layoutState";
 import { createSlotRegistry } from "./slotRegistry";
@@ -476,6 +479,281 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
   });
 });
 
+describe("Shell — EditorArea's onTextPlaneNode stays stable across re-renders (CodeRabbit PR #59 Finding 5)", () => {
+  test("editorTextFocus survives an editorSession.setState-driven re-render, and a subsequent routed key still edits the buffer", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "const x = 1;" }),
+    });
+    const editorSession = createEditorSessionService({ documents });
+
+    const { renderOnce, renderer } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell
+            slotRegistry={slotRegistry}
+            layoutState={layoutState}
+            documents={documents}
+            editorSession={editorSession}
+          />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 100, height: 20 },
+    );
+    const document = await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Find the text plane's own focusable box (`editorView.tsx`'s
+    // `textPlaneRef`, distinct from `EditorArea`'s OWN outer focusable box)
+    // by focusing each focusable descendant and keeping the one that sets
+    // `editorTextFocus` specifically — the same "focus each, check exactly
+    // one recognized key" idiom the focus-context-keys test above uses.
+    const focusables = findAllFocusable(renderer.root) as BoxRenderable[];
+    let textPlaneNode: BoxRenderable | undefined;
+    for (const node of focusables) {
+      node.focus();
+      if (context.get<boolean>("editorTextFocus") === true) {
+        textPlaneNode = node;
+        break;
+      }
+      node.blur();
+    }
+    expect(textPlaneNode).toBeDefined();
+    expect(context.get<boolean>("editorTextFocus")).toBe(true);
+
+    // Simulate exactly what `editor/inputRouter.ts`'s `routeKeyEvent` does
+    // after applying an edit: an `editorSession.setState` write-back, which
+    // fires `onDidChange` and forces `Shell` (and therefore `EditorArea`)
+    // to re-render.
+    const state = editorSession.getState(document.uri);
+    await act(async () => {
+      editorSession.setState(document.uri, { ...state });
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Before Finding 5's fix, `EditorArea`'s inline `onTextPlaneNode`
+    // callback got a new function identity every render, so `EditorView`'s
+    // `textPlaneRef` `useCallback` (deps include `onTextPlaneNode`) detached
+    // and reattached its ref on the SAME underlying node — and `focus.tsx`'s
+    // "detaching a still-focused node" fix (this same PR) force-reports
+    // `editorTextFocus` FALSE on that detach, with no new `FOCUSED` event
+    // ever firing to set it back true (the node's own internal focus flag
+    // never actually changed). `editorTextFocus` must stay true across this
+    // re-render.
+    expect(context.get<boolean>("editorTextFocus")).toBe(true);
+
+    // And the REAL-WORLD consequence: a subsequent routed keystroke must
+    // still reach the buffer — `routeKeyEvent` gates entirely on
+    // `editorTextFocus` (`inputRouter.ts`'s own TSDoc), so a spuriously
+    // cleared key here would silently discard this insert.
+    const router = createEditorInputRouter({ context, editorSession });
+    const handled = router.routeKeyEvent({
+      name: "a",
+      sequence: "a",
+      ctrl: false,
+      shift: false,
+      option: false,
+      meta: false,
+    });
+    expect(handled).toBe(true);
+    expect(document.getLine(0)).toBe("aconst x = 1;");
+  });
+});
+
+describe("Shell — FindWidget wiring (Req 11.1, design.md §13)", () => {
+  test("opening find renders the widget and focuses it; closing hides it and returns focus to the text", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "const x = 1;\nconsole.log(x);" }),
+    });
+    const editorSession = createEditorSessionService({ documents });
+    const findService = createFindService({ editorSession });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell
+            slotRegistry={slotRegistry}
+            layoutState={layoutState}
+            documents={documents}
+            editorSession={editorSession}
+            findService={findService}
+          />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 100, height: 20 },
+    );
+    await act(async () => {
+      await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Not open yet: no widget in the frame, no findWidgetFocus.
+    expect(captureCharFrame()).not.toContain("Replace");
+    expect(context.get<boolean>("findWidgetFocus")).toBeUndefined();
+
+    await act(async () => {
+      findService.open();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Open: the widget renders (its "Replace" placeholder is a reliable,
+    // unambiguous marker distinct from the buffer's own text) and its query
+    // input is focused (Req 11.1's "ctrl+f opens focused").
+    expect(captureCharFrame()).toContain("Replace");
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+
+    await act(async () => {
+      findService.close();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Closed: the widget is gone, findWidgetFocus is no longer stuck true
+    // (the `focus.tsx` fix for a still-focused node detaching), and focus
+    // returned to the editor's text plane (Req 11.1's "Escape closes
+    // returning focus to the text").
+    expect(captureCharFrame()).not.toContain("Replace");
+    expect(context.get<boolean>("findWidgetFocus")).toBe(false);
+    expect(context.get<boolean>("editorTextFocus")).toBe(true);
+  });
+
+  test("closing find still returns focus to the text when the REPLACE input (not the query input) held focus (CodeRabbit PR #59 Finding 4)", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "const x = 1;\nconsole.log(x);" }),
+    });
+    const editorSession = createEditorSessionService({ documents });
+    const findService = createFindService({ editorSession });
+
+    const { renderOnce, renderer, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell
+            slotRegistry={slotRegistry}
+            layoutState={layoutState}
+            documents={documents}
+            editorSession={editorSession}
+            findService={findService}
+          />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 100, height: 20 },
+    );
+    await act(async () => {
+      await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    await act(async () => {
+      findService.open();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+
+    // Move OpenTUI's real focus pointer onto the REPLACE input — before
+    // Finding 4's fix, only the query input tracked `findWidgetFocus`, so
+    // this transition would have left the key stuck `false`, and the
+    // `escape` keybinding (`when: "findWidgetFocus"`) would never have
+    // resolved to `editor.action.findClose` at all: pressing Escape while
+    // typing in the replace field would silently do nothing.
+    const replaceInput = findInputByPlaceholder(renderer.root, "Replace");
+    expect(replaceInput).toBeDefined();
+    replaceInput!.focus();
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+
+    // Simulates exactly what the `escape` keybinding does once the keymap
+    // resolves it (`ctx.api.editor.find.close()`) — the context-key
+    // resolution itself is asserted above; this proves the CLOSE side
+    // effect (widget unmounts, focus returns to the text) still fires
+    // correctly when triggered while the replace input, not the query
+    // input, held focus.
+    await act(async () => {
+      findService.close();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(captureCharFrame()).not.toContain("Replace");
+    expect(context.get<boolean>("findWidgetFocus")).toBe(false);
+    expect(context.get<boolean>("editorTextFocus")).toBe(true);
+  });
+
+  test("typing while the find widget is focused updates the query, not the buffer", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "const x = 1;" }),
+    });
+    const editorSession = createEditorSessionService({ documents });
+    const findService = createFindService({ editorSession });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell
+            slotRegistry={slotRegistry}
+            layoutState={layoutState}
+            documents={documents}
+            editorSession={editorSession}
+            findService={findService}
+          />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 100, height: 20 },
+    );
+    const document = await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    await act(async () => {
+      findService.open();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(context.get<boolean>("findWidgetFocus")).toBe(true);
+    // With `findWidgetFocus` true, the buffer's own `editorTextFocus` is
+    // NOT set — `editor/inputRouter.ts` gates every insert on that key, so
+    // a keystroke reaching the buffer at all requires it to be true. Typed
+    // characters go through `findService.setQuery` (`findWidget.tsx`'s
+    // `Input onChange`), never through `document.applyEdits`.
+    expect(context.get<boolean>("editorTextFocus")).toBeFalsy();
+
+    await act(async () => {
+      findService.setQuery("const");
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(document.getLine(0)).toBe("const x = 1;"); // buffer unchanged
+    expect(captureCharFrame()).toContain("1/1"); // one match found
+  });
+});
+
 /** Depth-first collection of every `focusable` descendant, used only by the
  * focus test above to locate the Shell's region roots without Shell
  * exposing test-only refs on its public props. */
@@ -489,6 +767,23 @@ function findAllFocusable(node: unknown): unknown[] {
     found.push(...findAllFocusable(child));
   }
   return found;
+}
+
+/** Depth-first search for an OpenTUI `<input>` renderable by its
+ * `placeholder` text (matches `findAllFocusable`/`findTabSelect`'s idiom
+ * above) — used only by the find-widget focus test to drive the real
+ * query/replace `Renderable.focus()` without `FindWidget`/`Shell` exposing
+ * test-only refs on their public props. */
+function findInputByPlaceholder(node: unknown, placeholder: string): { focus(): void } | undefined {
+  const candidate = node as { placeholder?: string; focus?: () => void; getChildren?: () => unknown[] };
+  if (candidate?.placeholder === placeholder && candidate.focus) {
+    return candidate as { focus(): void };
+  }
+  for (const child of candidate?.getChildren?.() ?? []) {
+    const found = findInputByPlaceholder(child, placeholder);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 /** Depth-first search for the `<tab-select>` renderable `Tabs`

@@ -31,6 +31,7 @@ import { createContextService } from "../keymap/context";
 import { createHostLog, type HostError } from "../host/errors";
 import type { ExtensionModule } from "../host/activation";
 import { createEditorSessionService } from "../ui/editorSession";
+import { createFindService } from "../ui/findService";
 import { createTecodeApi } from "./create";
 import { registerTecodeAlias } from "./alias";
 
@@ -498,5 +499,201 @@ describe("createTecodeApi — real editor.* backing via editorSession (Req 6.5, 
     expect(doc.dirty).toBe(false);
     const { readFile } = await import("node:fs/promises");
     expect(await readFile(filePath, "utf8")).toBe("Xbefore");
+  });
+});
+
+describe("createTecodeApi — real editor.find backing via a FindService (Req 11.1, Task 2.5)", () => {
+  let dir: string;
+  let config: ConfigService | undefined;
+
+  afterEach(async () => {
+    config?.dispose();
+    config = undefined;
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  test("api.editor.find delegates to the real FindService, mutating the real document", async () => {
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-find-"));
+    const filePath = join(dir, "find.txt");
+    await writeFile(filePath, "foo bar foo baz foo", "utf8");
+    const uri = pathToUri(filePath);
+
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const documents = createDocumentManager({ log, sink });
+    const fs = createFileSystem({ log });
+    config = createConfigService({ log, sink, workspaceRoot: dir });
+    await config.ready;
+    const context = createContextService();
+    const editorSession = createEditorSessionService({ documents });
+    const findService = createFindService({ editorSession });
+
+    const api = createTecodeApi({
+      commands,
+      documents,
+      fs,
+      rootUri: pathToUri(dir),
+      config,
+      context,
+      sink,
+      editorSession,
+      findService,
+    });
+
+    await api.workspace.openDocument(uri);
+
+    api.editor.find.open();
+    api.editor.find.setQuery("foo");
+    api.editor.find.next();
+    api.editor.find.setReplaceQuery("X");
+    api.editor.find.replaceCurrent();
+
+    // `replaceCurrent` replaced the SECOND "foo" (index 0 was active,
+    // `next()` advanced it to index 1) through the real document.
+    expect(api.editor.getLine(0)).toBe("foo bar X baz foo");
+
+    api.editor.find.replaceAll();
+    // `replaceAll` replaces EVERY current match, including the two the
+    // earlier `replaceCurrent` call left untouched.
+    expect(api.editor.getLine(0)).toBe("X bar X baz X");
+
+    api.editor.find.close();
+    // Every method is frozen-namespace-shaped and never throws with no
+    // active editor either — a second `close()`/`next()` after the whole
+    // document closes is a documented no-op, not a crash.
+    documents.close(uri);
+    expect(() => api.editor.find.next()).not.toThrow();
+    expect(() => api.editor.find.close()).not.toThrow();
+  });
+
+  test("with no findService supplied, api.editor.find is the inert, frozen stub", async () => {
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-find-stub-"));
+    const root = await buildRoot(dir);
+    const { api } = root;
+    config = root.config;
+
+    expect(Object.isFrozen(api.editor.find)).toBe(true);
+    expect(() => api.editor.find.open()).not.toThrow();
+    expect(() => api.editor.find.next()).not.toThrow();
+    expect(() => api.editor.find.replaceAll()).not.toThrow();
+  });
+
+  test("a findService with NO editorSession supplied is inert — no find/replace operation reaches a document (CodeRabbit PR #59 Finding 1)", async () => {
+    // A `FindService` is built around its OWN `editorSession` reference
+    // (`findService.ts`'s `FindServiceDeps.editorSession`) — it need not be
+    // the same instance `createTecodeApi` receives as `deps.editorSession`.
+    // Here `deps.editorSession` is omitted entirely, so `window.
+    // activeEditor`/`api.editor` report "no active editor" throughout; if
+    // `findNamespace` were still wired through (gated on `findService`
+    // alone), `replaceAll()` would silently mutate `otherDocuments`'s real
+    // document out from under that "no active editor" contract.
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-find-no-session-"));
+    const filePath = join(dir, "find.txt");
+    await writeFile(filePath, "foo bar foo baz foo", "utf8");
+    const uri = pathToUri(filePath);
+
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const documents = createDocumentManager({ log, sink });
+    const otherDocuments = createDocumentManager({ log, sink });
+    const fs = createFileSystem({ log });
+    config = createConfigService({ log, sink, workspaceRoot: dir });
+    await config.ready;
+    const context = createContextService();
+    // The FindService's own session, tracking `otherDocuments` — deliberately
+    // NOT passed to `createTecodeApi` as `deps.editorSession`.
+    const otherEditorSession = createEditorSessionService({ documents: otherDocuments });
+    const findService = createFindService({ editorSession: otherEditorSession });
+
+    const api = createTecodeApi({
+      commands,
+      documents,
+      fs,
+      rootUri: pathToUri(dir),
+      config,
+      context,
+      sink,
+      // No `editorSession` — only `findService`.
+      findService,
+    });
+
+    // `otherDocuments`/`otherEditorSession` open (and auto-activate) the
+    // SAME file `findService` would have something real to act on if it
+    // were wired through.
+    const otherDocument = await otherDocuments.openDocument(uri);
+    await api.workspace.openDocument(uri);
+
+    expect(api.window.activeEditor).toBeUndefined();
+    expect(Object.isFrozen(api.editor.find)).toBe(true);
+
+    api.editor.find.open();
+    api.editor.find.setQuery("foo");
+    api.editor.find.setReplaceQuery("X");
+    api.editor.find.next();
+    api.editor.find.replaceCurrent();
+    api.editor.find.replaceAll();
+
+    // Neither document was touched — `findNamespace` fell back to the
+    // fully inert stub because `deps.editorSession` was absent.
+    expect(api.editor.getLine(0)).toBe("");
+    expect(otherDocument.getLine(0)).toBe("foo bar foo baz foo");
+  });
+
+  test("a findService bound to a DIFFERENT editorSession is inert — find/replace never reaches the other session's document (CodeRabbit PR #59 round 2)", async () => {
+    // Both deps are supplied here, but the `FindService` was built around
+    // session B while `deps.editorSession` is session A. `window.
+    // activeEditor` reports A's document; wiring the find methods through
+    // would let `replaceAll()` mutate B's document instead. `create.ts`
+    // compares `findService.session` against `deps.editorSession` by
+    // identity and falls back to the inert stub on mismatch.
+    dir = await mkdtemp(join(tmpdir(), "tecode-api-contract-find-mismatch-"));
+    const filePathA = join(dir, "a.txt");
+    const filePathB = join(dir, "b.txt");
+    await writeFile(filePathA, "alpha foo alpha", "utf8");
+    await writeFile(filePathB, "foo bar foo baz foo", "utf8");
+    const uriA = pathToUri(filePathA);
+    const uriB = pathToUri(filePathB);
+
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const documents = createDocumentManager({ log, sink });
+    const otherDocuments = createDocumentManager({ log, sink });
+    const fs = createFileSystem({ log });
+    config = createConfigService({ log, sink, workspaceRoot: dir });
+    await config.ready;
+    const context = createContextService();
+    // Session A backs the API; session B backs the FindService.
+    const editorSession = createEditorSessionService({ documents });
+    const otherEditorSession = createEditorSessionService({ documents: otherDocuments });
+    const findService = createFindService({ editorSession: otherEditorSession });
+
+    const api = createTecodeApi({
+      commands,
+      documents,
+      fs,
+      rootUri: pathToUri(dir),
+      config,
+      context,
+      sink,
+      editorSession,
+      findService,
+    });
+
+    const documentA = await documents.openDocument(uriA);
+    const documentB = await otherDocuments.openDocument(uriB);
+    expect(api.window.activeEditor?.document.uri).toBe(documentA.uri);
+
+    api.editor.find.open();
+    api.editor.find.setQuery("foo");
+    api.editor.find.setReplaceQuery("X");
+    api.editor.find.replaceAll();
+
+    // The mismatch fell back to the inert stub: NEITHER session's document
+    // changed, and A (the API's active document) is exactly as written.
+    expect(documentA.getLine(0)).toBe("alpha foo alpha");
+    expect(documentB.getLine(0)).toBe("foo bar foo baz foo");
   });
 });

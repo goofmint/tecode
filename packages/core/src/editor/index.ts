@@ -9,3 +9,9 @@ export {
   type EditorInputRouter,
   type EditorInputRouterDeps,
 } from "./inputRouter";
+export {
+  buildReplaceAllEdits,
+  buildReplaceEdit,
+  computeMatches,
+  type LineReader,
+} from "./find";

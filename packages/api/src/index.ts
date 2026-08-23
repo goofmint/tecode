@@ -64,6 +64,7 @@ export type {
   StatusBarItem,
   Editor,
   WindowNamespace,
+  FindNamespace,
   EditorNamespace,
   SlotId,
   ComponentType,
