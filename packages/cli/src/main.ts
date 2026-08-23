@@ -1,6 +1,8 @@
 import pkg from "../package.json";
 import type { Disposable, FileSystem, Manifest, ResolvedTheme, Tecode } from "@tecode/api";
 import {
+  applyConfiguredTheme,
+  BASE_THEME_ID,
   createChordStateMachine,
   createCommandRegistry,
   createConfigService,
@@ -14,14 +16,18 @@ import {
   createHostLog,
   createLayoutStateService,
   createNoopStatusSink,
-  createBaseTheme,
   createSlotRegistry,
   createTecodeApi,
+  createThemeRegistry,
+  createThemeService,
+  createThemeSettingsWriter,
   loadExtensions,
   pathToUri,
   registerCoreConfiguration,
   registerTecodeAlias,
+  registerThemeSelectCommand,
   wireEditorLangIdContext,
+  wireThemeConfigSync,
   type BindingTable,
   type ChordStateMachine,
   type CommandRegistry,
@@ -38,10 +44,12 @@ import {
   type LoadExtensionsResult,
   type SlotRegistry,
   type StatusSink,
+  type ThemeRegistry,
+  type ThemeService,
 } from "@tecode/core";
 import { builtinManifests } from "@tecode/builtin";
 import { resolveStartupTarget, type StartupTarget } from "./argv";
-import { buildExtensionRecords } from "./extensionRecords";
+import { buildExtensionDirMap, buildExtensionRecords } from "./extensionRecords";
 import { createKeymapState, type KeymapState } from "./keymapState";
 import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./renderShell";
 import { detectTerminalCapabilities } from "./terminalCapabilities";
@@ -66,9 +74,41 @@ export interface AssemblyRoot {
    * must share the exact same instance. */
   slotRegistry: SlotRegistry;
   layoutState: LayoutStateService;
-  /** The active theme (Task 1.14's hardcoded base palette — a real theme
-   * loader is Task 2.6's job). */
+  /** The sync-phase FIRST-FRAME theme (Req 7.4, design.md §3): a snapshot
+   * of `themeRegistry`'s always-present base theme, already quantized for
+   * the detected color depth — `renderShell.tsx`'s `ShellRenderDeps.theme`
+   * fallback for a render that has no `themeService` at all. Once
+   * `themeService` exists (below), `ThemeProvider` uses it instead from the
+   * very first render (`ui/theme.tsx`'s TSDoc) — this field stays for
+   * every other caller/test that only wires the static `theme` prop. */
   theme: ResolvedTheme;
+  /** The theme registry (Task 2.6, Req 7.1, 7.4, `ui/themeRegistry.ts`):
+   * seeded synchronously with the built-in base theme (already quantized
+   * for the terminal's detected color depth) before this function returns;
+   * {@link runDeferredPhase} feeds `loadExtensions`'s `pendingThemes` into
+   * it once discovery has run. */
+  themeRegistry: ThemeRegistry;
+  /** The live theme service (Task 2.6, Req 7.3, 7.5, `ui/themeService.ts`)
+   * — `theme.select`'s preview/commit/revert target, `tecode.themes`'s real
+   * backing (`api` above), and `renderShell.tsx`'s `ShellRenderDeps.
+   * themeService` (live `useTheme()` re-renders). Starts on
+   * {@link BASE_THEME_ID} (the only theme guaranteed loaded this early);
+   * `runTecode` applies the actually-configured `workbench.colorTheme`
+   * once `config.ready` settles (`ui/themeConfigSync.ts`'s
+   * `applyConfiguredTheme`, this module's TSDoc on why that can't happen
+   * synchronously here). */
+  themeService: ThemeService;
+  /** Live `workbench.colorTheme` config-change subscription
+   * (`ui/themeConfigSync.ts`'s `wireThemeConfigSync`, Req 7.5). Disposed
+   * alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  themeConfigSync: Disposable;
+  /** The `theme.select` command registration (Req 7.5, `ui/
+   * themeSelectCommand.ts`) — registered directly on `commands`, not
+   * through `tecode.commands` (that module's TSDoc on the privilege
+   * boundary). Disposed alongside every other startup-owned subscription
+   * in {@link wireProcessExit}. */
+  themeSelectCommand: Disposable;
   /** The resolved workspace root this root was built for. */
   workspaceRoot: string;
   /** The layered keybinding table, kept up to date across every startup
@@ -207,7 +247,37 @@ export function buildAssemblyRoot(
     activateExtension: (id) => hostRef.current?.activateExtension(id) ?? Promise.resolve(),
   });
   const layoutState = createLayoutStateService({ log, sink });
-  const theme = createBaseTheme();
+
+  // Sync-phase theme construction (Req 7.4, design.md §3, §9): color-depth
+  // detection is synchronous env-var sniffing (`terminalCapabilities.ts`'s
+  // TSDoc), so it can run right here, ahead of `createThemeRegistry`, with
+  // no risk to the first-frame budget. `themeRegistry` seeds the built-in
+  // base theme synchronously (already quantized for `colorDepth` if less
+  // than truecolor) — `theme` below is a snapshot of it for
+  // `renderShell.tsx`'s static `ShellRenderDeps.theme` fallback (this
+  // function's `AssemblyRoot.theme` TSDoc). `themeService` starts on
+  // {@link BASE_THEME_ID} — the ACTUAL configured `workbench.colorTheme`
+  // is applied once `config.ready` settles (`runTecode`, `ui/
+  // themeConfigSync.ts`'s TSDoc explains why that can't happen
+  // synchronously here). `themeSettingsWriter` backs `theme.select`'s
+  // commit persistence (Req 7.5).
+  const { colorDepth } = detectTerminalCapabilities();
+  const themeRegistry = createThemeRegistry({ colorDepth, log, sink });
+  const theme = themeRegistry.get(BASE_THEME_ID)!.theme;
+  const themeSettingsWriter = createThemeSettingsWriter({ log, sink });
+  const themeService = createThemeService({
+    registry: themeRegistry,
+    initialThemeId: BASE_THEME_ID,
+    onCommit: (id) => {
+      // Fire-and-forget (matches `layoutState.update`'s own debounced-
+      // write shape): `commitTheme()`'s own contract is synchronous and
+      // never-throwing; the write itself is serialized internally
+      // (`themeSettingsWriter.ts`'s `writeChain`) and reports its own
+      // failures through `log`/`sink` rather than rejecting.
+      void themeSettingsWriter.write(id);
+    },
+    log,
+  });
 
   // Task 2.2's shared editor state seam (Req 4.6, 6.6, design.md §6.1,
   // §8.1, §8.3): built here, before `createTecodeApi`, so the REAL
@@ -235,11 +305,31 @@ export function buildAssemblyRoot(
     slotRegistry,
     editorSession,
     findService,
+    themeRegistry,
+    themeService,
   });
 
   // Must run before any extension module is imported (see this function's
   // TSDoc).
   registerTecodeAlias(api);
+
+  // `theme.select` (Req 7.5, `ui/themeSelectCommand.ts`'s TSDoc): a
+  // PRIVILEGED registration straight on `commands`, closing over
+  // `themeService`'s preview/commit/revert directly — no equivalent exists
+  // on `tecode.themes` (extensions never get this). `showQuickPick` comes
+  // from `api.window` — still `createWindowStub`'s inert stub until Task
+  // 3.1's real quick-pick UI lands (that module's TSDoc).
+  const themeSelectCommand = registerThemeSelectCommand(commands, {
+    themeRegistry,
+    themeService,
+    showQuickPick: api.window.showQuickPick,
+    log,
+  });
+
+  // Live `workbench.colorTheme` config-change subscription (Req 7.5,
+  // `ui/themeConfigSync.ts`'s TSDoc) — the INITIAL value is applied by
+  // `runTecode` after `config.ready` settles, not here (same TSDoc).
+  const themeConfigSync = wireThemeConfigSync({ config, themeService });
 
   // The live keymap table view (this function's TSDoc) — a thin forwarding
   // object, not a snapshot, so `chordMachine` below always resolves
@@ -273,6 +363,10 @@ export function buildAssemblyRoot(
     slotRegistry,
     layoutState,
     theme,
+    themeRegistry,
+    themeService,
+    themeConfigSync,
+    themeSelectCommand,
     workspaceRoot,
     keymap,
     chordMachine,
@@ -336,6 +430,23 @@ export async function runDeferredPhase(
   // layer now that they are known (Phase 2's plan) — the user layer was
   // already wired synchronously via ConfigService's onKeybindingsChange.
   root.keymap.setExtensionEntries(loadResult.extensionKeybindings);
+
+  // Feed every `contributes.themes` entry discovered by `loadExtensions`
+  // into the theme registry now that both the contributions AND each
+  // owning extension's real directory are known (Req 7.1, Task 2.6) —
+  // `buildExtensionDirMap` derives that directory the exact same way
+  // `buildExtensionRecords` does for `loadModule`'s dynamic `import()`
+  // (`extensionRecords.ts`'s `resolveExtensionDir`). Once every load has
+  // settled, re-apply `workbench.colorTheme` (`ui/themeConfigSync.ts`'s
+  // `applyConfiguredTheme`) so a configured theme that only just finished
+  // loading (rather than the sync-phase's `BASE_THEME_ID` placeholder)
+  // takes effect retroactively — a safe no-op if it was already active or
+  // still unknown.
+  await root.themeRegistry.loadContributions(
+    loadResult.pendingThemes,
+    buildExtensionDirMap(loadResult.loaded),
+  );
+  applyConfiguredTheme(root.config, root.themeService);
 
   const extensionHost = createExtensionHost({
     extensions: buildExtensionRecords(loadResult.loaded),
@@ -414,6 +525,8 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.findService.dispose();
     root.editorSession.dispose();
     root.editorLangIdSync.dispose();
+    root.themeConfigSync.dispose();
+    root.themeSelectCommand.dispose();
     await root.hostRef.current?.disposeAll();
   };
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -464,14 +577,24 @@ export async function runTecode(
   const cwd = options.cwd ?? process.cwd();
   const target: StartupTarget = await resolveStartupTarget(argv, cwd, log);
 
+  // `buildAssemblyRoot` already ran sync-phase terminal capability
+  // detection (color depth, Req 7.4) to construct `root.themeRegistry` —
+  // see that function's TSDoc. The Kitty Keyboard Protocol half of
+  // `TerminalCapabilities` is still a fixed placeholder with nothing
+  // downstream consuming it (Task 4.2's job — `terminalCapabilities.ts`'s
+  // TSDoc).
   const root = buildAssemblyRoot(target.workspaceRoot, { log });
   await root.config.ready;
   emitVerboseStep(startedAt, "config-ready");
 
-  // Sync-phase terminal capability detection (design.md §3) — a stub
-  // (Task 4.2 owns the real probe; see terminalCapabilities.ts's TSDoc for
-  // why nothing consumes the result yet).
-  detectTerminalCapabilities();
+  // Apply the ACTUAL configured `workbench.colorTheme` now that
+  // `config.ready` has settled (Req 7.5) — `buildAssemblyRoot`'s
+  // `themeService` started on `BASE_THEME_ID` because config wasn't ready
+  // yet at that point (`AssemblyRoot.themeService`'s TSDoc, `ui/
+  // themeConfigSync.ts`'s TSDoc). A safe no-op if the configured id is
+  // still unknown (e.g. it names an extension-contributed theme —
+  // `runDeferredPhase` retries this once `loadContributions` settles).
+  applyConfiguredTheme(root.config, root.themeService);
 
   wireProcessExit(root);
 
@@ -482,6 +605,7 @@ export async function runTecode(
     context: root.context,
     commands: root.commands,
     theme: root.theme,
+    themeService: root.themeService,
     documents: root.documents,
     config: root.config,
     editorSession: root.editorSession,
@@ -526,6 +650,8 @@ export async function runTecode(
     root.findService.dispose();
     root.editorSession.dispose();
     root.editorLangIdSync.dispose();
+    root.themeConfigSync.dispose();
+    root.themeSelectCommand.dispose();
     await deferred.extensionHost.disposeAll();
     process.exit(0);
   }

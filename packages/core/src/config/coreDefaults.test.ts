@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHostLog } from "../host/errors";
+import { BASE_THEME_ID } from "../ui/themeRegistry";
 import { createConfigService, type ConfigServiceFs } from "./service";
 import { CORE_CONFIGURATION, registerCoreConfiguration } from "./coreDefaults";
 
@@ -36,13 +37,15 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     expect(config.get<boolean>("editor.lineNumbers")).toBe(true);
     expect(config.get<number>("editor.tabSize")).toBe(4);
     expect(config.get<boolean>("editor.insertSpaces")).toBe(true);
+    expect(config.get<string>("workbench.colorTheme")).toBe(BASE_THEME_ID);
   });
 
-  test("CORE_CONFIGURATION declares exactly the three documented keys", () => {
+  test("CORE_CONFIGURATION declares exactly the four documented keys", () => {
     expect(Object.keys(CORE_CONFIGURATION.properties).sort()).toEqual([
       "editor.insertSpaces",
       "editor.lineNumbers",
       "editor.tabSize",
+      "workbench.colorTheme",
     ]);
     expect(CORE_CONFIGURATION.properties["editor.lineNumbers"]).toMatchObject({
       type: "boolean",
@@ -55,6 +58,10 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     expect(CORE_CONFIGURATION.properties["editor.insertSpaces"]).toMatchObject({
       type: "boolean",
       default: true,
+    });
+    expect(CORE_CONFIGURATION.properties["workbench.colorTheme"]).toMatchObject({
+      type: "string",
+      default: BASE_THEME_ID,
     });
   });
 

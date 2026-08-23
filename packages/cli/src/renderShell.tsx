@@ -26,6 +26,7 @@ import {
   type FindService,
   type LayoutStateService,
   type SlotRegistry,
+  type ThemeService,
 } from "@tecode/core";
 import { handleKeyEvent } from "./keyRouting";
 
@@ -45,7 +46,23 @@ export interface ShellRenderDeps {
   layoutState: LayoutStateService;
   context: ContextService;
   commands: CommandRegistry;
+  /** The FIRST-FRAME theme (Req 7.4, design.md §3): the sync phase's
+   * base-palette theme (possibly already quantized for the detected color
+   * depth), rendered before `themeService` (below) exists to take over.
+   * Once `themeService` is given, `ThemeProvider` uses it instead from the
+   * very first render (`ui/theme.tsx`'s TSDoc) — this stays required
+   * (rather than becoming redundant) because `ThemeProvider`'s own
+   * `theme`/`themeService` props are independent, backward-compatible
+   * knobs (`ThemeProviderProps`' TSDoc), and every caller/test that omits
+   * `themeService` still needs a theme to render. */
   theme: ResolvedTheme;
+  /** The live theme service (Task 2.6, `ui/themeService.ts`) — threaded
+   * straight through to `ThemeProvider`'s own `themeService` prop so
+   * `theme.select` preview/commit/revert and a `workbench.colorTheme`
+   * config-file live-switch re-render the whole shell (Req 7.3, 7.5).
+   * Optional: a caller/test that omits it keeps the fixed `theme` above,
+   * matching every other optional-dependency fallback in this module. */
+  themeService?: Pick<ThemeService, "get" | "onDidChange">;
   documents?: DocumentManager;
   config?: ConfigService;
   /** Owns the active document/`EditorState` from outside `Shell` (Task
@@ -98,7 +115,7 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
   const renderer = await createCliRenderer();
   const root = createRoot(renderer);
   root.render(
-    <ThemeProvider theme={deps.theme}>
+    <ThemeProvider theme={deps.theme} themeService={deps.themeService}>
       <ContextFocusTracker context={deps.context}>
         <Shell
           slotRegistry={deps.slotRegistry}

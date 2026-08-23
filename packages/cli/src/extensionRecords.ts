@@ -76,9 +76,21 @@ async function loadUserOrWorkspaceModule(extensionDir: string): Promise<unknown>
  *   a rejected `loadModule` that `host/activation.ts` reports and marks
  *   `"failed"`, not a startup crash) reports a clear error instead.
  */
+/**
+ * The extension's real directory (Req 7.1, this module's TSDoc) —
+ * factored out of {@link buildExtensionRecord} so
+ * {@link buildExtensionDirMap} (Task 2.6's `ThemeRegistry.loadContributions`
+ * caller, `main.ts`) resolves a manifest theme's `path` against the exact
+ * same directory `loadModule`'s dynamic `import()` uses, rather than
+ * re-deriving it with slightly different logic.
+ */
+function resolveExtensionDir(extension: LoadedExtension): string {
+  return extension.source === "builtin" ? extension.sourcePath : dirname(extension.sourcePath);
+}
+
 export function buildExtensionRecord(extension: LoadedExtension): ExtensionRecord {
   const isBuiltin = extension.source === "builtin";
-  const extensionDir = isBuiltin ? extension.sourcePath : dirname(extension.sourcePath);
+  const extensionDir = resolveExtensionDir(extension);
   const extensionUri = isBuiltin ? extension.sourcePath : pathToFileURL(extensionDir).href;
   const storagePath = join(getUserConfigDir(), "extension-storage", extension.extensionId);
 
@@ -106,4 +118,19 @@ export function buildExtensionRecord(extension: LoadedExtension): ExtensionRecor
  * (`@tecode/core`) from `loadExtensions`'s `LoadedExtension[]`. */
 export function buildExtensionRecords(loaded: readonly LoadedExtension[]): ExtensionRecord[] {
   return loaded.map(buildExtensionRecord);
+}
+
+/**
+ * Build the `extensionId -> directory` map `@tecode/core`'s
+ * `ThemeRegistry.loadContributions` needs to resolve each manifest theme's
+ * `path` (Task 2.6, Req 7.1) — the same {@link resolveExtensionDir} this
+ * module already uses for `loadModule`'s dynamic `import()`, keyed by
+ * `extensionId` instead of consumed inline per-record.
+ */
+export function buildExtensionDirMap(loaded: readonly LoadedExtension[]): Record<string, string> {
+  const dirs: Record<string, string> = {};
+  for (const extension of loaded) {
+    dirs[extension.extensionId] = resolveExtensionDir(extension);
+  }
+  return dirs;
 }
