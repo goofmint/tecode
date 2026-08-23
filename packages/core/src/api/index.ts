@@ -8,6 +8,10 @@ export {
   type CreateTecodeApiDeps,
 } from "./create";
 export {
+  createEditorNamespace,
+  type EditorNamespaceDeps,
+} from "./editorNamespace";
+export {
   createBaseTheme,
   createEditorStub,
   createLanguagesStub,

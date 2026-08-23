@@ -81,9 +81,10 @@ export interface AssemblyRoot {
   chordMachine: ChordStateMachine;
   /** Owns the active document uri and every open document's `EditorState`
    * (Task 2.2, `ui/editorSession.ts`) — the seam shared between the
-   * rendered `Shell` (via `renderShell.tsx`'s `ShellRenderDeps`) and
-   * {@link editorInputRouter} below, which reads/writes it directly, from
-   * outside React. */
+   * rendered `Shell` (via `renderShell.tsx`'s `ShellRenderDeps`), the real
+   * `tecode.editor`/`tecode.window.activeEditor` (Task 2.3, `api.
+   * editorSession` above), and {@link editorInputRouter} below, which reads/
+   * writes it directly, from outside React. */
   editorSession: EditorSessionService;
   /** Turns a keymap-fallthrough key event into a multi-cursor
    * `applyEdits` call (Req 4.6, 6.6, design.md §6.1, §8.3, Task 2.2) —
@@ -199,6 +200,16 @@ export function buildAssemblyRoot(
   const layoutState = createLayoutStateService({ log, sink });
   const theme = createBaseTheme();
 
+  // Task 2.2's shared editor state seam (Req 4.6, 6.6, design.md §6.1,
+  // §8.1, §8.3): built here, before `createTecodeApi`, so the REAL
+  // `tecode.editor`/`tecode.window.activeEditor` (Task 2.3,
+  // `api/editorNamespace.ts`) can be wired against it below — it is then
+  // handed to both the rendered `Shell` (`renderShell.tsx`) and
+  // `editorInputRouter` further down, so a keystroke routed outside React
+  // updates exactly what `Shell` (and every extension reading `tecode.
+  // editor`) sees.
+  const editorSession = createEditorSessionService({ documents });
+
   const api = createTecodeApi({
     commands,
     documents,
@@ -208,6 +219,7 @@ export function buildAssemblyRoot(
     context,
     sink,
     slotRegistry,
+    editorSession,
   });
 
   // Must run before any extension module is imported (see this function's
@@ -228,11 +240,9 @@ export function buildAssemblyRoot(
     log,
   });
 
-  // Task 2.2's shared editor state seam (Req 4.6, 6.6, design.md §6.1,
-  // §8.1, §8.3): `editorSession` is handed to both the rendered `Shell`
-  // (`renderShell.tsx`) and `editorInputRouter` below, so a keystroke
-  // routed outside React updates exactly what `Shell` renders.
-  const editorSession = createEditorSessionService({ documents });
+  // `editorSession` was built earlier (above `createTecodeApi`) — see that
+  // call site's comment. `editorInputRouter` reads/writes it directly, from
+  // outside React.
   const editorInputRouter = createEditorInputRouter({ context, editorSession });
   const editorLangIdSync = wireEditorLangIdContext({ editorSession, context });
 

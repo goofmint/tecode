@@ -120,6 +120,14 @@ export interface WorkspaceNamespace {
   onDidOpen: Event<Document>;
   onDidClose: Event<Document>;
   onDidSave: Event<Document>;
+  /**
+   * Save `uri`'s current text to disk (Req 11.1's save command). A no-op
+   * (unopened `uri`, a readonly document, or a write failure) surfaces a
+   * status-bar error rather than rejecting — this always resolves, never
+   * throws, matching `applyEdits`'s own no-throw discipline (design.md
+   * §14). Fires `onDidSave` on success.
+   */
+  save(uri: Uri): Promise<void>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,7 +200,7 @@ export interface WindowNamespace {
  */
 export interface EditorNamespace {
   /** The active editor's selections/cursors (first-class array — Req
-   * 6.6, 11.1). */
+   * 6.6, 11.1). No active editor: `[]`. */
   readonly selections: readonly Selection[];
   /** The primary cursor position (the active end of `selections[0]`). */
   readonly cursor: Position;
@@ -203,6 +211,23 @@ export interface EditorNamespace {
   insertSnippet(snippet: string): void;
   /** Apply edits to the active document (see `Document.applyEdits`). */
   applyEdits(edits: TextEdit[]): void;
+  /**
+   * The text of line `n` (0-based) of the active document, without its
+   * line terminator (Req 11.1 — editor-core's movement/editing commands
+   * read line text through this rather than a direct buffer handle, since
+   * `Document` itself exposes no line-based reads). No active editor, or
+   * `n` out of bounds: `""`.
+   */
+  getLine(line: number): string;
+  /** Number of lines in the active document. No active editor: `0`. */
+  readonly lineCount: number;
+  /**
+   * Replace the active editor's selections/cursors wholesale (Req 6.6,
+   * 11.1) — how movement and selection commands report a new caret/
+   * selection state. No active editor, or an empty array (a document
+   * always has at least one selection): no-op.
+   */
+  setSelections(selections: readonly Selection[]): void;
 }
 
 /* ------------------------------------------------------------------ */

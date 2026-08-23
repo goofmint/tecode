@@ -1,8 +1,8 @@
 /**
- * Tests for {@link registerCoreConfiguration} (Req 9.5, design.md §8.3):
- * `editor.lineNumbers`/`editor.tabSize` become readable defaults through the
- * real `ConfigService`, exactly as an extension's `contributes.configuration`
- * would register them.
+ * Tests for {@link registerCoreConfiguration} (Req 9.5, 11.1; design.md
+ * §8.3): `editor.lineNumbers`/`editor.tabSize`/`editor.insertSpaces` become
+ * readable defaults through the real `ConfigService`, exactly as an
+ * extension's `contributes.configuration` would register them.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -24,7 +24,7 @@ function createRecordingSink() {
 }
 
 describe("registerCoreConfiguration (Req 9.5)", () => {
-  test("registers editor.lineNumbers (default true) and editor.tabSize (default 4)", async () => {
+  test("registers editor.lineNumbers (default true), editor.tabSize (default 4), and editor.insertSpaces (default true)", async () => {
     const config = createConfigService({
       log: createHostLog(),
       sink: createRecordingSink(),
@@ -35,10 +35,12 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
 
     expect(config.get<boolean>("editor.lineNumbers")).toBe(true);
     expect(config.get<number>("editor.tabSize")).toBe(4);
+    expect(config.get<boolean>("editor.insertSpaces")).toBe(true);
   });
 
-  test("CORE_CONFIGURATION declares exactly the two documented keys", () => {
+  test("CORE_CONFIGURATION declares exactly the three documented keys", () => {
     expect(Object.keys(CORE_CONFIGURATION.properties).sort()).toEqual([
+      "editor.insertSpaces",
       "editor.lineNumbers",
       "editor.tabSize",
     ]);
@@ -49,6 +51,10 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     expect(CORE_CONFIGURATION.properties["editor.tabSize"]).toMatchObject({
       type: "number",
       default: 4,
+    });
+    expect(CORE_CONFIGURATION.properties["editor.insertSpaces"]).toMatchObject({
+      type: "boolean",
+      default: true,
     });
   });
 
