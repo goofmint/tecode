@@ -145,6 +145,11 @@ function createFixtureExtensionModule(events: string[]): ExtensionModule {
       api.editor.revealLine(1);
       api.editor.insertSnippet("fixture-snippet");
       api.editor.applyEdits([]);
+      // Task 3.4, Req 11.6: register/dispose symmetry on the coarse
+      // status-line event — never expected to fire here (no active
+      // editor in this fixture root), just proven callable/disposable.
+      const editorChangeSub = api.editor.onDidChange(() => events.push("editor.onDidChange"));
+      ctx.subscriptions.push(editorChangeSub);
 
       // ui
       const viewSub = api.ui.registerView("sidebar.view", "fixture.contract.view", () => undefined);
@@ -178,6 +183,10 @@ function createFixtureExtensionModule(events: string[]): ExtensionModule {
       });
       ctx.subscriptions.push(themeSub);
       events.push(`themes.current:${typeof api.themes.current.colors}`);
+      // Task 3.4, Req 11.6.
+      events.push(`themes.currentLabel:${api.themes.currentLabel}`);
+      const themeChangeSub = api.themes.onDidChange(() => events.push("themes.onDidChange"));
+      ctx.subscriptions.push(themeChangeSub);
 
       events.push("activate:done");
     },
@@ -357,6 +366,7 @@ describe("createTecodeApi — contract tests (design.md §16 compatibility gate)
     expect(events.some((e) => e.startsWith("ui.useTheme:object"))).toBe(true);
     expect(events).toContain("languages.getLanguageId:plaintext");
     expect(events.some((e) => e.startsWith("themes.current:object"))).toBe(true);
+    expect(events).toContain("themes.currentLabel:Base (Built-in)");
     expect(events).toContain("context.get:true");
 
     // Deactivation (matches host/activation.ts's disposeSubscriptions:

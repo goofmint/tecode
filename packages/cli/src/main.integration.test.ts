@@ -124,17 +124,17 @@ test("headless startup renders the shell before any extension's index.ts loads, 
     expect(firstFrameMs).toBeGreaterThanOrEqual(0);
     expect(firstFrameMs).toBeLessThan(1_000);
 
-    // 6, not 1: the workspace fixture extension AND the real `@tecode/
+    // 7, not 1: the workspace fixture extension AND the real `@tecode/
     // builtin` `editor-core` (Task 2.3, `onStartup`) AND `themes-default`
     // (Task 2.7) AND `languages-basic` (Task 2.9) AND `command-palette`
     // (Task 3.2, `onStartup`) AND `explorer` (Task 3.3,
-    // `onCommand:explorer.focus`) — `themes-default`/`languages-basic`/
-    // `explorer` are never ACTIVATED by a headless run with no keystrokes
-    // (no `onStartup` for the first two; `explorer.focus` is never
-    // executed here), but every manifest still counts as LOADED/registered
-    // regardless of activation — all load during this real (no `builtins`
-    // override) subprocess run.
-    expect(headlessExit?.["loaded"]).toBe(6);
+    // `onCommand:explorer.focus`) AND `statusbar` (Task 3.4, `onStartup`) —
+    // `themes-default`/`languages-basic`/`explorer` are never ACTIVATED by
+    // a headless run with no keystrokes (no `onStartup` for the first two;
+    // `explorer.focus` is never executed here), but every manifest still
+    // counts as LOADED/registered regardless of activation — all load
+    // during this real (no `builtins` override) subprocess run.
+    expect(headlessExit?.["loaded"]).toBe(7);
     expect(headlessExit?.["skipped"]).toBe(0);
   } finally {
     await rm(homeDir, { recursive: true, force: true });

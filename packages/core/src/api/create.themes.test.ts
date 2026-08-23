@@ -37,11 +37,23 @@ async function buildBaseDeps() {
   return { commands, documents, fs, config, context, sink };
 }
 
+/** A minimal `Pick<ThemeService, "get" | "getActiveThemeId" | "onDidChange">`
+ * fake (Task 3.4) — every test that only cares about `current` supplies a
+ * fixed `activeId`/`onDidChange` it never exercises. */
+function fakeThemeService(get: () => ResolvedTheme, activeId = "t1") {
+  return { get, getActiveThemeId: () => activeId, onDidChange: () => ({ dispose() {} }) };
+}
+
 describe("createTecodeApi's tecode.themes (Task 2.6)", () => {
   test("falls back to the stub when neither themeRegistry nor themeService is supplied", async () => {
     const deps = await buildBaseDeps();
     const api = createTecodeApi(deps);
     expect(api.themes.current).toEqual(createBaseTheme());
+    // Task 3.4: the stub's hardcoded label/inert event, register/dispose
+    // symmetric like every other stub `onDidChange`.
+    expect(api.themes.currentLabel).toBe("Base (Built-in)");
+    const sub = api.themes.onDidChange(() => {});
+    expect(() => sub.dispose()).not.toThrow();
   });
 
   test("uses the injected ThemeService for `current` and ThemeRegistry for `register` when both are given", async () => {
@@ -52,12 +64,13 @@ describe("createTecodeApi's tecode.themes (Task 2.6)", () => {
 
     const api = createTecodeApi({
       ...deps,
-      themeService: { get: () => activeTheme },
+      themeService: fakeThemeService(() => activeTheme),
       themeRegistry: {
         register: (contribution: ThemeContribution) => {
           registered.push(contribution);
           return disposable;
         },
+        get: (id) => (id === "t1" ? { id, label: "T1 Display Name", theme: activeTheme } : undefined),
       },
     });
 
@@ -73,10 +86,11 @@ describe("createTecodeApi's tecode.themes (Task 2.6)", () => {
     const deps = await buildBaseDeps();
     const activeTheme: ResolvedTheme = { colors: { foreground: { r: 1, g: 2, b: 3 } } as ResolvedTheme["colors"], tokens: {} };
 
-    const api = createTecodeApi({ ...deps, themeService: { get: () => activeTheme } });
+    const api = createTecodeApi({ ...deps, themeService: fakeThemeService(() => activeTheme) });
     // themeRegistry was omitted — the pairing gate keeps `current` on the
     // stub too, not a half-real mix.
     expect(api.themes.current).toEqual(createBaseTheme());
+    expect(api.themes.currentLabel).toBe("Base (Built-in)");
   });
 
   test("tecode.ui.useTheme() still delegates to tecode.themes.current with real wiring", async () => {
@@ -84,9 +98,51 @@ describe("createTecodeApi's tecode.themes (Task 2.6)", () => {
     const activeTheme: ResolvedTheme = { colors: { foreground: { r: 4, g: 5, b: 6 } } as ResolvedTheme["colors"], tokens: {} };
     const api = createTecodeApi({
       ...deps,
-      themeService: { get: () => activeTheme },
-      themeRegistry: { register: () => ({ dispose() {} }) },
+      themeService: fakeThemeService(() => activeTheme),
+      themeRegistry: { register: () => ({ dispose() {} }), get: () => undefined },
     });
     expect(api.ui.useTheme()).toBe(activeTheme);
+  });
+
+  test("currentLabel (Task 3.4, Req 11.6) resolves the active id's label via the registry, and onDidChange delegates to the ThemeService", async () => {
+    const deps = await buildBaseDeps();
+    const activeTheme: ResolvedTheme = { colors: {} as ResolvedTheme["colors"], tokens: {} };
+    const listeners: Array<() => void> = [];
+
+    const api = createTecodeApi({
+      ...deps,
+      themeService: {
+        get: () => activeTheme,
+        getActiveThemeId: () => "dark",
+        onDidChange: (listener) => {
+          listeners.push(listener);
+          return { dispose() {} };
+        },
+      },
+      themeRegistry: {
+        register: () => ({ dispose() {} }),
+        get: (id) => (id === "dark" ? { id, label: "Dark Modern", theme: activeTheme } : undefined),
+      },
+    });
+
+    expect(api.themes.currentLabel).toBe("Dark Modern");
+
+    let fired = 0;
+    api.themes.onDidChange(() => {
+      fired += 1;
+    });
+    for (const listener of listeners) listener();
+    expect(fired).toBe(1);
+  });
+
+  test("currentLabel falls back to the stub's label if the active id is somehow unknown to the registry", async () => {
+    const deps = await buildBaseDeps();
+    const activeTheme: ResolvedTheme = { colors: {} as ResolvedTheme["colors"], tokens: {} };
+    const api = createTecodeApi({
+      ...deps,
+      themeService: fakeThemeService(() => activeTheme, "unknown-id"),
+      themeRegistry: { register: () => ({ dispose() {} }), get: () => undefined },
+    });
+    expect(api.themes.currentLabel).toBe("Base (Built-in)");
   });
 });

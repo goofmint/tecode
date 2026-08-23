@@ -63,13 +63,15 @@ function createFakeDocument(lines: string[]): CoreDocument & { appliedEdits: unk
  * until `setActive` is called, matching a fresh session with nothing open. */
 function createFakeSession(): EditorNamespaceDeps["editorSession"] & {
   setActive(document: CoreDocument | undefined, state?: EditorState): void;
+  changeCount: number;
 } {
   let activeDocument: CoreDocument | undefined;
   const states = new Map<string, EditorState>();
-
-  return {
+  const listeners = new Set<() => void>();
+  const fake = {
+    changeCount: 0,
     getActiveDocument: () => activeDocument,
-    getState: (uri) => {
+    getState: (uri: string) => {
       let state = states.get(uri);
       if (!state) {
         state = { documentUri: uri, selections: [cursorAt(0, 0)], scrollTop: 0 };
@@ -77,14 +79,21 @@ function createFakeSession(): EditorNamespaceDeps["editorSession"] & {
       }
       return state;
     },
-    setState: (uri, state) => {
+    setState: (uri: string, state: EditorState) => {
       states.set(uri, state);
+      fake.changeCount += 1;
+      for (const listener of listeners) listener();
     },
-    setActive(document, state) {
+    onDidChange: (listener: () => void) => {
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    },
+    setActive(document: CoreDocument | undefined, state?: EditorState) {
       activeDocument = document;
       if (document && state) states.set(document.uri, state);
     },
   };
+  return fake;
 }
 
 describe("createEditorNamespace — no active document (Req 11.1)", () => {
@@ -201,5 +210,21 @@ describe("createEditorNamespace — active document (Req 6.5, 6.6, 11.1)", () =>
     editor.applyEdits([]);
     editor.setSelections([cursorAt(1, 0)]);
     expect(errors).toHaveLength(0);
+  });
+
+  test("Task 3.4: onDidChange is the same event the session fires on setState (setSelections)", () => {
+    const { editor, session } = setup();
+    let fired = 0;
+    const sub = editor.onDidChange(() => {
+      fired += 1;
+    });
+
+    editor.setSelections([cursorAt(1, 0)]);
+    expect(fired).toBe(1);
+    expect(session.changeCount).toBe(1);
+
+    sub.dispose();
+    editor.setSelections([cursorAt(2, 0)]);
+    expect(fired).toBe(1); // disposed — no further notifications
   });
 });
