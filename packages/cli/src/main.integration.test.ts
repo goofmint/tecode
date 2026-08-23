@@ -115,12 +115,14 @@ test("headless startup renders the shell before any extension's index.ts loads, 
     expect(firstFrameTs).toBeLessThan(moduleLoadedTs);
     expect(moduleLoadedTs).toBeLessThanOrEqual(activatedTs);
 
-    // Timing budget (design.md §15's <100ms, with generous headroom to
-    // avoid CI flakiness — tasks.md's own "timing check with headroom
-    // over 100ms").
+    // Timing budget (design.md §15's <100ms). tasks.md's Task 1.15 asks
+    // for a "timing check with headroom over 100 ms" — a strict <100
+    // bound would flake on loaded CI runners, so this enforces 10x the
+    // budget (measured locally: ~6–15ms), tight enough to catch any real
+    // startup regression.
     const firstFrameMs = firstFrame?.["ms"] as number;
     expect(firstFrameMs).toBeGreaterThanOrEqual(0);
-    expect(firstFrameMs).toBeLessThan(5_000);
+    expect(firstFrameMs).toBeLessThan(1_000);
 
     expect(headlessExit?.["loaded"]).toBe(1);
     expect(headlessExit?.["skipped"]).toBe(0);

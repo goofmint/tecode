@@ -45,15 +45,14 @@ export type RenderShell = (deps: ShellRenderDeps) => Promise<void>;
  * <Shell/></ContextFocusTracker></ThemeProvider>` (design.md §8.1's
  * component tree) onto a real `CliRenderer`, opening the actual terminal.
  *
- * **"First frame" here is a documented approximation.** `createRoot(...).render()`
- * synchronously commits the initial React tree onto OpenTUI's host config;
- * `CliRenderer` then runs its own frame loop to actually draw to the
- * terminal. Precisely awaiting "pixels reached the terminal" would need a
- * lower level `CliRenderer` render-loop hook this task did not need to
- * reverse-engineer for a <100ms sanity budget (design.md §15) — yielding
- * one microtask after the synchronous commit is a defensible, cheap proxy
- * for "the shell has painted its first frame," consistent with this task's
- * other documented stubs (`terminalCapabilities.ts`).
+ * "First frame" resolves via `renderer.idle()`: `createRoot(...).render()`
+ * commits the initial React tree onto OpenTUI's host config and schedules
+ * the actual terminal draw; `idle()` resolves once the renderer has no
+ * pending draw work left (it resolves immediately when nothing is
+ * scheduled yet, so this never waits longer than the real first draw).
+ * The demand-driven `CliRenderer` only runs a continuous loop when a
+ * component requests live mode — the Shell's initial tree requests none,
+ * so `idle()` cannot hang here.
  */
 export const renderShellToTerminal: RenderShell = async (deps) => {
   const renderer = await createCliRenderer();
@@ -65,7 +64,7 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
       </ContextFocusTracker>
     </ThemeProvider>,
   );
-  await Promise.resolve();
+  await renderer.idle();
 };
 
 /**
