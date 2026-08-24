@@ -182,6 +182,25 @@ export interface HighlightService {
    * needs. Carries no payload, same "just re-render/re-check" shape as
    * `ThemeRegistry.onDidChange`/`FindService.onDidChange`. */
   onDidChange: Event<void>;
+  /**
+   * Resolves once every per-language asset load that is currently tracked
+   * (in-flight OR already settled) in {@link getOrLoadLanguageAssets}'s
+   * cache has settled — added for Finding 3 of Issue #35's PR review: `cli`'s
+   * headless exit path (`main.ts`'s `runTecode`) needs to know grammar/
+   * highlight loading has genuinely finished (successfully, or via the
+   * one-time degradation warning — this module's TSDoc's "Failure
+   * degradation") before it reports `HostLog` counts or exits, rather than
+   * racing the fire-and-forget load `documents.onDidOpen`'s handler kicks
+   * off and never itself awaits (this module's TSDoc's "Per-language asset
+   * cache"). Safe to call, and await, unconditionally: the underlying
+   * per-language promise never rejects (a load failure is caught
+   * internally by {@link getOrLoadLanguageAssets} and warned exactly once),
+   * so this can never reject either. Only a snapshot at call time — a load
+   * that starts AFTER this is called (e.g. a document opened later) is not
+   * covered; headless mode's single up-front `openDocument` call means
+   * that's never an issue there.
+   */
+  whenIdle(): Promise<void>;
   /** Unsubscribe from `documents` and every tracked document, and clear
    * all `onDidChange` listeners. Idempotent. */
   dispose(): void;
@@ -667,5 +686,12 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     listeners.clear();
   }
 
-  return { getSpansForLine, onDidChange, dispose };
+  function whenIdle(): Promise<void> {
+    // `getOrLoadLanguageAssets`'s returned promise never rejects (its own
+    // try/catch always resolves to `undefined` on failure — this
+    // function's TSDoc), so no `.catch` is needed here either.
+    return Promise.all(Array.from(languageAssets.values())).then(() => undefined);
+  }
+
+  return { getSpansForLine, onDidChange, whenIdle, dispose };
 }
