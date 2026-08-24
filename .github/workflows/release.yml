@@ -86,12 +86,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      # `bun install` (no lockfile filter) — NOT `--frozen-lockfile`
-      # deliberately: this is the step that links THIS runner's own native
-      # `@opentui/core-<platform>-<arch>` optional dependency, which is the
-      # entire reason the matrix is split by runner in the first place
-      # (this file's own top-of-file TSDoc).
-      - run: bun install
+      # `--frozen-lockfile`, same as every CI job: a RELEASE artifact must
+      # be built from the locked dependency set, and a stale lockfile
+      # should fail the build loudly rather than silently resolving to
+      # something else. `bun.lock` already records all six
+      # `@opentui/core-<platform>-<arch>` optional dependencies, so the
+      # frozen install still links THIS runner's own native one — which is
+      # the entire reason the matrix is split by runner in the first place
+      # (this file's own top-of-file comment).
+      - run: bun install --frozen-lockfile
       # `scripts/release.ts`'s own target-name filter (its TSDoc's
       # "Usage") — builds ONLY this runner's target, so a runner never
       # attempts (and fails on) one of the other five.

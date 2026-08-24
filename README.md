@@ -12,7 +12,7 @@ is reproducible locally with one `bun run` script:
 |---------------|------------------------|-----------------|
 | `lint`        | `bun run lint`         | ESLint, including the `no-restricted-imports`/`no-restricted-syntax` layering rule (`eslint.config.mjs`) that keeps `@tecode/core` importable only from `packages/cli`. |
 | `test`        | `bun test`              | The full workspace `bun test` suite. |
-| `contract`    | `bun run test:contract` | The extension-API contract suite (`packages/core/src/api/create.contract.test.ts`) — the `API_VERSION` gate. |
+| `contract`    | `bun run test:contract` | The `API_VERSION` gate — the extension-API contract suite (`packages/core/src/api/create.contract.test.ts`) plus the constant's own assertions (`packages/api/src/index.test.ts`). |
 | `snapshot`    | `bun run test:snapshot` | The headless-renderer cell-grid suite: every `*.snapshot.test.tsx` file, rendered via `@opentui/react/test-utils`'s `testRender` (design.md §16, "snapshots the cell grid" — no `toMatchSnapshot`, every assertion reads real rendered output). |
 | `performance` | `bun run test:perf`     | Startup-to-first-frame timing (`packages/cli/src/main.integration.test.ts`) and the scripted 10,000-line typing benchmark (`packages/cli/src/typingBenchmark.test.ts`) — thresholds live as named constants in each test file, not in the workflow. |
 
