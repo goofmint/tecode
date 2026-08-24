@@ -33,22 +33,26 @@ name: Release
 # The fix is one runner per target, matched on BOTH os and arch, which is
 # what the matrix below does. This repo is public, so GitHub's free arm64
 # hosted runners (`ubuntu-24.04-arm`, `windows-11-arm`) and the free
-# Intel/Apple-Silicon macOS runners (`macos-13`/`macos-latest`) are all
+# Intel/Apple-Silicon macOS runners (`macos-15-intel`/`macos-latest`) are all
 # available with no billing implications:
 #
 # | target            | runner            |
 # |-------------------|--------------------|
 # | bun-linux-x64     | ubuntu-latest      |
 # | bun-linux-arm64   | ubuntu-24.04-arm   |
-# | bun-darwin-x64    | macos-13           |
+# | bun-darwin-x64    | macos-15-intel     |
 # | bun-darwin-arm64  | macos-latest       |
 # | bun-windows-x64   | windows-latest     |
 # | bun-windows-arm64 | windows-11-arm     |
 #
-# `macos-13` is GitHub's last Intel-default macOS image (macos-14 and
-# later, including `macos-latest`, run on Apple Silicon/arm64) — that's
-# why darwin/x64 needs its own pinned label rather than `macos-latest`
-# too. Re-verify all six labels against GitHub's current hosted-runner
+# darwin/x64 needs its own pinned label because macos-14 and later —
+# including `macos-latest` — run on Apple Silicon/arm64. `macos-15-intel`
+# is the label to use: the older `macos-13` image was RETIRED on
+# 2025-12-04, so pinning it makes this matrix leg unschedulable and
+# silently drops the darwin/x64 binary and its size report. Note
+# `macos-15-intel` is GitHub's LAST x86_64 Actions image and is announced
+# only through August 2027; when it goes, `bun-darwin-x64` has no hosted
+# runner left and will need a self-hosted one (or dropping). Re-verify all six labels against GitHub's current hosted-runner
 # docs before ever changing this table; runner labels get renamed/retired,
 # and a stale one fails the whole matrix job with an opaque "no runner
 # matching the specified labels" error that looks nothing like the
@@ -59,8 +63,16 @@ on:
     tags:
       - "v*"
 
+# Read-only: this workflow never writes repository contents and never
+# creates a GitHub Release — it only builds binaries and uploads them as
+# Actions artifacts, which `actions/upload-artifact` does through the
+# Actions API rather than the contents scope. A write-scoped
+# `GITHUB_TOKEN` here would be reachable by any compromised dependency
+# action for no benefit. A future step that publishes an actual Release
+# will need `contents: write` back — scope it to that job, not the
+# workflow.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -74,7 +86,7 @@ jobs:
         target:
           - { bunTarget: bun-linux-x64, runner: ubuntu-latest }
           - { bunTarget: bun-linux-arm64, runner: ubuntu-24.04-arm }
-          - { bunTarget: bun-darwin-x64, runner: macos-13 }
+          - { bunTarget: bun-darwin-x64, runner: macos-15-intel }
           - { bunTarget: bun-darwin-arm64, runner: macos-latest }
           - { bunTarget: bun-windows-x64, runner: windows-latest }
           - { bunTarget: bun-windows-arm64, runner: windows-11-arm }
