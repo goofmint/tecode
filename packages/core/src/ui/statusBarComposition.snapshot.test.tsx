@@ -2,7 +2,7 @@
  * A fully populated status bar, rendered end to end (Task 3.4, Req 11.6;
  * design.md §16's "OpenTUI's headless renderer renders the Shell... and
  * snapshots the cell grid" — no `toMatchSnapshot`, every assertion below
- * reads the real rendered cell grid, matching `shell.test.tsx`'s own
+ * reads the real rendered cell grid, matching `shell.snapshot.test.tsx`'s own
  * top-of-file TSDoc on the `testRender`/`captureCharFrame` API).
  *
  * A single real {@link SlotRegistry} is populated with:
@@ -11,7 +11,7 @@
  *   theme on the right) — registered directly here with `registerView`
  *   rather than through the real `packages/builtin/statusbar` extension,
  *   since `@tecode/core` may not import `@tecode/builtin` (the ESLint
- *   layering rule runs the other direction; `themesVisual.test.tsx`'s own
+ *   layering rule runs the other direction; `themesVisual.snapshot.test.tsx`'s own
  *   TSDoc gives the identical reason for living in `packages/cli` instead —
  *   this suite stays in `core` specifically to also exercise the two
  *   CORE-INTERNAL surfaces below, which `packages/builtin` cannot reach at
@@ -44,7 +44,7 @@ import { Shell } from "./shell";
 import { ThemeProvider } from "./theme";
 
 /** An in-memory {@link LayoutStateFs} starting with no `state.json`
- * (matches `shell.test.tsx`'s own `createEmptyLayoutFs`), so `Shell` gets
+ * (matches `shell.snapshot.test.tsx`'s own `createEmptyLayoutFs`), so `Shell` gets
  * `DEFAULT_LAYOUT_STATE` deterministically with no real filesystem
  * involved. */
 function createEmptyLayoutFs(): LayoutStateFs {

@@ -86,7 +86,7 @@ function eolLabel(eol: Document["eol"]): string {
 }
 
 /** `Ln <line>, Col <character>`, 1-based (Req 11.6) — matches this
- * codebase's existing status bar text convention (`ui/shell.test.tsx`'s
+ * codebase's existing status bar text convention (`ui/shell.snapshot.test.tsx`'s
  * `"Ln 1, Col 1"` fixture). */
 function cursorLabel(line: number, character: number): string {
   return `Ln ${line + 1}, Col ${character + 1}`;

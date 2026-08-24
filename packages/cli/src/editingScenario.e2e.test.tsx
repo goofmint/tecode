@@ -58,7 +58,7 @@ import {
   type EditingHarness,
 } from "./editingHarness";
 
-/** Matches `editorView.test.tsx`'s/`themesVisual.test.tsx`'s own `flatten`
+/** Matches `editorView.snapshot.test.tsx`'s/`themesVisual.snapshot.test.tsx`'s own `flatten`
  * helper: one entry per rendered text span, across every row of the
  * captured frame. */
 function flatten(frame: CapturedFrame): Array<{ row: number; text: string; fg: unknown; bg: unknown }> {
@@ -137,7 +137,7 @@ describe("End-to-end editing scenario (Task 2.10, Req 13.1, design.md §15, §16
       // Move the (default, line 0 col 0) cursor off the very first
       // character before checking rendered spans below — `EditorView`
       // renders the active cursor's cell as its own inverted-color run
-      // (`editorView.test.tsx`'s own "keeps the initial collapsed cursor
+      // (`editorView.snapshot.test.tsx`'s own "keeps the initial collapsed cursor
       // off line 0" idiom), which would otherwise split "function" into
       // "f" (cursor cell) + "unction" (highlighted run) and make the exact-
       // text match below fail for a reason that has nothing to do with

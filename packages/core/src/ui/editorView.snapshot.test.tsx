@@ -1,7 +1,7 @@
 /**
  * `EditorView` tests (Req 6.5, 6.6, 13.1; design.md §8.3): gutter/selection/
  * cursor rendering via `@opentui/react/test-utils`'s headless renderer (see
- * `shell.test.tsx`'s top-of-file TSDoc for the full writeup of this API),
+ * `shell.snapshot.test.tsx`'s top-of-file TSDoc for the full writeup of this API),
  * the dirty-range-only re-render guarantee, and the `editorTextFocus`
  * context-key wiring.
  */
@@ -448,7 +448,7 @@ describe("EditorView — editorTextFocus context key (Req 4.6)", () => {
   });
 });
 
-/** First `focusable` descendant, depth-first (mirrors shell.test.tsx's
+/** First `focusable` descendant, depth-first (mirrors shell.snapshot.test.tsx's
  * `findAllFocusable`, narrowed to "first" since `EditorView` has exactly
  * one focusable node). */
 function findFocusable(node: unknown): unknown {
