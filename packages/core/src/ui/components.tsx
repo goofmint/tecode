@@ -202,7 +202,7 @@ export interface TreeProps {
    * the real renderable, the same "capture the real node, call its methods
    * directly" style `focus.test.tsx` uses for `.focus()`/`.blur()`, rather
    * than depend on `testRender`'s mouse/keyboard simulation reproducing a
-   * real focus transition end-to-end (`shell.test.tsx`'s documented
+   * real focus transition end-to-end (`shell.snapshot.test.tsx`'s documented
    * "Coverage gap" precedent for why that is its own, separate concern).
    */
   treeRef?: (node: FocusableNode | null) => void;
@@ -481,7 +481,7 @@ export interface TabItem {
  * as a plain string (`TabSelectOption.name`, this module's `options`
  * mapping below), so there is no separate "dirty" visual channel to hook
  * into; prefixing the label is the only available signal. Exported so
- * `components.test.tsx` (and any other caller that needs to recognize a
+ * `components.snapshot.test.tsx` (and any other caller that needs to recognize a
  * dirty tab's rendered text) doesn't have to duplicate the literal. */
 export const TAB_DIRTY_MARKER = "● ";
 

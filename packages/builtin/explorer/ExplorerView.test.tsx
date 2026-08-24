@@ -5,7 +5,7 @@
  * proving the PROP WIRING (`nodes`/`selectedId`/`expandedIds`/
  * `focusContextKey`/`onSelect`/`onToggle`/`onActivate`) rather than
  * `tecode.ui.Tree`'s own rendering (already covered by `@tecode/core`'s
- * `components.test.tsx`).
+ * `components.snapshot.test.tsx`).
  */
 
 import { describe, expect, test } from "bun:test";

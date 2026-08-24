@@ -142,7 +142,7 @@ test("editor stub: a throwing sink does not make revealLine/insertSnippet/applyE
 // `ui.registerView`/`useTheme`/`List`/`Tree`/`Input`/`Tabs` were stubbed
 // here through Task 1.13; Task 1.14 gives them real backing instead (the
 // slot registry, `ui/slotRegistry.test.ts`; the real components,
-// `ui/components.test.tsx`) — see `stubs.ts`'s and `create.ts`'s TSDoc for
+// `ui/components.snapshot.test.tsx`) — see `stubs.ts`'s and `create.ts`'s TSDoc for
 // the wiring.
 
 test("languages.register: register/dispose symmetry, getLanguageId always 'plaintext'", () => {

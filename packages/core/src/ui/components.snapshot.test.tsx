@@ -1,7 +1,7 @@
 /**
  * Structural/snapshot tests for the minimal common component library
  * (`tecode.ui.List`/`Tree`/`Input`/`Tabs`, Req 10.1, 6.3) — headless via
- * `@opentui/react`'s `testRender` (see `shell.test.tsx`'s top-of-file TSDoc
+ * `@opentui/react`'s `testRender` (see `shell.snapshot.test.tsx`'s top-of-file TSDoc
  * for the full "what OpenTUI headless-testing API we use" writeup).
  */
 
@@ -26,7 +26,7 @@ import {
 } from "./components";
 
 /** All spans across every row of a captured frame, flattened with their row
- * index (matches `editorView.test.tsx`'s own local `flatten` helper) —
+ * index (matches `editorView.snapshot.test.tsx`'s own local `flatten` helper) —
  * convenient for "find the span covering this tab's text" assertions
  * without hand-walking `frame.lines`. */
 function flattenSpans(

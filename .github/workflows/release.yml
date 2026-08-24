@@ -1,0 +1,171 @@
+name: Release
+
+# Issue #36 "4.5 CI pipeline" gate 6 (Req 8.5, 13.2; design.md §17): the
+# tag-triggered six-target compiled-binary matrix, driving `scripts/
+# release.ts` (Issue #35) rather than reimplementing any of its logic —
+# the matrix, `binaryFileName`, the size assertion, and the target-name
+# filter (`bun run release <target>`) all already live there; read that
+# file's TSDoc before changing anything here.
+#
+# ## Why six runners, not three
+#
+# It is tempting to "simplify" this to three OS-only runners
+# (ubuntu-latest/macos-latest/windows-latest) and pass `--target=` twice
+# per runner for the two arches. THAT DOES NOT WORK, and the failure mode
+# if someone tries it is actively misleading: `@opentui/core` ships six
+# platform-*and-arch*-specific optional dependencies
+# (`@opentui/core-{darwin,linux,win32}-{x64,arm64}`, one per target, each
+# gated by `os`/`cpu` package.json fields), and `bun install` links only
+# the ONE matching the runner it's actually running on. `@opentui/core`'s
+# own runtime resolves its native half with a template-string dynamic
+# import (`import(\`@opentui/core-${process.platform}-${process.arch}/
+# index.ts\`)`) that Bun's bundler can only ever resolve for the HOST's own
+# linked package — so `ubuntu-latest` (x64) can build `bun-linux-x64` but
+# NOT `bun-linux-arm64`, `macos-latest` (arm64) can build
+# `bun-darwin-arm64` but NOT `bun-darwin-x64`, and so on for Windows. The
+# resulting error (`Could not resolve: "@opentui/core-<platform>-<arch>/
+# index.ts"`) reads like a missing dependency, not an architecture
+# mismatch — `scripts/release.ts`'s own `classifyBuildFailure` recognizes
+# this exact signature and labels it a known limitation for exactly this
+# reason (see that script's top-of-file TSDoc, "Why this machine cannot
+# produce all six binaries").
+#
+# The fix is one runner per target, matched on BOTH os and arch, which is
+# what the matrix below does. This repo is public, so GitHub's free arm64
+# hosted runners (`ubuntu-24.04-arm`, `windows-11-arm`) and the free
+# Intel/Apple-Silicon macOS runners (`macos-13`/`macos-latest`) are all
+# available with no billing implications:
+#
+# | target            | runner            |
+# |-------------------|--------------------|
+# | bun-linux-x64     | ubuntu-latest      |
+# | bun-linux-arm64   | ubuntu-24.04-arm   |
+# | bun-darwin-x64    | macos-13           |
+# | bun-darwin-arm64  | macos-latest       |
+# | bun-windows-x64   | windows-latest     |
+# | bun-windows-arm64 | windows-11-arm     |
+#
+# `macos-13` is GitHub's last Intel-default macOS image (macos-14 and
+# later, including `macos-latest`, run on Apple Silicon/arm64) — that's
+# why darwin/x64 needs its own pinned label rather than `macos-latest`
+# too. Re-verify all six labels against GitHub's current hosted-runner
+# docs before ever changing this table; runner labels get renamed/retired,
+# and a stale one fails the whole matrix job with an opaque "no runner
+# matching the specified labels" error that looks nothing like the
+# `@opentui/core` failure above.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target.bunTarget }} on ${{ matrix.target.runner }})
+    strategy:
+      # One target's failure (a real regression, or a runner-label going
+      # stale) must never hide the other five targets' results — every
+      # target's own outcome is what the summary job below reports on.
+      fail-fast: false
+      matrix:
+        target:
+          - { bunTarget: bun-linux-x64, runner: ubuntu-latest }
+          - { bunTarget: bun-linux-arm64, runner: ubuntu-24.04-arm }
+          - { bunTarget: bun-darwin-x64, runner: macos-13 }
+          - { bunTarget: bun-darwin-arm64, runner: macos-latest }
+          - { bunTarget: bun-windows-x64, runner: windows-latest }
+          - { bunTarget: bun-windows-arm64, runner: windows-11-arm }
+    runs-on: ${{ matrix.target.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      # `bun install` (no lockfile filter) — NOT `--frozen-lockfile`
+      # deliberately: this is the step that links THIS runner's own native
+      # `@opentui/core-<platform>-<arch>` optional dependency, which is the
+      # entire reason the matrix is split by runner in the first place
+      # (this file's own top-of-file TSDoc).
+      - run: bun install
+      # `scripts/release.ts`'s own target-name filter (its TSDoc's
+      # "Usage") — builds ONLY this runner's target, so a runner never
+      # attempts (and fails on) one of the other five.
+      - name: Build ${{ matrix.target.bunTarget }}
+        run: bun run release ${{ matrix.target.bunTarget }}
+      - name: Record size for the summary job
+        shell: bash
+        run: |
+          mkdir -p size-report
+          BIN=$(ls dist/tecode-* 2>/dev/null | head -n1)
+          if [ -z "$BIN" ]; then
+            echo "release: no binary found in dist/ for ${{ matrix.target.bunTarget }}" >&2
+            exit 1
+          fi
+          SIZE_BYTES=$(wc -c < "$BIN" | tr -d ' ')
+          echo "{\"target\":\"${{ matrix.target.bunTarget }}\",\"file\":\"$(basename "$BIN")\",\"sizeBytes\":$SIZE_BYTES}" > "size-report/${{ matrix.target.bunTarget }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          # Unique per target so all six land as distinct release assets,
+          # never overwriting each other (`actions/upload-artifact` would
+          # silently collide on a shared name across matrix jobs).
+          name: tecode-${{ matrix.target.bunTarget }}
+          path: dist/tecode-*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: size-report-${{ matrix.target.bunTarget }}
+          path: size-report/${{ matrix.target.bunTarget }}.json
+          if-no-files-found: error
+
+  summary:
+    name: Release summary
+    needs: build
+    # Runs even when one or more matrix legs failed (`fail-fast: false`
+    # above) — the summary table is exactly where a partial-failure release
+    # run should be diagnosed from, not skipped.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: size-report-*
+          path: size-reports
+          merge-multiple: true
+      - name: Write target x size table to the job summary
+        shell: bash
+        run: |
+          {
+            echo "## Release matrix — target sizes"
+            echo ""
+            echo "| Target | Binary | Size | Limit | Status |"
+            echo "|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          LIMIT_BYTES=120000000
+          shopt -s nullglob
+          for f in size-reports/*.json; do
+            TARGET=$(jq -r '.target' "$f")
+            FILE=$(jq -r '.file' "$f")
+            SIZE=$(jq -r '.sizeBytes' "$f")
+            SIZE_MB=$(awk "BEGIN { printf \"%.2f\", $SIZE / 1000000 }")
+            LIMIT_MB=$(awk "BEGIN { printf \"%.2f\", $LIMIT_BYTES / 1000000 }")
+            if [ "$SIZE" -le "$LIMIT_BYTES" ]; then
+              STATUS="ok"
+            else
+              STATUS="OVER LIMIT"
+            fi
+            echo "| $TARGET | $FILE | ${SIZE_MB} MB | ${LIMIT_MB} MB | $STATUS |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          MISSING=$((6 - $(ls size-reports/*.json 2>/dev/null | wc -l)))
+          if [ "$MISSING" -gt 0 ]; then
+            {
+              echo ""
+              echo "**$MISSING of 6 targets did not report a size** — see the \`build\` job's per-target logs (a failed or skipped matrix leg never uploads its size-report artifact)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
