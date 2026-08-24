@@ -56,9 +56,19 @@ matrix automates):
 3. Confirm the script prints `<target>: ok (<size> MB)` and exits 0. A
    `build-failed` outcome whose reason does NOT mention "known limitation"
    is a real regression — investigate it as such, not as this document's
-   limitation. Record the exact byte size reported (`ls -la dist/tecode-
-   <platform>-<arch>` for the precise count, not just the rounded MB the
-   script prints) in the PR.
+   limitation. Record the exact byte size reported (not just the rounded MB
+   the script prints) in the PR — the exact command depends on the
+   platform, since `scripts/release.ts`'s `binaryFileName` produces a
+   `.exe` suffix on Windows and nothing else does:
+   - **macOS/Linux** (`bun-darwin-x64`, `bun-darwin-arm64`, `bun-linux-x64`,
+     `bun-linux-arm64`): `ls -la dist/tecode-<platform>-<arch>`, e.g. `ls
+     -la dist/tecode-darwin-arm64`.
+   - **Windows** (`bun-windows-x64`, `bun-windows-arm64`) — `ls -la` is not
+     a PowerShell command; use PowerShell's own `Get-Item` instead, and
+     don't forget the `.exe` suffix `binaryFileName` actually generates for
+     these two targets:
+     - x64: `(Get-Item .\dist\tecode-windows-x64.exe).Length`
+     - arm64: `(Get-Item .\dist\tecode-windows-arm64.exe).Length`
 4. Repeat for each of the remaining four targets.
 
 ## 2. Windows `%APPDATA%\tecode\` resolution on real Windows

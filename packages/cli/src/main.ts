@@ -1030,6 +1030,23 @@ function emitMetric(event: string, fields: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ event, ...fields }));
 }
 
+/** Tally a {@link HostLog} snapshot's entries by level — used both to take
+ * `runTecode`'s pre-deferred-phase baseline and its post-deferred-phase
+ * total, whose difference is `tecode.headlessExit`'s `logWarnings`/
+ * `logErrors` (this function's TSDoc). */
+function countLogLevels(entries: readonly { level: "error" | "warning" }[]): {
+  warnings: number;
+  errors: number;
+} {
+  let warnings = 0;
+  let errors = 0;
+  for (const entry of entries) {
+    if (entry.level === "warning") warnings++;
+    else errors++;
+  }
+  return { warnings, errors };
+}
+
 /** Emit a step marker, only when `TECODE_VERBOSE=1` (this task's plan:
  * "verbose behind an env flag") — the baseline `tecode.timing` first-frame
  * metric below is always emitted regardless. */
@@ -1125,6 +1142,41 @@ export interface RunTecodeResult {
  * bun packages/cli/src/main.ts <path>` usable as a scriptable smoke check
  * and what the subprocess integration test relies on to observe a clean
  * exit.
+ *
+ * **`tecode.headlessExit`'s `activated`/`logWarnings`/`logErrors` fields**
+ * (Finding 3 of Issue #35's PR review): `loaded`/`skipped` alone only prove
+ * that manifests were discovered and registered — NOT that any extension's
+ * `index.ts` actually ran, and NOT that whatever it depends on (e.g.
+ * `languages-basic`'s embedded grammar WASM/`.scm` query assets, Req 8.5)
+ * resolved successfully. A compiled-binary smoke test asserting only
+ * `exitCode === 0` and "no `tree-sitter.wasm` in stderr" would still pass
+ * if the embedded-asset path silently never ran at all — proving nothing.
+ * So this metric line also reports:
+ * - `activated`: the ids of every extension {@link ExtensionHost.getState}
+ *   reports as `"active"` at this point (built-in AND external alike) —
+ *   positive evidence a specific extension's `activate(ctx)` genuinely ran,
+ *   not just that its manifest was registered.
+ * - `logWarnings`/`logErrors`: how many `"warning"`/`"error"` entries
+ *   {@link HostLog.entries} accumulated during the deferred phase (extension
+ *   loading/activation, language/highlight asset resolution) — counted as a
+ *   DELTA against a baseline snapshot taken right after the first-frame
+ *   timing line above (which itself unconditionally logs one `"warning"`
+ *   entry via `root.log.append`), so that always-present entry never
+ *   pollutes what should read as "zero" on a clean run. A grammar/query
+ *   load failure (`core`'s `highlightService.ts`'s "Failure degradation")
+ *   logs a one-time `"warning"` here, which is exactly the signal a
+ *   `languages-basic` asset-resolution regression would leave behind, even
+ *   though headless mode has no UI to show a degradation notice on.
+ *
+ * Together, `compiledBinary.smoke.test.ts` opening a real `.ts` file (not
+ * just a directory) and then asserting `activated` includes
+ * `languages-basic`'s manifest id AND `logWarnings`/`logErrors` show no
+ * INCREASE over a same-shape directory-only baseline run (that file's own
+ * TSDoc explains why a bare `0` is the wrong bar — this codebase's normal
+ * headless startup already logs warnings unrelated to language loading at
+ * all, e.g. a brand-new `HOME` with no `settings.json` yet to watch) is
+ * genuine positive evidence the embedded grammar/highlights actually
+ * loaded and compiled — not merely that nothing crashed.
  */
 export async function runTecode(
   argv: readonly string[],
@@ -1213,6 +1265,14 @@ export async function runTecode(
   root.log.append("warning", {
     message: `[tecode:timing] first-frame ${firstFrameMs.toFixed(2)}ms`,
   });
+  // Snapshot taken AFTER the timing warning immediately above (so that
+  // always-present entry is already counted here) and used as the
+  // subtraction baseline for `tecode.headlessExit`'s `logWarnings`/
+  // `logErrors` fields below (this function's own TSDoc) — everything
+  // logged from this point through the end of the deferred phase reflects
+  // extension loading/activation and language/highlight asset resolution,
+  // not startup-timing bookkeeping.
+  const preDeferredLogCounts = countLogLevels(root.log.entries());
   // `ts` is a raw performance.now() reading — directly comparable, within
   // this same process, against any other same-process reading (e.g. the
   // subprocess integration test's fixture extension logging its own
@@ -1234,9 +1294,32 @@ export async function runTecode(
   emitVerboseStep(startedAt, "deferred-complete");
 
   if (headless) {
+    // Grammar/highlight loading (`languages/highlightService.ts`'s
+    // `getOrLoadLanguageAssets`) is kicked off fire-and-forget from
+    // `documents.onDidOpen` — `runDeferredPhase`'s own `await
+    // root.documents.openDocument(...)` above does NOT wait for it to
+    // settle. Without this await, the `logWarnings`/`logErrors` fields
+    // below could race a real degradation warning (or a successful load)
+    // that simply hadn't finished yet, silently reporting stale counts
+    // instead of what actually happened — see `HighlightService.whenIdle`'s
+    // TSDoc (added for this same Finding 3).
+    await root.highlightService.whenIdle();
+
+    // Computed BEFORE any disposal below — `deferred.extensionHost.
+    // disposeAll()` a few lines down deactivates every currently-"active"
+    // extension back to "registered" (`ExtensionHost.deactivateExtension`'s
+    // TSDoc), which would make `getState` lie about what actually ran if
+    // read afterward instead.
+    const activated = deferred.loadResult.loaded
+      .filter((extension) => deferred.extensionHost.getState(extension.extensionId) === "active")
+      .map((extension) => extension.extensionId);
+    const postDeferredLogCounts = countLogLevels(root.log.entries());
     emitMetric("tecode.headlessExit", {
       loaded: deferred.loadResult.loaded.length,
       skipped: deferred.loadResult.skipped.length,
+      activated,
+      logWarnings: postDeferredLogCounts.warnings - preDeferredLogCounts.warnings,
+      logErrors: postDeferredLogCounts.errors - preDeferredLogCounts.errors,
       ms: performance.now() - startedAt,
     });
     await root.layoutState.flush();

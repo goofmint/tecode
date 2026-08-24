@@ -13,8 +13,12 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import {
   binaryFileName,
+  buildTarget,
   classifyBuildFailure,
   formatBytesAsMB,
   parseTargetFilter,
@@ -122,5 +126,53 @@ describe("parseTargetFilter", () => {
     const { targets, unknown } = parseTargetFilter(["bun-linux-x64", "bun-solaris-sparc"]);
     expect(targets.map((t: ReleaseTarget) => t.bunTarget)).toEqual(["bun-linux-x64"]);
     expect(unknown).toEqual(["bun-solaris-sparc"]);
+  });
+});
+
+describe("buildTarget's --outfile / stat path parity (Finding 5)", () => {
+  // Deliberately does NOT run a real `bun build --compile` (this file's own
+  // TSDoc) — a hand-rolled fake `spawn` (this codebase's `GitRunner`/
+  // `ConfigServiceFs`-style injectable-seam convention, per `buildTarget`'s
+  // own `BuildTargetOptions.spawn` TSDoc) stands in for it, capturing the
+  // exact `--outfile` argument the real command would have received and
+  // writing a small real file there — enough to prove `buildTarget`'s own
+  // later `stat` call looks in the SAME place, with no real compile needed.
+  test("resolves the SAME absolute path for both --outfile and the size stat when distDir is already absolute", async () => {
+    const target = RELEASE_TARGETS.find((t) => t.bunTarget === "bun-linux-x64")!;
+    const absoluteDistDir = await mkdtemp(resolve(tmpdir(), "release-test-dist-"));
+    const repoRoot = "/some/unrelated/repo/root"; // never actually read from — proves distDir wins outright.
+    let capturedOutfile: string | undefined;
+
+    try {
+      const fakeSpawn = ((opts: { cmd: readonly string[] }) => {
+        const outfileFlagIndex = opts.cmd.indexOf("--outfile");
+        capturedOutfile = opts.cmd[outfileFlagIndex + 1];
+        // Simulate `bun build --compile` itself having already written the
+        // binary at --outfile by the time it exits, synchronously, before
+        // this fake "process" object is even returned — buildTarget only
+        // stats AFTER awaiting `exited`.
+        void writeFile(capturedOutfile!, "fake-compiled-binary-bytes");
+        return {
+          stdout: null,
+          stderr: "",
+          exited: Promise.resolve(0),
+        };
+      }) as unknown as typeof Bun.spawn;
+
+      const outcome = await buildTarget(target, {
+        distDir: absoluteDistDir,
+        repoRoot,
+        spawn: fakeSpawn,
+      });
+
+      const expectedOutfile = resolve(absoluteDistDir, binaryFileName(target));
+      expect(capturedOutfile).toBe(expectedOutfile);
+      // "ok" (not a thrown ENOENT) is the proof: `stat` found the file at
+      // exactly the path the fake "build" wrote it to.
+      expect(outcome.status).toBe("ok");
+      expect(outcome.sizeBytes).toBe("fake-compiled-binary-bytes".length);
+    } finally {
+      await rm(absoluteDistDir, { recursive: true, force: true });
+    }
   });
 });

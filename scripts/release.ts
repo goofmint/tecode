@@ -127,7 +127,7 @@
  */
 
 import { mkdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { resolve } from "node:path";
 
 /** One `bun build --compile --target=...` release target (design.md §17's
  * "darwin/linux/windows × x64/arm64"). */
@@ -253,6 +253,21 @@ export interface BuildTargetOptions {
  * startup latency, and Req 13.2's constrained axis here is size, not
  * startup (design.md §15's <100ms first-frame budget already has ~10x
  * headroom per `main.integration.test.ts`'s own measured 6-15ms).
+ *
+ * **Absolute vs. relative `distDir`**: the output path is computed exactly
+ * ONCE, via `resolve(repoRoot, distDir, binaryFileName(target))`, and that
+ * same value is used for both the `--outfile` argument (what `bun build`
+ * actually writes) and the later `stat` (what confirms it landed and
+ * measures it). `node:path`'s `resolve` makes this safe regardless of
+ * whether `distDir` is relative (the common case — `"dist"`, joined onto
+ * `repoRoot`) or already absolute (`resolve` then ignores `repoRoot`
+ * entirely, per its own documented left-to-right short-circuit on an
+ * absolute segment) — computing it twice with two different helpers
+ * (`join(distDir, ...)` for `--outfile`, `join(repoRoot, ...)` for `stat`,
+ * as an earlier version of this function did) silently disagreed for an
+ * absolute `distDir`: the build would write to the absolute path while
+ * `stat` looked for a path re-rooted under `repoRoot` that was never
+ * created, throwing `ENOENT` instead of reporting a real build outcome.
  */
 export async function buildTarget(
   target: ReleaseTarget,
@@ -262,7 +277,7 @@ export async function buildTarget(
   const repoRoot = options.repoRoot ?? process.cwd();
   const spawn = options.spawn ?? Bun.spawn;
 
-  const relativeOutfile = join(distDir, binaryFileName(target));
+  const outfile = resolve(repoRoot, distDir, binaryFileName(target));
   const proc = spawn({
     cmd: [
       "bun",
@@ -272,7 +287,7 @@ export async function buildTarget(
       `--target=${target.bunTarget}`,
       "packages/cli/src/main.ts",
       "--outfile",
-      relativeOutfile,
+      outfile,
     ],
     cwd: repoRoot,
     stdout: "pipe",
@@ -286,7 +301,7 @@ export async function buildTarget(
     return { target, status: "build-failed", reason, exitCode };
   }
 
-  const { size: sizeBytes } = await stat(join(repoRoot, relativeOutfile));
+  const { size: sizeBytes } = await stat(outfile);
   return { target, status: sizeBytes > SIZE_LIMIT_BYTES ? "oversized" : "ok", sizeBytes };
 }
 
