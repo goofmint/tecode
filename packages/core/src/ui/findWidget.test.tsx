@@ -195,7 +195,7 @@ describe("FindWidget — findWidgetFocus stays true across query/replace focus m
 /** Depth-first search for an OpenTUI `<input>` renderable by its
  * `placeholder` text — used only by the tests above to drive the real
  * query/replace `Renderable.focus()`/`.blur()` without `FindWidget`
- * exposing test-only refs on its public props (matches `shell.test.tsx`'s
+ * exposing test-only refs on its public props (matches `shell.snapshot.test.tsx`'s
  * `findAllFocusable`/`findTabSelect` idiom for the same reason). */
 function findInputByPlaceholder(
   node: unknown,

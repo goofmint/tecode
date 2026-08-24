@@ -6,6 +6,9 @@
   ],
   "scripts": {
     "test": "bun test",
+    "test:contract": "bun test packages/core/src/api/create.contract.test.ts packages/api/src/index.test.ts",
+    "test:snapshot": "bun test snapshot",
+    "test:perf": "bun test packages/cli/src/main.integration.test.ts packages/cli/src/typingBenchmark.test.ts",
     "lint": "eslint .",
     "cli": "bun packages/cli/src/main.ts",
     "bench": "bun test packages/cli/src/typingBenchmark.test.ts",

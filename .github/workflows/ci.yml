@@ -1,5 +1,23 @@
 name: CI
 
+# Issue #36 "4.5 CI pipeline" (Req 13.1, 13.2, 13.4; design.md §15, §16).
+#
+# Five independent jobs, each with its own checkout + Bun install, so a
+# failure in one (a lint break, say) never masks or blocks the others from
+# reporting their own result on the PR — and each is individually
+# reproducible locally with the `bun run <script>` named in its `run` step
+# (see README.md's "CI" section for the full local-reproduction table).
+#
+# `contract` and `snapshot` are carved out of the old single `contract-
+# tests` step deliberately: that step name was misleading (Fact 3 of this
+# issue's own investigation) — it ran the FULL suite (`bun test`), not just
+# the contract tests, so a contract-only failure and an unrelated unit-test
+# failure were indistinguishable from the PR checks list alone. Splitting
+# them means a red `contract` check is unambiguously an API_VERSION/
+# extension-contract regression, and a red `snapshot` check is unambiguously
+# a rendered-output regression — see `package.json`'s `test:contract`/
+# `test:snapshot` scripts for exactly what each runs.
+
 on:
   push:
     branches: [main]
@@ -9,7 +27,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  lint:
+    name: Lint (ESLint incl. layering rule)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +40,73 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
-      - name: contract-tests
-        run: bun test
-      - name: lint
+      - name: eslint
         run: bun run lint
+
+  test:
+    name: Test (full bun test suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: bun test
+        run: bun test
+
+  contract:
+    # Named so an API_VERSION regression is recognizable from the PR
+    # checks list alone, without opening the log (this issue's own
+    # requirement) — this suite is what `packages/core/src/api/
+    # create.contract.test.ts`'s own TSDoc calls "the API_VERSION gate"
+    # (Task 1.13's plan).
+    name: "Contract suite (API_VERSION gate)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: bun run test:contract
+        run: bun run test:contract
+
+  snapshot:
+    name: Snapshot (headless-renderer cell-grid suite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: bun run test:snapshot
+        run: bun run test:snapshot
+
+  performance:
+    # Startup-to-first-frame timing (`main.integration.test.ts`, <1000ms —
+    # 10x design.md §15's 100ms target) and the 10k-line typing benchmark
+    # (`typingBenchmark.test.ts`, p95 <100ms — design.md §15's "thresholds
+    # slightly above the... targets to avoid flakiness"). Both thresholds
+    # already live in-test as named constants (`P95_THRESHOLD_MS`, the
+    # inline `1_000` first-frame bound) — this workflow does not, and must
+    # not, carry a second copy of either number.
+    name: Performance (startup + typing-latency thresholds)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: bun run test:perf
+        run: bun run test:perf

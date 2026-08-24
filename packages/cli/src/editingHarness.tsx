@@ -273,7 +273,7 @@ export function waitForHighlightChange(
 }
 
 /** The narrow shape of an OpenTUI renderable this module's focus helpers
- * need — matches `shell.test.tsx`'s own `findAllFocusable`/
+ * need — matches `shell.snapshot.test.tsx`'s own `findAllFocusable`/
  * `findInputByPlaceholder` idiom (loosely typed rather than importing
  * `BoxRenderable`, since neither helper needs anything renderable-specific
  * beyond these three members). */
@@ -285,7 +285,7 @@ interface FocusableLike {
 }
 
 /** Depth-first collection of every `focusable` descendant — copied from
- * `shell.test.tsx`'s own helper of the same name (kept local rather than
+ * `shell.snapshot.test.tsx`'s own helper of the same name (kept local rather than
  * imported, since that file is a test file, not a module other files are
  * meant to import). */
 function findAllFocusable(node: unknown): FocusableLike[] {
@@ -302,7 +302,7 @@ function findAllFocusable(node: unknown): FocusableLike[] {
  * `EditorArea` region box) — the real focus transition `editorInputRouter.
  * routeKeyEvent` gates every insert on (`editorTextFocus`), driven through
  * OpenTUI's OWN real `Renderable.focus()`/`FOCUSED` event dispatch exactly
- * like `shell.test.tsx`'s "Finding 5" test does, rather than a shortcut
+ * like `shell.snapshot.test.tsx`'s "Finding 5" test does, rather than a shortcut
  * `context.set("editorTextFocus", true)` — this harness's whole point is
  * exercising the real, wired-together pipeline end to end (this module's
  * top TSDoc), and focus tracking is part of that pipeline (Req 4.6).
@@ -347,7 +347,7 @@ export type EditingShellDeps = Pick<
  * headless test renderer — the exact same tree
  * `renderShell.tsx`'s `renderShellToTerminal` mounts onto a real terminal,
  * just onto `@opentui/react/test-utils`'s `testRender` instead of a real
- * `CliRenderer` (`shell.test.tsx`'s top-of-file TSDoc documents why this is
+ * `CliRenderer` (`shell.snapshot.test.tsx`'s top-of-file TSDoc documents why this is
  * a full, real cell-grid renderer, not a fallback).
  */
 export function renderEditingShell(

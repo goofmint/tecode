@@ -2,7 +2,7 @@
  * Visual rendering tests for the two built-in themes (Task 2.7, Req 7.3,
  * 11.4, 13.4; design.md §16): the Shell and a syntax-highlighted buffer,
  * rendered under `themes-default`'s real Dark Modern and Light Modern
- * themes through OpenTUI's headless test renderer (`shell.test.tsx`'s
+ * themes through OpenTUI's headless test renderer (`shell.snapshot.test.tsx`'s
  * top-of-file TSDoc documents the `testRender`/`captureCharFrame`/
  * `captureSpans` API this follows — no `toMatchSnapshot`, every assertion
  * reads the real rendered cell grid/spans).
@@ -47,7 +47,7 @@ import {
 import { collectBuiltinPendingThemes } from "./main";
 import { createBuiltinThemeAssetsFs } from "./themeAssetsFs";
 
-/** Matches `editorView.test.tsx`'s own `flatten` helper: one entry per
+/** Matches `editorView.snapshot.test.tsx`'s own `flatten` helper: one entry per
  * rendered text span, across every row of the captured frame. */
 function flatten(frame: CapturedFrame): Array<{ row: number; text: string; fg: unknown; bg: unknown }> {
   const out: Array<{ row: number; text: string; fg: unknown; bg: unknown }> = [];
@@ -60,7 +60,7 @@ function flatten(frame: CapturedFrame): Array<{ row: number; text: string; fg: u
 }
 
 /** An in-memory `LayoutStateFs` with no `state.json` on disk (matches
- * `shell.test.tsx`'s `createEmptyLayoutFs`). */
+ * `shell.snapshot.test.tsx`'s `createEmptyLayoutFs`). */
 function createEmptyLayoutFs(): LayoutStateFs {
   return {
     async readFile() {
@@ -119,7 +119,7 @@ describe("Shell renders under both built-in themes (Req 7.3, 11.4, design.md §1
         await renderOnce();
       });
 
-      // A real, fully laid-out frame (same sanity check `shell.test.tsx`'s
+      // A real, fully laid-out frame (same sanity check `shell.snapshot.test.tsx`'s
       // own empty-shell test makes).
       const frame = captureCharFrame();
       expect(frame).toContain("No editor open.");
