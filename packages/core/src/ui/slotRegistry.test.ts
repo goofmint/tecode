@@ -280,6 +280,107 @@ describe("createSlotRegistry — lazy views from pendingViews (Req 2.5, 6.2, des
   });
 });
 
+describe("createSlotRegistry — seedPendingViews (Req 2.1, 2.5, 6.2, design.md §3, §8.2)", () => {
+  function pendingSidebarView(overrides: Partial<PendingViewContribution["view"]> = {}) {
+    const pending: PendingViewContribution = {
+      extensionId: "demo.ext",
+      view: { id: "demo.view", title: "Demo", slot: "sidebar", icon: "★", ...overrides },
+    };
+    return pending;
+  }
+
+  test("seeds a lazy sidebar.view entry, with no component, exactly like the constructor's pendingViews", () => {
+    const registry = createSlotRegistry();
+    registry.seedPendingViews([pendingSidebarView()]);
+
+    const entry = registry.getView("sidebar.view", "demo.view");
+    expect(entry?.lazy).toBe(true);
+    expect(entry?.component).toBeUndefined();
+    expect(entry?.extensionId).toBe("demo.ext");
+    expect(entry?.title).toBe("Demo");
+    expect(entry?.icon).toBe("★");
+  });
+
+  test("a seeded sidebar view also synthesizes an activityBar.item placeholder (Req 6.2)", () => {
+    const registry = createSlotRegistry();
+    registry.seedPendingViews([pendingSidebarView()]);
+
+    const item = registry.getView("activityBar.item", "demo.view");
+    expect(item?.lazy).toBe(true);
+    expect(item?.title).toBe("Demo");
+    expect(item?.icon).toBe("★");
+  });
+
+  test("requestActivation calls activateExtension for a view seeded after construction", async () => {
+    const calls: string[] = [];
+    const registry = createSlotRegistry({
+      activateExtension: async (id) => {
+        calls.push(id);
+      },
+    });
+    registry.seedPendingViews([pendingSidebarView()]);
+
+    registry.requestActivation("sidebar.view", "demo.view");
+    expect(calls).toEqual(["demo.ext"]);
+  });
+
+  test("a later real registerView completes the seeded entry in place, with no spurious re-registered warning", () => {
+    const log = createHostLog();
+    const registry = createSlotRegistry({ log });
+    registry.seedPendingViews([pendingSidebarView()]);
+
+    const realComponent = () => "real";
+    registry.registerView("sidebar.view", "demo.view", realComponent);
+
+    const entry = registry.getView("sidebar.view", "demo.view");
+    expect(entry?.lazy).toBe(false);
+    expect(entry?.component).toBe(realComponent);
+    // Same non-collision contract as a construction-time pendingViews
+    // seed (the describe block above) — resolving a lazy placeholder is
+    // the expected activation flow, not a duplicate registration.
+    expect(warnings(log)).toEqual([]);
+
+    // The synthesized activityBar.item placeholder resolves the same way.
+    registry.registerView("activityBar.item", "demo.view", realComponent);
+    const item = registry.getView("activityBar.item", "demo.view");
+    expect(item?.lazy).toBe(false);
+    expect(warnings(log)).toEqual([]);
+  });
+
+  test("onDidChange fires for the slot a seeded view lands in", () => {
+    const registry = createSlotRegistry();
+    const changed: string[] = [];
+    registry.onDidChange((slot) => changed.push(slot));
+
+    registry.seedPendingViews([pendingSidebarView()]);
+
+    expect(changed).toContain("sidebar.view");
+    expect(changed).toContain("activityBar.item");
+  });
+
+  test("re-seeding after a real registration does not regress it back to a lazy placeholder", () => {
+    const registry = createSlotRegistry();
+    const realComponent = () => "real";
+    registry.registerView("sidebar.view", "demo.view", realComponent);
+
+    // A later seedPendingViews call for the same (slot, id) — e.g. a
+    // second discovery pass — must not clobber the already-active real
+    // registration back to lazy/no-component (SlotRegistry.
+    // seedPendingViews's TSDoc).
+    registry.seedPendingViews([pendingSidebarView()]);
+
+    const entry = registry.getView("sidebar.view", "demo.view");
+    expect(entry?.lazy).toBe(false);
+    expect(entry?.component).toBe(realComponent);
+  });
+
+  test("seedPendingViews with an empty array is a safe no-op", () => {
+    const registry = createSlotRegistry();
+    expect(() => registry.seedPendingViews([])).not.toThrow();
+    expect(registry.getViews("sidebar.view")).toEqual([]);
+  });
+});
+
 describe("createSlotRegistry — activityBar/sidebar pairing (Req 6.2)", () => {
   test("listSidebarPairs unions ids from both slots, matched by id", () => {
     const registry = createSlotRegistry();

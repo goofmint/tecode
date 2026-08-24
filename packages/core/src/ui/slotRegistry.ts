@@ -178,6 +178,43 @@ export interface SlotRegistry {
    * `"right"`) then by descending priority, ties broken by registration
    * order (design.md §8.2). */
   listStatusBarItems(): readonly SlotViewEntry[];
+  /**
+   * Seed additional manifest-declared views as lazy entries, exactly like
+   * {@link SlotRegistryDeps.pendingViews} does at construction time (this
+   * module's TSDoc's "Lazy views from manifests") — same
+   * `activityBar.item`/`sidebar.view` pairing synthesis for a `"sidebar"`
+   * view, same `lazy: true` placeholder rationale, same last-wins/
+   * duplicate-warning semantics as {@link registerView}.
+   *
+   * **Why this exists, given `SlotRegistryDeps.pendingViews` already
+   * covers construction time**: `packages/cli/src/main.ts`'s
+   * `buildAssemblyRoot` (the synchronous startup phase, design.md §3's
+   * step 1) builds the slot registry — and the Shell that renders from
+   * it — before extension discovery has run at all; `host/registration.ts`'s
+   * `loadExtensions` (and its `LoadExtensionsResult.pendingViews`) only
+   * runs in the *deferred* phase (`runDeferredPhase`, design.md §3's step
+   * 2), after the first frame. A registry built with `pendingViews`
+   * supplied only at construction can never learn about a manifest's
+   * `contributes.views` at all in this codebase's actual startup order —
+   * every `sidebar.view`/`activityBar.item` a real extension declares
+   * (e.g. `tecode.explorer`'s `sidebar` view, `explorer/manifest.ts`)
+   * would sit unregistered until something else happened to call
+   * {@link registerView} directly. `runDeferredPhase` calls this method
+   * with `loadResult.pendingViews` right after `loadExtensions` returns,
+   * the same place it feeds `loadResult.extensionKeybindings` into
+   * `keymap.setExtensionEntries` and `loadResult.pendingThemes`/
+   * `pendingLanguages` into `themeRegistry`/`languageRegistry`'s own
+   * `loadContributions` calls.
+   *
+   * Idempotent-ish/last-wins in the same sense {@link registerView} is: a
+   * `(slot, id)` already resolved to a real (non-lazy) registration is
+   * NOT overwritten (a real registration always wins over a pending
+   * placeholder — reseeding must not regress an already-completed entry
+   * back to `lazy: true` with no `component`). Safe to call multiple
+   * times (e.g. a future incremental-discovery caller re-scanning a
+   * workspace) and safe to call with zero pending views.
+   */
+  seedPendingViews(pending: readonly PendingViewContribution[]): void;
 }
 
 const ALL_SLOTS: readonly SlotId[] = [
@@ -400,17 +437,32 @@ export function createSlotRegistry(deps: SlotRegistryDeps = {}): SlotRegistry {
       .map(({ entry }) => entry);
   }
 
-  // Seed lazy entries from manifest-declared views (this module's TSDoc).
-  for (const pending of deps.pendingViews ?? []) {
+  /** Seed one manifest-declared view as a lazy entry — shared by the
+   * construction-time loop below and the public
+   * {@link SlotRegistry.seedPendingViews} method (that method's TSDoc), so
+   * a manifest view goes through the exact same
+   * `activityBar.item`/`sidebar.view` pairing synthesis regardless of
+   * whether discovery supplied it before or after this registry was
+   * built. Skips a target `(slot, id)` that already holds a REAL
+   * (non-lazy) registration — reseeding must never regress an
+   * already-completed entry back to a lazy placeholder with no
+   * `component` ({@link SlotRegistry.seedPendingViews}'s TSDoc); a still-
+   * lazy existing entry (or none at all) is safely re-stored, last-wins,
+   * with no warning either way (`storeEntry`'s duplicate-registration
+   * warning only fires against a non-lazy existing entry). */
+  function seedPendingView(pending: PendingViewContribution): void {
     const targetSlot: SlotId = pending.view.slot === "sidebar" ? "sidebar.view" : "panel.tab";
-    storeEntry(targetSlot, pending.view.id, {
-      slot: targetSlot,
-      id: pending.view.id,
-      lazy: true,
-      extensionId: pending.extensionId,
-      title: pending.view.title,
-      icon: pending.view.icon,
-    });
+    const existingTarget = slots.get(targetSlot)?.get(pending.view.id);
+    if (!existingTarget || existingTarget.lazy) {
+      storeEntry(targetSlot, pending.view.id, {
+        slot: targetSlot,
+        id: pending.view.id,
+        lazy: true,
+        extensionId: pending.extensionId,
+        title: pending.view.title,
+        icon: pending.view.icon,
+      });
+    }
     if (pending.view.slot === "sidebar") {
       // `lazy: true`, not `false`: this is a synthesized placeholder (Req
       // 6.2's activityBar.item/sidebar.view pairing, this module's TSDoc),
@@ -421,15 +473,29 @@ export function createSlotRegistry(deps: SlotRegistryDeps = {}): SlotRegistry {
       // "View re-registered" warning for a view that was never actually
       // registered twice. `ActivityBar` (shell.tsx) renders on `component`
       // presence, not `lazy`, so this has no rendering effect.
-      storeEntry("activityBar.item", pending.view.id, {
-        slot: "activityBar.item",
-        id: pending.view.id,
-        lazy: true,
-        extensionId: pending.extensionId,
-        title: pending.view.title,
-        icon: pending.view.icon,
-      });
+      const existingActivityItem = slots.get("activityBar.item")?.get(pending.view.id);
+      if (!existingActivityItem || existingActivityItem.lazy) {
+        storeEntry("activityBar.item", pending.view.id, {
+          slot: "activityBar.item",
+          id: pending.view.id,
+          lazy: true,
+          extensionId: pending.extensionId,
+          title: pending.view.title,
+          icon: pending.view.icon,
+        });
+      }
     }
+  }
+
+  function seedPendingViews(pending: readonly PendingViewContribution[]): void {
+    for (const one of pending) seedPendingView(one);
+  }
+
+  // Seed lazy entries from manifest-declared views supplied at construction
+  // (this module's TSDoc) — the same {@link seedPendingView} the public
+  // {@link SlotRegistry.seedPendingViews} method uses.
+  for (const pending of deps.pendingViews ?? []) {
+    seedPendingView(pending);
   }
 
   return {
@@ -440,5 +506,6 @@ export function createSlotRegistry(deps: SlotRegistryDeps = {}): SlotRegistry {
     onDidChange,
     listSidebarPairs,
     listStatusBarItems,
+    seedPendingViews,
   };
 }
