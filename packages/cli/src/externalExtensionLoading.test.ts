@@ -1,8 +1,10 @@
 /**
  * External extension loading (GitHub issue #32; Req 2.1, 2.4-2.6, 2.8,
- * 10.3, 10.4; design.md §4.4): real, on-disk `user`-sourced extensions —
- * each immediate subdirectory of `~/.config/tecode/extensions` — loaded
- * via `import(pathToFileURL(file).href)` — load, activate, and contribute a
+ * 10.3, 10.4; design.md §4.4): real, on-disk external extensions — from
+ * BOTH sources Req 2.1 names, each immediate subdirectory of
+ * `~/.config/tecode/extensions` (`user`) and of
+ * `<workspaceRoot>/.tecode/extensions` (`workspace`) — loaded via
+ * `import(pathToFileURL(file).href)` — load, activate, and contribute a
  * working command AND view; a broken sibling (parse error, throwing
  * `activate`, invalid manifest) is isolated with a surfaced error and
  * never blocks the healthy one.
@@ -49,10 +51,15 @@ interface HarnessResult {
   fatal?: string;
 }
 
-async function runHarness(homeDir: string, commandId: string, viewId: string): Promise<HarnessResult> {
+async function runHarness(
+  homeDir: string,
+  commandId: string,
+  viewId: string,
+  workspaceRoot = "",
+): Promise<HarnessResult> {
   const harnessPath = join(import.meta.dir, "externalExtensionLoadHarness.ts");
   const proc = Bun.spawn({
-    cmd: ["bun", "run", harnessPath, commandId, viewId],
+    cmd: ["bun", "run", harnessPath, commandId, viewId, workspaceRoot],
     env: {
       ...process.env,
       HOME: homeDir,
@@ -206,5 +213,50 @@ test("a broken sibling (parse error / throwing activate / invalid manifest) is i
     ).toBe(true);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a real workspace-sourced extension under <workspaceRoot>/.tecode/extensions loads, activates, and contributes a working command AND view (Req 2.1, 10.4)", async () => {
+  // A temp HOME with NO user extensions at all, so anything the harness
+  // reports can only have come from the workspace source — this is what
+  // makes the assertion about `workspace` specifically, rather than about
+  // "some external extension somewhere".
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-extload-home-"));
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "tecode-extload-ws-"));
+  try {
+    await writeFixture(
+      join(workspaceRoot, ".tecode", "extensions"),
+      "ws",
+      `export default {
+        id: "fixture.workspace",
+        version: "0.0.1",
+        apiVersion: "1.0",
+        activationEvents: ["onStartup"],
+        contributes: {
+          commands: [{ id: "fixture.workspace.run", title: "Run" }],
+          views: [{ id: "fixture.workspace.view", title: "Workspace View", slot: "sidebar" }],
+        },
+      } as const;\n`,
+      `export function activate(ctx: { api: { commands: { register: Function }; ui: { registerView: Function } } }) {
+        ctx.api.commands.register("fixture.workspace.run", () => "workspace-ran");
+        ctx.api.ui.registerView("sidebar.view", "fixture.workspace.view", () => null);
+      }\n`,
+    );
+
+    const result = await runHarness(
+      homeDir,
+      "fixture.workspace.run",
+      "fixture.workspace.view",
+      workspaceRoot,
+    );
+
+    expect(result.loadedIds).toEqual(["fixture.workspace"]);
+    expect(result.states["fixture.workspace"]).toBe("active");
+    expect(result.commandResult).toBe("workspace-ran");
+    expect(result.sidebarViewResolved).toBe(true);
+    expect(result.skipped).toEqual([]);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 });

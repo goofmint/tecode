@@ -27,9 +27,11 @@
  * anything) actually lives under the host machine's real
  * `~/.config/tecode/extensions`.
  *
- * Reads two optional CLI args — a command id to `commands.execute()` after
- * startup activation, and a `sidebar.view` id to check for a resolved
- * (non-lazy, real-component) registration — and prints exactly ONE line of
+ * Reads three optional CLI args — a command id to `commands.execute()`
+ * after startup activation, a `sidebar.view` id to check for a resolved
+ * (non-lazy, real-component) registration, and a workspace root whose
+ * `.tecode/extensions` directory should be scanned alongside the user one
+ * (omitted/empty scans the user directory only) — and prints exactly ONE line of
  * JSON (a {@link HarnessResult}) to stdout, then exits 0. Any unexpected
  * throw from the harness's OWN setup (not the pipeline under test, which
  * is documented to never throw) is caught at the bottom, reported as
@@ -78,9 +80,13 @@ interface HarnessResult {
 }
 
 async function main(): Promise<void> {
-  const [, , commandIdArg, viewIdArg] = process.argv;
+  const [, , commandIdArg, viewIdArg, workspaceRootArg] = process.argv;
   const commandId = commandIdArg ?? "";
   const viewId = viewIdArg ?? "";
+  // Empty/absent means "scan the user directory only" — `loadExtensions`
+  // skips the workspace source entirely when given no `workspaceRoot`
+  // (`host/discovery.ts`'s `getWorkspaceExtensionsDir` call site).
+  const workspaceRoot = workspaceRootArg ?? "";
 
   const log = createHostLog();
   const sink = createNoopStatusSink();
@@ -105,10 +111,23 @@ async function main(): Promise<void> {
   const api = createTecodeApi({ commands, documents, fs, config, context, sink, slotRegistry });
 
   // The real pipeline under test (this module's TSDoc): no `fs`/
-  // `importModule` override, no `workspaceRoot` — `loadExtensions` scans
-  // the REAL `getUserExtensionsDir()`, which resolves against THIS
-  // process's real `$HOME` (set by the spawning test, at launch).
-  const loadResult = await loadExtensions({ log, sink, commands, configRegistrar: config, builtins: [] });
+  // `importModule` override — `loadExtensions` scans the REAL
+  // `getUserExtensionsDir()`, which resolves against THIS process's real
+  // `$HOME` (set by the spawning test, at launch), plus — when the test
+  // passed one — the REAL `getWorkspaceExtensionsDir(workspaceRoot)`
+  // (`<workspaceRoot>/.tecode/extensions`, Req 2.1). Both sources go
+  // through the same `import(pathToFileURL(file).href)` load path
+  // (`extensionRecords.ts`'s `loadUserOrWorkspaceModule`, which treats
+  // `user` and `workspace` identically), so covering workspace here
+  // exercises it for real rather than by assertion about shared code.
+  const loadResult = await loadExtensions({
+    log,
+    sink,
+    commands,
+    configRegistrar: config,
+    builtins: [],
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+  });
 
   // `ui/slotRegistry.ts`'s `SlotRegistry.seedPendingViews` — the deferred-
   // phase wiring `packages/cli/src/main.ts`'s `runDeferredPhase` performs
