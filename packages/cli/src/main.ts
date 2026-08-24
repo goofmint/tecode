@@ -589,7 +589,31 @@ export function buildAssemblyRoot(
    * and logs rather than letting a throw escape into `renderShell.tsx`'s
    * fire-and-forget `onCapabilitiesResolved` call site (`main.ts`'s
    * `runTecode`), where nothing would catch it. */
+  // Generation token guarding {@link applyKittyKeyboardVerdict}'s async
+  // gap — see that function's TSDoc. Same shape as `ui/themeLoader.ts`'s
+  // per-id `loadGenerations` map, which solves the identical
+  // "slow earlier load must not clobber a newer registration" problem.
+  let kittyVerdictGeneration = 0;
+
   async function applyKittyKeyboardVerdict(isKittyCapable: boolean): Promise<void> {
+    // Claim this verdict's generation BEFORE the early return, so that a
+    // `true` verdict also invalidates any `false` verdict still awaiting
+    // its loader below — that is the whole race being guarded against.
+    //
+    // `renderShell.tsx` calls back at most twice (that module's
+    // "`.once`, not `.on`" contract): once synchronously with whatever
+    // `renderer.capabilities` holds at mount — normally `null`, since the
+    // capability query is a round trip that has not been answered yet,
+    // which `resolveKittyKeyboardSupport` conservatively reads as NOT
+    // Kitty-capable — and once more when the real answer arrives. On a
+    // genuinely Kitty-capable terminal that is exactly a `false` verdict
+    // followed by a `true` one. The `false` verdict starts an async
+    // `loadFallbackKeybindings()`; the `true` verdict clears the layer
+    // synchronously. Without this guard, the earlier load resolving after
+    // that clear would re-apply the fallback overlay on a terminal that
+    // does not need it, leaving e.g. `ctrl+g` bound to the palette
+    // permanently.
+    const generation = ++kittyVerdictGeneration;
     if (isKittyCapable) {
       keymap.setFallbackEntries([]);
       return;
@@ -603,6 +627,9 @@ export function buildAssemblyRoot(
       });
       entries = [];
     }
+    // Superseded while the loader was in flight — drop the stale result
+    // rather than overwriting whatever the newer verdict already applied.
+    if (generation !== kittyVerdictGeneration) return;
     keymap.setFallbackEntries(entries);
   }
   const config = createConfigService({
