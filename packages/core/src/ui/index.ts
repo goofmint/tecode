@@ -106,6 +106,7 @@ export {
   Input,
   List,
   RegisteredView,
+  TAB_DIRTY_MARKER,
   Tabs,
   Tree,
   type InputProps,
@@ -191,6 +192,21 @@ export {
 } from "./modalCommands";
 
 export { ModalOverlay, type ModalOverlayProps } from "./modalOverlay";
+
+export {
+  createCloseDocumentWithPrompt,
+  createTabCommandHandlers,
+  registerTabCommands,
+  TAB_CLOSE_COMMAND,
+  TAB_CLOSE_OTHERS_COMMAND,
+  TAB_DEFAULT_KEYBINDINGS,
+  TAB_NEXT_COMMAND,
+  TAB_PREVIOUS_COMMAND,
+  type CloseOutcome,
+  type TabCommandHandlers,
+  type TabCommandsDeps,
+  type TabCommandsRegistrar,
+} from "./tabCommands";
 
 export {
   createWindowMessageService,

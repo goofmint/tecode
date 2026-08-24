@@ -7,12 +7,41 @@
 
 import { describe, expect, test } from "bun:test";
 import { act, useEffect, useState } from "react";
-import type { KeyEvent } from "@opentui/core";
+import type { CapturedFrame, KeyEvent } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import type { ComponentType } from "@tecode/api";
+import { createBaseTheme } from "../api/stubs";
 import { createContextService } from "../keymap/context";
 import { ContextFocusTracker, type FocusableNode } from "./focus";
-import { List, RegisteredView, Tabs, Tree, type ListItem, type TabItem, type TreeNode } from "./components";
+import { toColorInput } from "./theme";
+import {
+  List,
+  RegisteredView,
+  TAB_DIRTY_MARKER,
+  Tabs,
+  Tree,
+  type ListItem,
+  type TabItem,
+  type TreeNode,
+} from "./components";
+
+/** All spans across every row of a captured frame, flattened with their row
+ * index (matches `editorView.test.tsx`'s own local `flatten` helper) —
+ * convenient for "find the span covering this tab's text" assertions
+ * without hand-walking `frame.lines`. */
+function flattenSpans(
+  frame: CapturedFrame,
+): Array<{ row: number; col: number; text: string; fg: unknown; bg: unknown }> {
+  const out: Array<{ row: number; col: number; text: string; fg: unknown; bg: unknown }> = [];
+  frame.lines.forEach((line, row) => {
+    let col = 0;
+    for (const span of line.spans) {
+      out.push({ row, col, text: span.text, fg: span.fg, bg: span.bg });
+      col += span.width;
+    }
+  });
+  return out;
+}
 
 /** A minimal `KeyEvent`-shaped object for driving {@link Tree}'s `onKeyDown`
  * directly (this suite's "keyboard nav" tests) — only `name` matters to
@@ -377,6 +406,58 @@ describe("Tabs (tecode.ui.Tabs)", () => {
     const frame = captureCharFrame();
     expect(frame).toContain("main.ts");
     expect(frame).toContain("utils.ts");
+  });
+
+  test("a dirty tab's displayed name carries the dirty marker; a non-dirty tab's does not (Task 3.5, Req 6.5)", async () => {
+    const tabs: TabItem[] = [
+      { id: "a", label: "main.ts", dirty: true },
+      { id: "b", label: "utils.ts", dirty: false },
+      { id: "c", label: "readme.md" }, // dirty omitted entirely — same as false.
+    ];
+    const { renderOnce, captureCharFrame } = await testRender(<Tabs tabs={tabs} />, {
+      width: 60,
+      height: 3,
+    });
+    await renderOnce();
+    const frame = captureCharFrame();
+
+    expect(frame).toContain(`${TAB_DIRTY_MARKER}main.ts`);
+    expect(frame).toContain("utils.ts");
+    expect(frame).not.toContain(`${TAB_DIRTY_MARKER}utils.ts`);
+    expect(frame).toContain("readme.md");
+    expect(frame).not.toContain(`${TAB_DIRTY_MARKER}readme.md`);
+  });
+
+  test("the active tab (via activeId) carries the theme's selected tab colors; the inactive tab does not", async () => {
+    const theme = createBaseTheme();
+    const tabs: TabItem[] = [
+      { id: "a", label: "main.ts" },
+      { id: "b", label: "utils.ts" },
+    ];
+    const { renderOnce, captureSpans } = await testRender(<Tabs tabs={tabs} activeId="a" />, {
+      width: 60,
+      height: 3,
+    });
+    await renderOnce();
+
+    const spans = flattenSpans(captureSpans());
+    const activeBg = toColorInput(theme.colors["tab.activeBackground"]);
+    const activeFg = toColorInput(theme.colors["tab.activeForeground"]);
+    const inactiveBg = toColorInput(theme.colors["tab.inactiveBackground"]);
+
+    const mainSpans = spans.filter((s) => s.text.includes("main.ts"));
+    const utilsSpans = spans.filter((s) => s.text.includes("utils.ts"));
+    expect(mainSpans.length).toBeGreaterThan(0);
+    expect(utilsSpans.length).toBeGreaterThan(0);
+
+    for (const span of mainSpans) {
+      expect(JSON.stringify(span.bg)).toBe(JSON.stringify(activeBg));
+      expect(JSON.stringify(span.fg)).toBe(JSON.stringify(activeFg));
+    }
+    for (const span of utilsSpans) {
+      expect(JSON.stringify(span.bg)).toBe(JSON.stringify(inactiveBg));
+      expect(JSON.stringify(span.bg)).not.toBe(JSON.stringify(activeBg));
+    }
   });
 });
 

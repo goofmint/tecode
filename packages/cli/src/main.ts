@@ -34,8 +34,10 @@ import {
   registerCoreConfiguration,
   registerModalCommands,
   registerOpenFileCommand,
+  registerTabCommands,
   registerTecodeAlias,
   registerThemeSelectCommand,
+  TAB_DEFAULT_KEYBINDINGS,
   wireEditorLangIdContext,
   wireThemeConfigSync,
   type BindingTable,
@@ -222,6 +224,14 @@ export interface AssemblyRoot {
    * `themeSelectCommand` above. Disposed alongside every other
    * startup-owned subscription in {@link wireProcessExit}. */
   openFileCommand: Disposable;
+  /** The 4 `tab.*` commands' registration (Task 3.5, Req 6.5, `ui/
+   * tabCommands.ts`) — registered directly on `commands` for the same
+   * privilege-boundary reason as `openFileCommand`/`themeSelectCommand`
+   * above. Their default keybindings were already fed into `keymap`'s
+   * `defaults` layer alongside `MODAL_DEFAULT_KEYBINDINGS`. Disposed
+   * alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  tabCommands: Disposable;
   /** The resolved workspace root this root was built for. */
   workspaceRoot: string;
   /** The layered keybinding table, kept up to date across every startup
@@ -438,8 +448,9 @@ export function buildAssemblyRoot(
   // `MODAL_DEFAULT_KEYBINDINGS` (Task 3.1, `ui/modalCommands.ts`) is this
   // codebase's first real occupant of the `defaults` layer
   // (`keymapState.ts`'s TSDoc) — core-owned bindings, not an extension
-  // manifest's.
-  const keymap = createKeymapState(log, MODAL_DEFAULT_KEYBINDINGS);
+  // manifest's. `TAB_DEFAULT_KEYBINDINGS` (Task 3.5, `ui/tabCommands.ts`)
+  // joins it here, same layer, same reasoning.
+  const keymap = createKeymapState(log, [...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS]);
   const config = createConfigService({
     log,
     sink,
@@ -593,6 +604,18 @@ export function buildAssemblyRoot(
     log,
   });
 
+  // The 4 `tab.*` commands (Task 3.5, Req 6.5, `ui/tabCommands.ts`'s
+  // TSDoc): another PRIVILEGED registration straight on `commands`,
+  // closing over `documents`/`editorSession` directly, same as
+  // `openFileCommand` above. `showQuickPick` comes from `api.window`,
+  // backed by the same real `modalService` `theme.select` uses.
+  const tabCommands = registerTabCommands(commands, {
+    documents,
+    editorSession,
+    showQuickPick: api.window.showQuickPick,
+    log,
+  });
+
   // Live `workbench.colorTheme` config-change subscription (Req 7.5,
   // `ui/themeConfigSync.ts`'s TSDoc) — the INITIAL value is applied by
   // `runTecode` after `config.ready` settles, not here (same TSDoc).
@@ -642,6 +665,7 @@ export function buildAssemblyRoot(
     themeConfigSync,
     themeSelectCommand,
     openFileCommand,
+    tabCommands,
     workspaceRoot,
     keymap,
     chordMachine,
@@ -822,6 +846,7 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
     root.openFileCommand.dispose();
+    root.tabCommands.dispose();
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();
@@ -968,6 +993,7 @@ export async function runTecode(
     root.themeConfigSync.dispose();
     root.themeSelectCommand.dispose();
     root.openFileCommand.dispose();
+    root.tabCommands.dispose();
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();

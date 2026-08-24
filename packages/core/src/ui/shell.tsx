@@ -584,6 +584,54 @@ export interface ShellProps {
   highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
 }
 
+/** Re-renders the calling component whenever any currently-open document's
+ * `dirty` flag can have changed (Task 3.5, Req 6.5): a document's `dirty`
+ * flip is NOT reflected in `openDocuments`' own array identity
+ * (`useOpenDocuments` above only re-renders — and re-memoizes — on
+ * `onDidOpen`/`onDidClose`, never on a document's own `onDidChange`/
+ * `onDidSave`), so `editorTabs`' `dirty: d.dirty` read below would
+ * otherwise only ever reflect whatever `dirty` happened to read at the
+ * moment SOME OTHER open/close-driven render last ran. Two event sources
+ * are needed, not one: `document.onDidChange` fires the moment an edit
+ * sets `dirty = true` (`buffer/document.ts`'s `applyEdits`), but a
+ * successful save clears `dirty` via `CoreDocument.markSaved()` WITHOUT
+ * itself firing `onDidChange` (`document.ts`'s `markSaved`'s own TSDoc) —
+ * `DocumentManager.onDidSave` is what reports that transition instead
+ * (`documentManager.ts`'s `saveNow`). Subscribes to both per open
+ * document.
+ *
+ * **Re-subscribes exactly when the open set changes, not on every dirty
+ * flip** (this hook's own correctness requirement — a stale subscription
+ * set would silently stop tracking a document closed-then-reopened under
+ * a different in-memory instance, or leak a subscription for one no
+ * longer open): keyed on `[documents, openDocuments]` in the effect's
+ * dependency array — `openDocuments` is `useOpenDocuments`'s `useMemo`
+ * result, a stable reference across renders UNTIL the open set itself
+ * changes (that hook's own TSDoc), so this effect only re-runs (tearing
+ * down the old per-document subscriptions and building fresh ones) on a
+ * real open/close, never merely because some document's `dirty` flag
+ * flipped and triggered this hook's own `forceRender`. No-op (no
+ * subscriptions at all) when `documents` is `undefined` — matches
+ * `useOpenDocuments`'s own "no `DocumentManager` wired in" contract. */
+function useDocumentDirtyTick(
+  documents: DocumentManager | undefined,
+  openDocuments: readonly CoreDocument[],
+): void {
+  const [, forceRender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!documents) return undefined;
+    const disposables: Disposable[] = openDocuments.map((d) => d.onDidChange(() => forceRender()));
+    disposables.push(documents.onDidSave(() => forceRender()));
+    // Closes the subscribe-after-render race — see useSlotViews's TSDoc: a
+    // dirty flip landing in the gap between the render that read `d.dirty`
+    // and this effect actually subscribing must not be lost.
+    forceRender();
+    return () => {
+      for (const disposable of disposables) disposable.dispose();
+    };
+  }, [documents, openDocuments]);
+}
+
 /** Re-renders the calling component whenever `session` reports a change
  * (Task 2.2, `ui/editorSession.ts`) — same subscribe-then-force-render
  * shape, including the same subscribe-after-render race fix, as
@@ -615,6 +663,9 @@ export function Shell(props: ShellProps): ReactNode {
   // `props.documents` once it's given — see ShellProps' TSDoc for the
   // fallback when it isn't.
   const openDocuments = useOpenDocuments(props.documents);
+  // Task 3.5, Req 6.5: re-render on a dirty-flag flip so `editorTabs`'
+  // `dirty: d.dirty` below stays live — see this hook's own TSDoc.
+  useDocumentDirtyTick(props.documents, openDocuments);
   // Task 2.1's original, component-local active-uri/EditorState tracking —
   // used only when `props.editorSession` is not given (ShellProps' TSDoc on
   // `editorSession`). Both hooks below still run unconditionally (Rules of
@@ -679,7 +730,7 @@ export function Shell(props: ShellProps): ReactNode {
       ? openDocuments.find((d) => d.uri === activeDocumentUri)
       : undefined;
   const editorTabs: TabItem[] = hasOpenDocuments
-    ? openDocuments.map((d) => ({ id: d.uri, label: basename(uriToPath(d.uri)) }))
+    ? openDocuments.map((d) => ({ id: d.uri, label: basename(uriToPath(d.uri)), dirty: d.dirty }))
     : (props.editorTabs ?? []);
   const activeEditorTabId = hasOpenDocuments ? activeDocumentUri : props.activeEditorTabId;
   const onSelectEditorTab = hasOpenDocuments ? setActiveDocumentUri : props.onSelectEditorTab;
