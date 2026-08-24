@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   getUserConfigDir,
   getUserExtensionsDir,
+  getUserFallbackKeybindingsPath,
   getUserKeybindingsPath,
   getUserLayoutStatePath,
   getUserSettingsPath,
@@ -86,5 +87,12 @@ describe("derived file paths", () => {
 
   test("getUserLayoutStatePath appends state.json to the config dir", () => {
     expect(getUserLayoutStatePath()).toBe(join(getUserConfigDir(), "state.json"));
+  });
+
+  test("getUserFallbackKeybindingsPath appends keybindings.fallback.json to the config dir (Req 4.7, distinct from keybindings.json)", () => {
+    expect(getUserFallbackKeybindingsPath()).toBe(
+      join(getUserConfigDir(), "keybindings.fallback.json"),
+    );
+    expect(getUserFallbackKeybindingsPath()).not.toBe(getUserKeybindingsPath());
   });
 });

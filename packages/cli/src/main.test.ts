@@ -361,3 +361,119 @@ test("buildAssemblyRoot's first-frame theme differs correctly between truecolor 
   }
 });
 
+// --- applyKittyKeyboardVerdict (Req 4.7, design.md §6.5, Task 4.2) ---
+//
+// These exercise the WIRING from a Kitty-capability verdict, through
+// `deps.loadFallbackKeybindings` (injected here — production's default
+// wraps `@tecode/core`'s `loadFallbackKeybindings` against the real
+// filesystem, `buildAssemblyRoot`'s own parameter TSDoc), to
+// `keymap.setFallbackEntries` — `keymapState.test.ts` already proves
+// `setFallbackEntries`'s own precedence behavior in isolation; this proves
+// `main.ts` actually calls it with the right thing at the right time, with
+// no real `CliRenderer`/terminal/filesystem involved at all.
+
+test("applyKittyKeyboardVerdict(false) loads the injected fallback entries into the fallback layer", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tecode-cli-kitty-verdict-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = dir;
+  process.env["APPDATA"] = dir;
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(dir, {
+      loadFallbackKeybindings: () =>
+        Promise.resolve([{ key: "ctrl+g", command: "workbench.action.showCommands" }]),
+    });
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+  }
+
+  try {
+    await root.applyKittyKeyboardVerdict(false);
+    const resolved = root.keymap.getTable().lookup("ctrl+g", () => undefined);
+    expect(resolved?.command).toBe("workbench.action.showCommands");
+    expect(resolved?.layer).toBe("fallback");
+  } finally {
+    root.config.dispose();
+    root.chordMachine.dispose();
+    root.editorSession.dispose();
+    root.editorLangIdSync.dispose();
+    root.themeConfigSync.dispose();
+    root.themeSelectCommand.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("applyKittyKeyboardVerdict(true) clears the fallback layer to [] without even calling the loader", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tecode-cli-kitty-verdict-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = dir;
+  process.env["APPDATA"] = dir;
+  let loaderCalled = false;
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(dir, {
+      loadFallbackKeybindings: () => {
+        loaderCalled = true;
+        return Promise.resolve([{ key: "ctrl+g", command: "workbench.action.showCommands" }]);
+      },
+    });
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+  }
+
+  try {
+    await root.applyKittyKeyboardVerdict(true);
+    expect(root.keymap.getTable().lookup("ctrl+g", () => undefined)).toBeUndefined();
+    expect(loaderCalled).toBe(false);
+  } finally {
+    root.config.dispose();
+    root.chordMachine.dispose();
+    root.editorSession.dispose();
+    root.editorLangIdSync.dispose();
+    root.themeConfigSync.dispose();
+    root.themeSelectCommand.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("applyKittyKeyboardVerdict(false) never throws even when the loader itself throws — degrades to []", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tecode-cli-kitty-verdict-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = dir;
+  process.env["APPDATA"] = dir;
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(dir, {
+      loadFallbackKeybindings: () => Promise.reject(new Error("boom")),
+    });
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+  }
+
+  try {
+    await expect(root.applyKittyKeyboardVerdict(false)).resolves.toBeUndefined();
+    expect(root.keymap.getTable().entries().size).toBe(9); // unchanged: modal + tab defaults only
+    expect(root.log.entries().some((e) => e.level === "error")).toBe(true);
+  } finally {
+    root.config.dispose();
+    root.chordMachine.dispose();
+    root.editorSession.dispose();
+    root.editorLangIdSync.dispose();
+    root.themeConfigSync.dispose();
+    root.themeSelectCommand.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+

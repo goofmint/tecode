@@ -21,10 +21,19 @@
  * `bindingTable.ts`) requires all four layers regardless of which are
  * populated.
  *
- * **`fallback` is `[]` today, deliberately** — the terminal-capability
- * fallback overlay (Req 4.7). `terminalCapabilities.ts`'s stub result
- * feeds this once Task 4.2 wires real detection; until then it stays
- * empty, exactly like `bindingTable.ts`'s own TSDoc says it may.
+ * **`fallback` — the terminal-capability fallback overlay** (Req 4.7,
+ * design.md §6.5, Task 4.2): starts `[]`, exactly like `user`/`extension`
+ * (below), and is rebuilt via {@link setFallbackEntries} exactly once per
+ * run — `main.ts`'s `runTecode` calls it from `renderShell.tsx`'s
+ * `onCapabilitiesResolved` callback, with either `@tecode/core`'s
+ * `loadFallbackKeybindings` result (terminal is NOT Kitty-capable) or `[]`
+ * (terminal IS Kitty-capable, or the answer is still unknown — see that
+ * module's TSDoc for why "unknown" degrades the same way as "no"). Unlike
+ * `user`/`extension`, this is expected to be called at most once in a real
+ * run (a terminal's capabilities do not change mid-session) — `setFallbackEntries`
+ * itself has no such restriction, though; it is a plain replace, callable
+ * any number of times, exactly like its two siblings, which is what lets
+ * tests call it directly without needing a fake terminal.
  */
 
 import { createBindingTable, type BindingTable, type HostLog } from "@tecode/core";
@@ -48,6 +57,15 @@ export interface KeymapState {
    * phase with `LoadExtensionsResult.extensionKeybindings` once discovery
    * and registration have run. */
   setExtensionEntries(entries: readonly KeybindingContribution[]): void;
+  /** Rebuild with a new `fallback` layer (Req 4.7, design.md §6.5, Task
+   * 4.2) — called from `main.ts`'s `runTecode` once the terminal's Kitty
+   * Keyboard Protocol capability is known, with either the loaded
+   * `keybindings.fallback.json` entries (not Kitty-capable) or `[]`
+   * (Kitty-capable). Sits BELOW `extension`/`user` in precedence
+   * (`bindingTable.ts`'s `LAYER_ORDER`) — an extension's own binding, and
+   * certainly the user's own `keybindings.json`, always wins over this
+   * overlay on the same key. */
+  setFallbackEntries(entries: readonly KeybindingContribution[]): void;
 }
 
 /** Build a {@link KeymapState} (Req 4.1-4.3). `defaults` seeds the
@@ -62,11 +80,17 @@ export function createKeymapState(
   const defaultEntries = defaults.slice();
   let userEntries: KeybindingContribution[] = [];
   let extensionEntries: KeybindingContribution[] = [];
+  let fallbackEntries: KeybindingContribution[] = [];
   let table = build();
 
   function build(): BindingTable {
     return createBindingTable(
-      { defaults: defaultEntries, fallback: [], extension: extensionEntries, user: userEntries },
+      {
+        defaults: defaultEntries,
+        fallback: fallbackEntries,
+        extension: extensionEntries,
+        user: userEntries,
+      },
       { log },
     );
   }
@@ -79,6 +103,10 @@ export function createKeymapState(
     },
     setExtensionEntries(entries) {
       extensionEntries = entries.slice();
+      table = build();
+    },
+    setFallbackEntries(entries) {
+      fallbackEntries = entries.slice();
       table = build();
     },
   };
