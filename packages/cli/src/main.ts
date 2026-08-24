@@ -403,6 +403,25 @@ export interface AssemblyRoot {
  * to detect or special-case a `--compile` binary vs. a plain script run,
  * since dropping `argv[0]` and re-adding `execPath` happens to be exactly
  * right for both shapes without needing to tell them apart.
+ *
+ * **Known MVP limitation — the renderer is not torn down first.**
+ * `process.exit()` fires neither `"beforeExit"` nor any signal, and
+ * OpenTUI wires its terminal-restoring `CliRenderer.destroy()` to exactly
+ * those two (`beforeExit` plus its `exitSignals` list: `SIGINT`,
+ * `SIGTERM`, `SIGQUIT`, ...) and never to `"exit"`. `wireProcessExit`'s
+ * own `shutdown()` is likewise signal-driven, so this path skips it too.
+ * The parent therefore dies with the alternate screen, raw mode and the
+ * Kitty keyboard flags still set. In the normal case that is invisible:
+ * the child re-runs the same startup sequence and re-establishes all
+ * three before it paints. It matters only if the child fails to start at
+ * all, which leaves the terminal in raw mode with no process owning it
+ * (`reset` recovers it). Fixing this properly needs the `CliRenderer` to
+ * be reachable from here — `renderShell.tsx` deliberately does not expose
+ * it today — so it is left as documented MVP behaviour, consistent with
+ * design.md §4.4 calling the whole full-restart approach MVP-acceptable.
+ * Layout state itself is NOT at risk either way: `extensions.reload`'s
+ * handler awaits `layoutState.flush()` to completion before this function
+ * is ever called (`ui/extensionsReloadCommand.ts`'s TSDoc).
  */
 function reExecProcess(): void {
   Bun.spawn([process.execPath, ...process.argv.slice(1)], {
