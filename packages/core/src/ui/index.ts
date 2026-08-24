@@ -95,6 +95,13 @@ export {
 } from "./themeConfigSync";
 
 export {
+  createExtensionsReloadHandler,
+  EXTENSIONS_RELOAD_COMMAND_ID,
+  registerExtensionsReloadCommand,
+  type ExtensionsReloadDeps,
+} from "./extensionsReloadCommand";
+
+export {
   ContextFocusTracker,
   useFocusTracking,
   type ContextFocusTrackerProps,

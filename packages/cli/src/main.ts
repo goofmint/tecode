@@ -32,6 +32,7 @@ import {
   MODAL_DEFAULT_KEYBINDINGS,
   pathToUri,
   registerCoreConfiguration,
+  registerExtensionsReloadCommand,
   registerModalCommands,
   registerOpenFileCommand,
   registerTabCommands,
@@ -232,6 +233,14 @@ export interface AssemblyRoot {
    * alongside every other startup-owned subscription in
    * {@link wireProcessExit}. */
   tabCommands: Disposable;
+  /** The `extensions.reload` command registration (Req 2.8, design.md
+   * §4.4, `ui/extensionsReloadCommand.ts`) — registered directly on
+   * `commands` for the same privilege-boundary reason as `openFileCommand`/
+   * `themeSelectCommand`/`tabCommands` above: re-execing the whole process
+   * is composition-root-only capability, not something `@tecode/api`
+   * exposes. Disposed alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  extensionsReloadCommand: Disposable;
   /** The resolved workspace root this root was built for. */
   workspaceRoot: string;
   /** The layered keybinding table, kept up to date across every startup
@@ -366,6 +375,43 @@ export interface AssemblyRoot {
  * the chord machine therefore always resolves strokes against whichever
  * table is current, with no changes needed to `chords.ts` itself.
  */
+
+/**
+ * `extensions.reload`'s `reExec` closure (Req 2.8, design.md §4.4: "MVP
+ * implementation re-execs the process (`Bun.spawn` of `process.execPath`
+ * with the same argv, then exit)"). Lives here, not in `ui/
+ * extensionsReloadCommand.ts`, for the same reason `theme.select`'s
+ * `ThemeService` and `workbench.action.files.openUri`'s
+ * `EditorSessionService` closures live in this file rather than their own
+ * command modules: `Bun.spawn`/`process.exit` are composition-root-only
+ * capabilities, and `extensionsReloadCommand.ts` is written to be testable
+ * with a plain fake `reExec` instead of actually spawning a subprocess
+ * (that module's own TSDoc).
+ *
+ * **`process.argv` shape caveat for `bun build --compile` binaries**: this
+ * always drops exactly `argv[0]` (whatever the invoking path was) and
+ * replaces it with `process.execPath` — under `bun run packages/cli/src/
+ * main.ts ...args`, `argv` is `[bunExecutable, scriptPath, ...args]`, so
+ * `argv.slice(1)` correctly keeps `[scriptPath, ...args]` and re-adds the
+ * bun executable in front; under a compiled binary, `argv` collapses to
+ * `[binaryPath, ...args]` with no separate script-path slot at all, so
+ * `argv.slice(1)` is just `[...args]` and `execPath` (the binary itself
+ * under `--compile`) stands in for `binaryPath`. Both forms reconstruct
+ * the original invocation correctly PROVIDED `argv[0]` is genuinely the
+ * path this process was invoked with (true for both of tecode's own
+ * launch paths above) — this function assumes that, and does not attempt
+ * to detect or special-case a `--compile` binary vs. a plain script run,
+ * since dropping `argv[0]` and re-adding `execPath` happens to be exactly
+ * right for both shapes without needing to tell them apart.
+ */
+function reExecProcess(): void {
+  Bun.spawn([process.execPath, ...process.argv.slice(1)], {
+    cwd: process.cwd(),
+    stdio: ["inherit", "inherit", "inherit"],
+  });
+  process.exit(0);
+}
+
 export function buildAssemblyRoot(
   workspaceRoot: string = process.cwd(),
   deps: { log?: HostLog } = {},
@@ -616,6 +662,18 @@ export function buildAssemblyRoot(
     log,
   });
 
+  // `extensions.reload` (Req 2.8, design.md §4.4, `ui/
+  // extensionsReloadCommand.ts`'s TSDoc): another PRIVILEGED registration
+  // straight on `commands`, closing over `layoutState` (already built
+  // above) and `reExecProcess` (this module's TSDoc) — same
+  // privilege-boundary reasoning as `themeSelectCommand`/`openFileCommand`/
+  // `tabCommands` above.
+  const extensionsReloadCommand = registerExtensionsReloadCommand(commands, {
+    layoutState,
+    reExec: reExecProcess,
+    log,
+  });
+
   // Live `workbench.colorTheme` config-change subscription (Req 7.5,
   // `ui/themeConfigSync.ts`'s TSDoc) — the INITIAL value is applied by
   // `runTecode` after `config.ready` settles, not here (same TSDoc).
@@ -666,6 +724,7 @@ export function buildAssemblyRoot(
     themeSelectCommand,
     openFileCommand,
     tabCommands,
+    extensionsReloadCommand,
     workspaceRoot,
     keymap,
     chordMachine,
@@ -735,6 +794,18 @@ export async function runDeferredPhase(
   // layer now that they are known (Phase 2's plan) — the user layer was
   // already wired synchronously via ConfigService's onKeybindingsChange.
   root.keymap.setExtensionEntries(loadResult.extensionKeybindings);
+
+  // Feed every `contributes.views` entry discovered by `loadExtensions`
+  // into the slot registry now that discovery has actually run (`ui/
+  // slotRegistry.ts`'s `SlotRegistry.seedPendingViews`'s TSDoc on why this
+  // can't happen at construction time in this codebase's real startup
+  // order: `buildAssemblyRoot`'s sync phase builds `slotRegistry` — and
+  // renders the Shell from it — strictly before this deferred phase ever
+  // runs, so `SlotRegistryDeps.pendingViews` at construction always sees
+  // `[]`). This is what makes a real extension's `sidebar`/`panel` view
+  // (e.g. `tecode.explorer`'s `sidebar` view, `explorer/manifest.ts`)
+  // actually reach the rendered ActivityBar/Sidebar/Panel at all.
+  root.slotRegistry.seedPendingViews(loadResult.pendingViews);
 
   // Feed every `contributes.themes` entry discovered by `loadExtensions`
   // into the theme registry now that both the contributions AND each
@@ -847,6 +918,7 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.themeSelectCommand.dispose();
     root.openFileCommand.dispose();
     root.tabCommands.dispose();
+    root.extensionsReloadCommand.dispose();
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();
@@ -994,6 +1066,7 @@ export async function runTecode(
     root.themeSelectCommand.dispose();
     root.openFileCommand.dispose();
     root.tabCommands.dispose();
+    root.extensionsReloadCommand.dispose();
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();
