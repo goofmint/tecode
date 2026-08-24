@@ -117,7 +117,7 @@ export interface CreateTecodeApiDeps {
    * as before (`stubs.ts`'s `createEditorStub`/`createWindowStub`) — Task
    * 2.3 adds a real backing, not a breaking change to the stub contract.
    */
-  editorSession?: Pick<EditorSessionService, "getActiveDocument" | "getState" | "setState">;
+  editorSession?: Pick<EditorSessionService, "getActiveDocument" | "getState" | "setState" | "onDidChange">;
   /**
    * Backs `tecode.editor.find` (Req 11.1, design.md §13's "pure command
    * handlers... Find/replace state is per-editor, rendered as a...
@@ -162,11 +162,13 @@ export interface CreateTecodeApiDeps {
    * `register` with no consumer behind it, and `current` always the
    * hardcoded base palette.
    */
-  themeRegistry?: Pick<ThemeRegistry, "register">;
-  /** Backs `tecode.themes.current` (Task 2.6, `ui/themeService.ts`) — see
-   * {@link CreateTecodeApiDeps.themeRegistry}'s TSDoc for the pairing
-   * requirement. */
-  themeService?: Pick<ThemeService, "get">;
+  themeRegistry?: Pick<ThemeRegistry, "register" | "get">;
+  /** Backs `tecode.themes.current`/`currentLabel`/`onDidChange` (Task 2.6,
+   * 3.4, `ui/themeService.ts`) — see {@link CreateTecodeApiDeps.themeRegistry}'s
+   * TSDoc for the pairing requirement. `getActiveThemeId` + `themeRegistry.
+   * get` together resolve `currentLabel` (Req 11.6) — `ResolvedTheme`
+   * itself carries no id/label, only `ThemeRegistry.get(id)?.label` does. */
+  themeService?: Pick<ThemeService, "get" | "getActiveThemeId" | "onDidChange">;
   /**
    * Backs the REAL `tecode.languages` (Task 2.8, `languages/
    * languageRegistry.ts`) — `register`/`getLanguage` delegate straight to
@@ -279,6 +281,19 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     get current() {
       return realThemes ? realThemes.service.get() : themesStub.current;
     },
+    // Req 11.6's "active theme name" (Task 3.4): the active id
+    // (`themeService.getActiveThemeId()`) looked up in the registry for its
+    // `label` — falls back to the stub's hardcoded label if either half of
+    // the pairing is missing, or (defensively) if the active id is
+    // somehow unknown to the registry (unreachable in practice: every id
+    // `ThemeService` can report came from a successful `registry.get`
+    // lookup in the first place).
+    get currentLabel() {
+      if (!realThemes) return themesStub.currentLabel;
+      const id = realThemes.service.getActiveThemeId();
+      return realThemes.registry.get(id)?.label ?? themesStub.currentLabel;
+    },
+    onDidChange: realThemes ? realThemes.service.onDidChange : themesStub.onDidChange,
   });
 
   const windowStub = createWindowStub();

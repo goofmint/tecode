@@ -199,3 +199,19 @@ export {
   type WindowMessageService,
   type WindowMessageServiceDeps,
 } from "./windowMessageService";
+
+export {
+  createHostErrorStatusSink,
+  DEFAULT_HOST_ERROR_TIMEOUT_MS,
+  HOST_ERROR_STATUS_BAR_ITEM_ID,
+  HOST_ERROR_STATUS_BAR_PRIORITY,
+  type HostErrorStatusSink,
+  type HostErrorStatusSinkDeps,
+} from "./hostErrorSink";
+
+export {
+  CHORD_PENDING_STATUS_BAR_ITEM_ID,
+  CHORD_PENDING_STATUS_BAR_PRIORITY,
+  createChordPendingIndicator,
+  type ChordPendingIndicatorDeps,
+} from "./chordPendingIndicator";

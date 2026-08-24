@@ -68,8 +68,13 @@ export interface EditorNamespaceDeps {
   sink: StatusSink;
   /** The live active-document/selection seam (Task 2.2). Narrowed to a
    * `Pick` (matches `editor/inputRouter.ts`'s own dependency narrowing) so
-   * a test can inject a minimal fake instead of a whole real service. */
-  editorSession: Pick<EditorSessionService, "getActiveDocument" | "getState" | "setState">;
+   * a test can inject a minimal fake instead of a whole real service.
+   * `onDidChange` (Task 3.4, Req 11.6) backs `EditorNamespace.onDidChange`
+   * directly — `EditorSessionService.onDidChange` already fires on exactly
+   * the two cases that namespace documents (active-editor switch via
+   * `setActiveDocumentUri`/`onDidOpen`/`onDidClose`, and a selection/cursor
+   * write via `setState`), so no wrapping/re-filtering is needed here. */
+  editorSession: Pick<EditorSessionService, "getActiveDocument" | "getState" | "setState" | "onDidChange">;
   /** Backs `tecode.editor.find` (Req 11.1, design.md §13) — the ready-made
    * `FindNamespace` `create.ts` builds from a `FindService`, or omitted for
    * `createFindStub()`'s inert no-op surface (a caller that wires a real
@@ -197,5 +202,12 @@ export function createEditorNamespace(deps: EditorNamespaceDeps): EditorNamespac
     },
 
     find: deps.find ?? createFindStub(),
+
+    // Direct passthrough (this module's TSDoc): `EditorSessionService.
+    // onDidChange` already fires on precisely the union `EditorNamespace.
+    // onDidChange`'s `@tecode/api` TSDoc documents, so there is nothing to
+    // wrap — same "same function references, no wrapper closures" style
+    // `create.ts` uses for its own delegated namespaces.
+    onDidChange: editorSession.onDidChange,
   };
 }

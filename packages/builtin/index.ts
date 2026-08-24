@@ -26,10 +26,12 @@
  * (`ctrl+p`), both thin wrappers over `tecode.window.showQuickPick`.
  * `explorer` (Task 3.3, Req 11.2) is the fifth — a directory tree over
  * `workspace.fs.readdir`/`watch`, create/rename/delete, `.gitignore`-aware
- * visibility, and `ctrl+shift+e`. Every remaining `packages/builtin/*`
- * package (`keybindings-editor`, `statusbar`) is still a placeholder with
- * no `manifest.ts` — each is its own later task (tasks.md's Phase 3/4
- * built-in tasks). `themes-default` (Task 2.7, Req 11.4) and
+ * visibility, and `ctrl+shift+e`. `statusbar` (Task 3.4, Req 11.6) is the
+ * sixth — language/EOL/read-only/dirty on the left, cursor line/column and
+ * the active theme name on the right, all via `tecode.window.
+ * setStatusBarItem`. `packages/builtin/keybindings-editor` is still a
+ * placeholder with no `manifest.ts` — its own later task (tasks.md's Phase
+ * 4 built-in task). `themes-default` (Task 2.7, Req 11.4) and
  * `languages-basic` (Task 2.9, Req 8.4) are the second and third.
  *
  * **`builtinThemeAssets`** (Task 2.7, design.md §3): the embedded-JSON
@@ -52,6 +54,8 @@ import * as editorCoreModule from "./editor-core/index";
 import editorCoreManifest from "./editor-core/manifest";
 import * as explorerModule from "./explorer/index";
 import explorerManifest from "./explorer/manifest";
+import * as statusbarModule from "./statusbar/index";
+import statusbarManifest from "./statusbar/manifest";
 import * as themesDefaultModule from "./themes-default/index";
 import themesDefaultManifest, {
   DARK_MODERN_THEME_ID,
@@ -92,6 +96,7 @@ export const builtinManifests: Manifest[] = [
   languagesBasicManifest,
   commandPaletteManifest,
   explorerManifest,
+  statusbarManifest,
 ];
 
 /** Every built-in extension's real implementation module, keyed by
@@ -104,6 +109,7 @@ export const builtinModules: Record<string, BuiltinExtensionModule> = {
   [languagesBasicManifest.id]: languagesBasicModule,
   [commandPaletteManifest.id]: commandPaletteModule,
   [explorerManifest.id]: explorerModule,
+  [statusbarManifest.id]: statusbarModule,
 };
 
 /** Every built-in extension's embedded theme JSON assets, keyed by the

@@ -305,6 +305,23 @@ export interface EditorNamespace {
   setSelections(selections: readonly Selection[]): void;
   /** In-buffer find/replace (Req 11.1, design.md §13). */
   find: FindNamespace;
+  /**
+   * Fires whenever the active editor changes in a way a status line or
+   * similar always-on summary view would want to redraw for (Task 3.4, Req
+   * 11.6): the active editor SWITCHING (a different tab/document becomes
+   * active, including to/from "no active editor") AND the active editor's
+   * selections/cursor changing (a plain caret move, not just a text edit).
+   * Carries no payload — the same "just re-read whatever you need, don't
+   * diff what changed" shape as this codebase's other coarse `onDidChange`
+   * events (`ThemesNamespace.onDidChange`, `ConfigNamespace.onDidChange`).
+   * Does NOT fire on every keystroke by itself — a plain text edit with no
+   * selection change fires `Document.onDidChange` instead (still reachable
+   * via `window.activeEditor.document.onDidChange`), not this event; a
+   * caller that wants both should subscribe to each once, re-subscribing
+   * `document.onDidChange` on every active-editor switch this event reports
+   * (`editor-core`/`statusbar`'s own pattern).
+   */
+  onDidChange: Event<void>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -411,6 +428,27 @@ export interface ThemesNamespace {
   register(contribution: ThemeContribution): Disposable;
   /** The currently active, fully resolved theme. */
   readonly current: ResolvedTheme;
+  /**
+   * The currently active theme's display name (its `ThemeContribution.
+   * label` — Task 3.4, Req 11.6's "statusbar... SHALL display... the
+   * active theme name"). `current` itself carries only resolved colors/
+   * tokens, with no id or label (`ResolvedTheme`'s own shape,
+   * `theme.ts`) — this is the one place `tecode.themes` exposes the
+   * active theme's HUMAN-READABLE identity to extension code, since
+   * `theme.select`'s own id/label listing (`ThemeRegistry.list`) is a
+   * privileged, core-internal surface with no `tecode.*` equivalent
+   * (`ui/themeSelectCommand.ts`'s TSDoc).
+   */
+  readonly currentLabel: string;
+  /**
+   * Fires whenever the active theme changes — `theme.select`'s preview/
+   * commit/revert, or a live `workbench.colorTheme` config switch (Task
+   * 3.4, Req 7.5, 11.6). Carries no payload, mirroring `ThemeService.
+   * onDidChange`'s own "just re-render/re-read" shape (`ui/themeService.
+   * ts`) — a status line redraws `current`/`currentLabel` off this rather
+   * than the event carrying either value itself.
+   */
+  onDidChange: Event<void>;
 }
 
 /* ------------------------------------------------------------------ */

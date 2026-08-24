@@ -41,6 +41,7 @@ import type {
   FindNamespace,
   LanguageContribution,
   LanguagesNamespace,
+  Listener,
   Position,
   ResolvedTheme,
   RGB,
@@ -92,6 +93,32 @@ function createRegistrySet<T>(): {
  * read across every extension. */
 function originPosition(): Position {
   return { line: 0, character: 0 };
+}
+
+/**
+ * A real, register/dispose-symmetric `Event<void>` that never fires (Task
+ * 3.4) — the shared shape for every stub `onDidChange` in this module
+ * (`createEditorStub`'s, `createThemesStub`'s): there is nothing yet that
+ * could change (no active editor; a stub theme registry has no live
+ * "current theme" concept), but a caller subscribing must still get back a
+ * working `Disposable`, not `undefined` or a throw, matching every other
+ * inert-but-real surface in this file (`createFindStub`).
+ */
+function createInertEvent<T>(): { on: (listener: Listener<T>) => Disposable } {
+  const listeners = new Set<Listener<T>>();
+  return {
+    on(listener: Listener<T>): Disposable {
+      listeners.add(listener);
+      let disposed = false;
+      return {
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          listeners.delete(listener);
+        },
+      };
+    },
+  };
 }
 
 /**
@@ -282,6 +309,7 @@ export function createFindStub(): FindNamespace {
  */
 export function createEditorStub(deps: { sink: StatusSink; find?: FindNamespace }): EditorNamespace {
   const { sink } = deps;
+  const onDidChangeEvent = createInertEvent<void>();
 
   function notifyNoActiveEditor(action: string): void {
     // Guarded: a broken/throwing sink must not make an editor call throw
@@ -326,6 +354,10 @@ export function createEditorStub(deps: { sink: StatusSink; find?: FindNamespace 
       // is not itself an action that failed, so it does not notify.
     },
     find: deps.find ?? createFindStub(),
+    // No active editor ever exists here (this function's TSDoc) — nothing
+    // this stub owns can change, so `onDidChange` is a real, inert
+    // Event<void> (`createInertEvent`'s TSDoc), never fired.
+    onDidChange: onDidChangeEvent.on,
   };
 }
 
@@ -387,6 +419,7 @@ export interface ThemesStub extends ThemesNamespace {
 export function createThemesStub(): ThemesStub {
   const registrations = createRegistrySet<ThemeContribution>();
   const baseTheme = createBaseTheme();
+  const onDidChangeEvent = createInertEvent<void>();
   return {
     register(contribution: ThemeContribution) {
       return registrations.register(contribution);
@@ -394,6 +427,19 @@ export function createThemesStub(): ThemesStub {
     get current() {
       return baseTheme;
     },
+    // Duplicated literal, not imported from `themeRegistry.ts`'s
+    // `BASE_THEME_LABEL`: that module already imports `createBaseTheme`
+    // FROM this one (this file's own TSDoc precedent for small
+    // cross-module string duplication, matching `command-palette/index.ts`'s
+    // `OPEN_FILE_COMMAND_ID`) — importing it back here would be circular.
+    // Must stay in sync with `themeRegistry.ts`'s `BASE_THEME_LABEL`.
+    get currentLabel() {
+      return "Base (Built-in)";
+    },
     registeredContributions: registrations.entries,
+    // `current`/`currentLabel` never change here (this stub has no live
+    // theme service behind it) — a real, inert `Event<void>` (this
+    // module's TSDoc), matching `createEditorStub`'s own `onDidChange`.
+    onDidChange: onDidChangeEvent.on,
   };
 }

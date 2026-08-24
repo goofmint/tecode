@@ -4,6 +4,7 @@ import {
   applyConfiguredTheme,
   BASE_THEME_ID,
   createAssetResolver,
+  createChordPendingIndicator,
   createChordStateMachine,
   createCommandRegistry,
   createConfigService,
@@ -15,11 +16,11 @@ import {
   createFileSystem,
   createFindService,
   createHighlightService,
+  createHostErrorStatusSink,
   createHostLog,
   createLanguageRegistry,
   createLayoutStateService,
   createModalService,
-  createNoopStatusSink,
   createSlotRegistry,
   createTecodeApi,
   createThemeRegistry,
@@ -49,6 +50,7 @@ import {
   type ExtensionHost,
   type FindService,
   type HighlightService,
+  type HostErrorStatusSink,
   type HostLog,
   type LanguageRegistry,
   type LayoutStateService,
@@ -142,6 +144,14 @@ export function collectBuiltinPendingThemes(manifests: readonly Manifest[]): {
 export interface AssemblyRoot {
   log: HostLog;
   sink: StatusSink;
+  /**
+   * The SAME object as {@link sink} — held here as its concrete,
+   * disposable type (Task 3.4, Req 11.6, `ui/hostErrorSink.ts`) so shutdown
+   * paths can dispose it without widening `sink`'s own `StatusSink` type
+   * (services throughout this file depend on the narrow interface, per
+   * `create.ts`'s "narrowing, not re-implementing" convention).
+   */
+  hostErrorSink: HostErrorStatusSink;
   commands: CommandRegistry;
   documents: DocumentManager;
   fs: FileSystem;
@@ -224,6 +234,10 @@ export interface AssemblyRoot {
    * `keymap.getTable()` swaps to a new table object on every config/
    * extension-registration change. */
   chordMachine: ChordStateMachine;
+  /** The chord-pending status bar indicator (Task 3.4, Req 4.4, `ui/
+   * chordPendingIndicator.ts`) — disposed alongside every other
+   * startup-owned subscription in {@link wireProcessExit}. */
+  chordPendingIndicator: Disposable;
   /** Owns the active document uri and every open document's `EditorState`
    * (Task 2.2, `ui/editorSession.ts`) — the seam shared between the
    * rendered `Shell` (via `renderShell.tsx`'s `ShellRenderDeps`), the real
@@ -347,14 +361,27 @@ export function buildAssemblyRoot(
   deps: { log?: HostLog } = {},
 ): AssemblyRoot {
   const log = deps.log ?? createHostLog();
-  // The UI shell is real now (PR #53), but nothing wires host/command
-  // errors into it yet — that is the statusbar built-in's job
-  // (`packages/builtin/statusbar`, still a placeholder) or a later
-  // notification-area task, not Task 1.15's. Every other composition point
-  // in `core` stays a no-op sink until one of those lands.
-  const sink = createNoopStatusSink();
 
   const hostRef: { current?: ExtensionHost } = {};
+
+  // `slotRegistry` is built here, ahead of `sink` and everything else that
+  // depends on `sink` (Task 3.4, Req 11.6): its own dependencies (`log`,
+  // an `activateExtension` closure over `hostRef`, exactly like `commands`'
+  // below) need nothing sink-related, so hoisting it costs nothing and lets
+  // `hostErrorSink` — the REAL `StatusSink` implementation, `ui/
+  // hostErrorSink.ts` — register its `statusBar.item` against the SAME
+  // `slotRegistry` instance the rendered Shell's `StatusBar` reads from,
+  // with no forward-reference box needed (unlike `hostRef` above, which
+  // genuinely can't be avoided — the extension host needs `commands`/
+  // `slotRegistry` to already exist). `main.ts`'s previous no-op sink
+  // (`createNoopStatusSink`) named this exact gap in its own TSDoc: "that
+  // is the statusbar built-in's job... or a later notification-area task."
+  const slotRegistry = createSlotRegistry({
+    log,
+    activateExtension: (id) => hostRef.current?.activateExtension(id) ?? Promise.resolve(),
+  });
+  const hostErrorSink = createHostErrorStatusSink({ slotRegistry });
+  const sink: StatusSink = hostErrorSink;
 
   const commands = createCommandRegistry({
     log,
@@ -429,10 +456,6 @@ export function buildAssemblyRoot(
   registerCoreConfiguration(config);
   const context = createContextService();
 
-  const slotRegistry = createSlotRegistry({
-    log,
-    activateExtension: (id) => hostRef.current?.activateExtension(id) ?? Promise.resolve(),
-  });
   const layoutState = createLayoutStateService({ log, sink });
 
   // Sync-phase theme construction (Req 7.4, 11.4, design.md §3, §9):
@@ -588,6 +611,11 @@ export function buildAssemblyRoot(
     getContext: (key) => context.get(key),
     log,
   });
+  // The chord-pending indicator (Task 3.4, Req 4.4, `ui/
+  // chordPendingIndicator.ts`) — core-internal, wired directly against
+  // `chordMachine`/`slotRegistry` here rather than through any extension
+  // (a plain extension has no access to `ChordStateMachine`).
+  const chordPendingIndicator = createChordPendingIndicator({ chordMachine, slotRegistry });
 
   // `editorSession` was built earlier (above `createTecodeApi`) — see that
   // call site's comment. `editorInputRouter` reads/writes it directly, from
@@ -598,6 +626,7 @@ export function buildAssemblyRoot(
   return {
     log,
     sink,
+    hostErrorSink,
     commands,
     documents,
     fs,
@@ -616,6 +645,7 @@ export function buildAssemblyRoot(
     workspaceRoot,
     keymap,
     chordMachine,
+    chordPendingIndicator,
     editorSession,
     findService,
     languageRegistry,
@@ -784,6 +814,7 @@ function wireProcessExit(root: AssemblyRoot): void {
     shuttingDown = true;
     await root.layoutState.flush();
     root.config.dispose();
+    root.chordPendingIndicator.dispose();
     root.chordMachine.dispose();
     root.findService.dispose();
     root.editorSession.dispose();
@@ -794,6 +825,7 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();
+    root.hostErrorSink.dispose();
     root.highlightService.dispose();
     root.languageRegistry.dispose();
     await root.hostRef.current?.disposeAll();
@@ -928,6 +960,7 @@ export async function runTecode(
     });
     await root.layoutState.flush();
     root.config.dispose();
+    root.chordPendingIndicator.dispose();
     root.chordMachine.dispose();
     root.findService.dispose();
     root.editorSession.dispose();
@@ -938,6 +971,7 @@ export async function runTecode(
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();
+    root.hostErrorSink.dispose();
     root.highlightService.dispose();
     root.languageRegistry.dispose();
     await deferred.extensionHost.disposeAll();

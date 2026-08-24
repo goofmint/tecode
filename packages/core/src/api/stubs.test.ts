@@ -112,6 +112,20 @@ test("editor stub: cursor returns a fresh object each call (no shared mutable si
   expect(editor.cursor).toEqual({ line: 0, character: 0 });
 });
 
+test("editor stub: onDidChange (Task 3.4) is a real, inert, register/dispose-symmetric event", () => {
+  const { sink } = createRecordingSink();
+  const editor = createEditorStub({ sink });
+
+  let fired = 0;
+  const sub = editor.onDidChange(() => {
+    fired += 1;
+  });
+  editor.setSelections([]); // no active editor: no-op, never fires onDidChange
+  expect(fired).toBe(0);
+  expect(() => sub.dispose()).not.toThrow();
+  expect(() => sub.dispose()).not.toThrow(); // idempotent
+});
+
 test("editor stub: a throwing sink does not make revealLine/insertSnippet/applyEdits throw", () => {
   const throwingSink = {
     error() {
@@ -181,5 +195,18 @@ test("themes.register: register/dispose symmetry; current is unaffected by regis
 
   sub.dispose();
   expect(themes.registeredContributions()).toEqual([]);
+  expect(() => sub.dispose()).not.toThrow();
+});
+
+test("themes.currentLabel (Task 3.4) is the hardcoded base label, and onDidChange is a real, inert event", () => {
+  const themes = createThemesStub();
+  expect(themes.currentLabel).toBe("Base (Built-in)");
+
+  let fired = 0;
+  const sub = themes.onDidChange(() => {
+    fired += 1;
+  });
+  themes.register({ id: "x", label: "X", path: "x.json" }); // never fires onDidChange here
+  expect(fired).toBe(0);
   expect(() => sub.dispose()).not.toThrow();
 });
