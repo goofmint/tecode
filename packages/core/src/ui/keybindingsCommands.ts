@@ -166,14 +166,29 @@ export interface KeybindingsCommandsFs {
    * config dir may not exist yet on a fresh install — matches
    * `themeSettingsWriter.ts`'s/`layoutState.ts`'s identical need). */
   mkdir(path: string): Promise<void>;
-  writeFile(path: string, data: string): Promise<void>;
+  /**
+   * Create `path` containing `data`, **failing with `EEXIST` if it already
+   * exists** — an exclusive create (`wx`), never a truncating overwrite.
+   *
+   * This module's only write is "lay down the template on a fresh
+   * install", so exclusivity is always the semantic it wants, and the
+   * interface states that rather than leaving it to each caller. The
+   * in-process serialized write chain below only orders calls within ONE
+   * process; it cannot see a SECOND tecode instance — or the user's other
+   * editor — creating the file in the window between this module's
+   * existence check and its write. A plain `writeFile` would truncate
+   * whatever they had just put there. {@link createKeybindingsCommandsHandlers}
+   * treats the resulting `EEXIST` as success and keeps their content.
+   */
+  writeFileExclusive(path: string, data: string): Promise<void>;
 }
 
 function createNodeKeybindingsCommandsFs(): KeybindingsCommandsFs {
   return {
     readFile: (path) => nodeReadFile(path, "utf8"),
     mkdir: (path) => nodeMkdir(path, { recursive: true }).then(() => undefined),
-    writeFile: (path, data) => nodeWriteFile(path, data, "utf8"),
+    writeFileExclusive: (path, data) =>
+      nodeWriteFile(path, data, { encoding: "utf8", flag: "wx" }),
   };
 }
 
@@ -294,11 +309,19 @@ export function createKeybindingsCommandsHandlers(
 
     try {
       await fs.mkdir(dirname(path));
-      await fs.writeFile(path, KEYBINDINGS_TEMPLATE);
+      await fs.writeFileExclusive(path, KEYBINDINGS_TEMPLATE);
     } catch (cause) {
-      const message = `Failed to create user keybindings template (${path}): ${describeError(cause)}`;
-      logSafely("error", { message, path });
-      notifySafely({ message, path });
+      // `EEXIST` means somebody else won the race between the existence
+      // check above and this write — a second tecode instance, or the
+      // user's other editor. Their file is the one that should survive:
+      // this command's contract is "make sure a keybindings file exists",
+      // which is now satisfied, so this is success, not a failure worth
+      // reporting. Every other error still is.
+      if (errorCode(cause) !== "EEXIST") {
+        const message = `Failed to create user keybindings template (${path}): ${describeError(cause)}`;
+        logSafely("error", { message, path });
+        notifySafely({ message, path });
+      }
     }
     return pathToUri(path);
   }

@@ -36,7 +36,13 @@ function createFakeFs(initial: Record<string, string> = {}): {
         return Promise.resolve(text);
       },
       mkdir: () => Promise.resolve(),
-      writeFile: (path, data) => {
+      // Models a REAL exclusive create (`wx`): rejects with `EEXIST`
+      // rather than truncating, so a test cannot pass here while the
+      // production code would clobber a concurrently-created file.
+      writeFileExclusive: (path, data) => {
+        if (files[path] !== undefined) {
+          return Promise.reject(Object.assign(new Error("EEXIST"), { code: "EEXIST" }));
+        }
         files[path] = data;
         return Promise.resolve();
       },
@@ -124,11 +130,45 @@ describe("createKeybindingsCommandsHandlers — ensureFile (Req 4.2, 11.7)", () 
     expect(files["/kb.json"]).toBe(KEYBINDINGS_TEMPLATE);
   });
 
+  test("a competing process creating the file BETWEEN the existence check and the write keeps THEIR content", async () => {
+    // The race the in-process write chain cannot close: a SECOND tecode
+    // process (or the user's other editor) creating the file in the window
+    // after this handler's existence check says "absent" and before its own
+    // write lands. Modelled deterministically by planting the competing
+    // content from inside `mkdir`, which production runs between exactly
+    // those two steps — so the handler genuinely reaches its write with the
+    // file now present, which is the only path where a non-exclusive write
+    // would truncate a real user's keybindings.
+    const { fs: base, files } = createFakeFs();
+    const log = createHostLog();
+    const theirContent = '[{ "key": "ctrl+q", "command": "app.quit" }]';
+
+    const fs: KeybindingsCommandsFs = {
+      readFile: base.readFile,
+      mkdir: async (path) => {
+        await base.mkdir(path);
+        // The competing process wins the race, right here.
+        if (files["/kb.json"] === undefined) files["/kb.json"] = theirContent;
+      },
+      writeFileExclusive: base.writeFileExclusive,
+    };
+
+    const handlers = createKeybindingsCommandsHandlers({ path: "/kb.json", fs, getTable, log });
+    const uri = await handlers.ensureFile();
+
+    expect(uri).toBe("file:///kb.json");
+    // The whole point: their keybindings survive, the template does not
+    // overwrite them.
+    expect(files["/kb.json"]).toBe(theirContent);
+    // Losing that race is normal operation, not a failure worth reporting.
+    expect(log.entries()).toEqual([]);
+  });
+
   test("a non-ENOENT read failure reports through log/sink and still resolves to the Uri", async () => {
     const fs: KeybindingsCommandsFs = {
       readFile: () => Promise.reject(new Error("disk on fire")),
       mkdir: () => Promise.resolve(),
-      writeFile: () => Promise.resolve(),
+      writeFileExclusive: () => Promise.resolve(),
     };
     const messages: string[] = [];
     const handlers = createKeybindingsCommandsHandlers({
@@ -146,7 +186,7 @@ describe("createKeybindingsCommandsHandlers — ensureFile (Req 4.2, 11.7)", () 
     const fs: KeybindingsCommandsFs = {
       readFile: () => Promise.reject(Object.assign(new Error("ENOENT"), { code: "ENOENT" })),
       mkdir: () => Promise.resolve(),
-      writeFile: () => Promise.reject(new Error("disk full")),
+      writeFileExclusive: () => Promise.reject(new Error("disk full")),
     };
     const messages: string[] = [];
     const handlers = createKeybindingsCommandsHandlers({
