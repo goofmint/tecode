@@ -91,8 +91,11 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     // Task 3.1: the `defaults` layer is no longer empty — `modal.*`'s 4
     // keybindings (`down`/`up`/`return`/`escape`) are seeded synchronously
     // by `createKeymapState(log, MODAL_DEFAULT_KEYBINDINGS)`, ahead of any
-    // extension/user layer.
-    expect(root.keymap.getTable().entries().size).toBe(4);
+    // extension/user layer. Task 3.5 adds `tab.*`'s own 5 default keys
+    // (`ctrl+tab`, `ctrl+pagedown`, `ctrl+shift+tab`, `ctrl+pageup`,
+    // `ctrl+w` — `ui/tabCommands.ts`'s `TAB_DEFAULT_KEYBINDINGS`) to the
+    // same layer: 4 + 5 = 9 distinct keys.
+    expect(root.keymap.getTable().entries().size).toBe(9);
     const resolvedModalClose = root.keymap
       .getTable()
       .lookup("escape", (key) => key === "quickPickFocus" || key === "inputBoxFocus");

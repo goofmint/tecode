@@ -358,6 +358,58 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     expect(frame).not.toContain("No editor open.");
   });
 
+  test("the tab bar shows the dirty marker the instant a document is edited, and drops it once saved (Task 3.5, Req 6.5)", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "const x = 1;" }),
+    });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+
+    let document!: Awaited<ReturnType<typeof documents.openDocument>>;
+    await act(async () => {
+      document = await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+    // Not dirty yet — no marker.
+    expect(captureCharFrame()).not.toContain("●");
+
+    await act(async () => {
+      document.applyEdits([
+        { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "x" },
+      ]);
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+    // `document.onDidChange` fired -> useDocumentDirtyTick re-rendered the
+    // Shell with no explicit `documents`-level event needed.
+    expect(captureCharFrame()).toContain("●");
+
+    await act(async () => {
+      await documents.save(pathToUri("/workspace/hello.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+    // `documents.onDidSave` fired (document.markSaved() itself fires no
+    // onDidChange — this module's `useDocumentDirtyTick` TSDoc) -> the
+    // marker is gone again.
+    expect(captureCharFrame()).not.toContain("●");
+  });
+
   test("closing the active document falls back to another open document", async () => {
     const { slotRegistry, layoutState, context } = createHarness();
     await layoutState.ready;

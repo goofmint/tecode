@@ -464,11 +464,26 @@ export function Input(rawProps: Record<string, unknown>): ReactNode {
 /* ------------------------------------------------------------------ */
 
 /** One tab (the concrete shape {@link Tabs} expects — see this module's
- * TSDoc). */
+ * TSDoc). `dirty` (Task 3.5, Req 6.5) marks a tab whose document has
+ * unsaved changes — `shell.tsx`'s `editorTabs` reads this straight off
+ * `CoreDocument.dirty`, the single source of truth (`buffer/document.ts`).
+ * Optional and defaulted to `false` so every pre-Task-3.5 caller (every
+ * test/story that builds a bare `{ id, label }`) keeps rendering exactly
+ * as before. */
 export interface TabItem {
   id: string;
   label: string;
+  dirty?: boolean;
 }
+
+/** The marker {@link Tabs} embeds into a dirty tab's displayed name (Task
+ * 3.5) — OpenTUI's `<tab-select>` only accepts each option's display name
+ * as a plain string (`TabSelectOption.name`, this module's `options`
+ * mapping below), so there is no separate "dirty" visual channel to hook
+ * into; prefixing the label is the only available signal. Exported so
+ * `components.test.tsx` (and any other caller that needs to recognize a
+ * dirty tab's rendered text) doesn't have to duplicate the literal. */
+export const TAB_DIRTY_MARKER = "● ";
 
 /** {@link Tabs}'s props. */
 export interface TabsProps {
@@ -485,7 +500,7 @@ export function Tabs(rawProps: Record<string, unknown>): ReactNode {
   const theme = useTheme();
   const tabs = props.tabs ?? [];
   const options: TabSelectOption[] = tabs.map((tab) => ({
-    name: tab.label,
+    name: tab.dirty ? `${TAB_DIRTY_MARKER}${tab.label}` : tab.label,
     description: "",
     value: tab.id,
   }));
