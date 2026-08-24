@@ -59,6 +59,22 @@ export interface KeybindingContribution {
    * `<id>` on this key (Req 4.3). */
   command: string;
   when?: string;
+  /**
+   * The id of the extension that contributed this binding — set by the
+   * HOST during registration (`@tecode/core`'s `host/registration.ts`'s
+   * `registerExtension`), never by an author's own manifest (Req 11.7,
+   * design.md §13's `keybindings.showResolved`: "key, command, `when`
+   * clause, and source layer ... per binding"). An author may write this
+   * field in their own `manifest.ts`, but `host/validate.ts`'s
+   * `validateKeybindingContribution` rebuilds every entry from scratch as
+   * exactly `{ key, command, when }` — any author-supplied `extensionId`
+   * is silently dropped during validation, and only the host's own
+   * post-validation assignment ever survives onto a real `ResolvedBinding`
+   * (`@tecode/core`'s `keymap/bindingTable.ts`). Meaningless outside the
+   * `extension` binding layer — never set on a `defaults`/`fallback`/
+   * `user` entry.
+   */
+  extensionId?: string;
 }
 
 /** The UI slot a contributed view is rendered into (Req 6.2). */

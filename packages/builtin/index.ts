@@ -29,10 +29,16 @@
  * visibility, and `ctrl+shift+e`. `statusbar` (Task 3.4, Req 11.6) is the
  * sixth — language/EOL/read-only/dirty on the left, cursor line/column and
  * the active theme name on the right, all via `tecode.window.
- * setStatusBarItem`. `packages/builtin/keybindings-editor` is still a
- * placeholder with no `manifest.ts` — its own later task (tasks.md's Phase
- * 4 built-in task). `themes-default` (Task 2.7, Req 11.4) and
- * `languages-basic` (Task 2.9, Req 8.4) are the second and third.
+ * setStatusBarItem`. `keybindings-editor` (Task 4.3, Req 11.7) is the
+ * seventh — `keybindings.open` (default chord `ctrl+k ctrl+s`, creating a
+ * commented JSONC template on first use) and `keybindings.showResolved`
+ * (a quick pick over the keymap service's fully resolved binding table,
+ * key/command/when/source-layer per binding), both thin wrappers over a
+ * pair of privileged bridge commands `@tecode/core`'s `ui/
+ * keybindingsCommands.ts` registers directly on the core
+ * `CommandRegistry` (that module's TSDoc). `themes-default` (Task 2.7,
+ * Req 11.4) and `languages-basic` (Task 2.9, Req 8.4) are the second and
+ * third.
  *
  * **`builtinThemeAssets`** (Task 2.7, design.md §3): the embedded-JSON
  * counterpart to `builtinModules` above, for a built-in's
@@ -56,6 +62,8 @@ import * as explorerModule from "./explorer/index";
 import explorerManifest from "./explorer/manifest";
 import * as statusbarModule from "./statusbar/index";
 import statusbarManifest from "./statusbar/manifest";
+import * as keybindingsEditorModule from "./keybindings-editor/index";
+import keybindingsEditorManifest from "./keybindings-editor/manifest";
 import * as themesDefaultModule from "./themes-default/index";
 import themesDefaultManifest, {
   DARK_MODERN_THEME_ID,
@@ -97,6 +105,7 @@ export const builtinManifests: Manifest[] = [
   commandPaletteManifest,
   explorerManifest,
   statusbarManifest,
+  keybindingsEditorManifest,
 ];
 
 /** Every built-in extension's real implementation module, keyed by
@@ -110,6 +119,7 @@ export const builtinModules: Record<string, BuiltinExtensionModule> = {
   [commandPaletteManifest.id]: commandPaletteModule,
   [explorerManifest.id]: explorerModule,
   [statusbarManifest.id]: statusbarModule,
+  [keybindingsEditorManifest.id]: keybindingsEditorModule,
 };
 
 /** Every built-in extension's embedded theme JSON assets, keyed by the

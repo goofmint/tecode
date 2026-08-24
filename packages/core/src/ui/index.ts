@@ -102,6 +102,19 @@ export {
 } from "./extensionsReloadCommand";
 
 export {
+  createKeybindingsCommandsHandlers,
+  KEYBINDINGS_ENSURE_FILE_COMMAND_ID,
+  KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID,
+  KEYBINDINGS_TEMPLATE,
+  registerKeybindingsCommands,
+  type KeybindingsCommandsDeps,
+  type KeybindingsCommandsFs,
+  type KeybindingsCommandsHandlers,
+  type KeybindingsCommandsRegistrar,
+  type ResolvedBindingRow,
+} from "./keybindingsCommands";
+
+export {
   ContextFocusTracker,
   useFocusTracking,
   type ContextFocusTrackerProps,
