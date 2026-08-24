@@ -1,5 +1,12 @@
 import pkg from "../package.json";
-import type { Disposable, FileSystem, Manifest, ResolvedTheme, Tecode } from "@tecode/api";
+import type {
+  Disposable,
+  FileSystem,
+  KeybindingContribution,
+  Manifest,
+  ResolvedTheme,
+  Tecode,
+} from "@tecode/api";
 import {
   applyConfiguredTheme,
   BASE_THEME_ID,
@@ -29,6 +36,7 @@ import {
   createWebTreeSitterParserBackend,
   createWindowMessageService,
   loadExtensions,
+  loadFallbackKeybindings,
   MODAL_DEFAULT_KEYBINDINGS,
   pathToUri,
   registerCoreConfiguration,
@@ -78,7 +86,7 @@ import { createKeymapState, type KeymapState } from "./keymapState";
 import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
 import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./renderShell";
 import { createBuiltinThemeAssetsFs } from "./themeAssetsFs";
-import { detectTerminalCapabilities } from "./terminalCapabilities";
+import { detectTerminalCapabilities, resolveKittyKeyboardSupport } from "./terminalCapabilities";
 // `web-tree-sitter`'s OWN Emscripten runtime wasm (Finding 4, NOTICE.md's
 // "Compiled-mode finding for Task 4.4") — distinct from any grammar's
 // `.wasm` and needed by `Parser.init()` itself, BEFORE any grammar loads.
@@ -246,6 +254,30 @@ export interface AssemblyRoot {
   /** The layered keybinding table, kept up to date across every startup
    * phase — see `keymapState.ts`'s TSDoc. */
   keymap: KeymapState;
+  /**
+   * Apply Task 4.2's Kitty Keyboard Protocol verdict (Req 4.7, design.md
+   * §6.5) to `keymap`'s `fallback` layer: `isKittyCapable === false` loads
+   * `keybindings.fallback.json` (the bundled asset, or the user's
+   * `~/.config/tecode/keybindings.fallback.json` override —
+   * `@tecode/core`'s `loadFallbackKeybindings`) into it via
+   * `keymap.setFallbackEntries`; `true` clears it to `[]`. `runTecode`
+   * calls this from `renderShell.tsx`'s `onCapabilitiesResolved` callback,
+   * fed through `terminalCapabilities.ts`'s pure `resolveKittyKeyboardSupport`
+   * first — this function itself takes the already-decided boolean, not a
+   * raw capabilities value, so it stays decoupled from OpenTUI entirely
+   * and can be called directly by a test with a canned verdict, with no
+   * real `CliRenderer` (or even a real terminal environment) involved at
+   * all — `keymapState.test.ts` already proves `setFallbackEntries` in
+   * isolation; this is the one additional seam needed to prove the WIRING
+   * from a verdict through the real loader to that setter, end to end.
+   * Idempotent-safe to call more than once (each call is a fresh
+   * `setFallbackEntries`, matching that setter's own plain-replace
+   * contract) and never throws: `loadFallbackKeybindings` itself never
+   * throws (`fallbackKeybindings.ts`'s TSDoc), and any other unexpected
+   * failure is caught and logged rather than propagated, degrading to an
+   * empty fallback layer.
+   */
+  applyKittyKeyboardVerdict(isKittyCapable: boolean): Promise<void>;
   /** The live two-stroke chord state machine (Req 4.4, design.md §6.1,
    * §6.3), built once here against a small forwarding view over `keymap`
    * (see this function's TSDoc's "Live keymap table view") so it always
@@ -431,9 +463,33 @@ function reExecProcess(): void {
   process.exit(0);
 }
 
+/** Render a caught `unknown` as a message string without risking a second
+ * throw (matches `@tecode/core`'s repeated `describeError` helper,
+ * e.g. `keymap/bindingTable.ts`'s). */
+function describeError(err: unknown): string {
+  try {
+    if (err instanceof Error) return err.message;
+    return String(err);
+  } catch {
+    return "Unknown error";
+  }
+}
+
 export function buildAssemblyRoot(
   workspaceRoot: string = process.cwd(),
-  deps: { log?: HostLog } = {},
+  deps: {
+    log?: HostLog;
+    /**
+     * Overrides how `applyKittyKeyboardVerdict` loads the `fallback`
+     * layer's entries when the terminal is NOT Kitty-capable — production
+     * never sets this (it defaults to `@tecode/core`'s
+     * `loadFallbackKeybindings` against the real filesystem); tests inject
+     * a canned array instead, matching {@link RunDeferredPhaseOptions.fs}/
+     * `builtins`' own "production never sets this; tests use it for
+     * hermeticity" shape.
+     */
+    loadFallbackKeybindings?: () => Promise<KeybindingContribution[]>;
+  } = {},
 ): AssemblyRoot {
   const log = deps.log ?? createHostLog();
 
@@ -516,6 +572,66 @@ export function buildAssemblyRoot(
   // manifest's. `TAB_DEFAULT_KEYBINDINGS` (Task 3.5, `ui/tabCommands.ts`)
   // joins it here, same layer, same reasoning.
   const keymap = createKeymapState(log, [...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS]);
+
+  // Task 4.2's fallback-keymap loader (Req 4.7, design.md §6.5): defaults
+  // to the real `@tecode/core` loader (bundled asset or the user's
+  // `~/.config/tecode/keybindings.fallback.json` override) against the
+  // real filesystem, closing over THIS root's own `log` — overridable by
+  // `deps.loadFallbackKeybindings` for tests (this function's own
+  // parameter TSDoc).
+  const loadFallbackKeybindingsDep =
+    deps.loadFallbackKeybindings ?? (() => loadFallbackKeybindings({ log }));
+
+  /** `AssemblyRoot.applyKittyKeyboardVerdict` — see that field's TSDoc.
+   * Guarded per house style (design.md §5, §14): `loadFallbackKeybindingsDep`
+   * is documented never-throwing for the real loader, but an injected
+   * test override has no such guarantee, so this still degrades to `[]`
+   * and logs rather than letting a throw escape into `renderShell.tsx`'s
+   * fire-and-forget `onCapabilitiesResolved` call site (`main.ts`'s
+   * `runTecode`), where nothing would catch it. */
+  // Generation token guarding {@link applyKittyKeyboardVerdict}'s async
+  // gap — see that function's TSDoc. Same shape as `ui/themeLoader.ts`'s
+  // per-id `loadGenerations` map, which solves the identical
+  // "slow earlier load must not clobber a newer registration" problem.
+  let kittyVerdictGeneration = 0;
+
+  async function applyKittyKeyboardVerdict(isKittyCapable: boolean): Promise<void> {
+    // Claim this verdict's generation BEFORE the early return, so that a
+    // `true` verdict also invalidates any `false` verdict still awaiting
+    // its loader below — that is the whole race being guarded against.
+    //
+    // `renderShell.tsx` calls back at most twice (that module's
+    // "`.once`, not `.on`" contract): once synchronously with whatever
+    // `renderer.capabilities` holds at mount — normally `null`, since the
+    // capability query is a round trip that has not been answered yet,
+    // which `resolveKittyKeyboardSupport` conservatively reads as NOT
+    // Kitty-capable — and once more when the real answer arrives. On a
+    // genuinely Kitty-capable terminal that is exactly a `false` verdict
+    // followed by a `true` one. The `false` verdict starts an async
+    // `loadFallbackKeybindings()`; the `true` verdict clears the layer
+    // synchronously. Without this guard, the earlier load resolving after
+    // that clear would re-apply the fallback overlay on a terminal that
+    // does not need it, leaving e.g. `ctrl+g` bound to the palette
+    // permanently.
+    const generation = ++kittyVerdictGeneration;
+    if (isKittyCapable) {
+      keymap.setFallbackEntries([]);
+      return;
+    }
+    let entries: KeybindingContribution[];
+    try {
+      entries = await loadFallbackKeybindingsDep();
+    } catch (cause) {
+      log.append("error", {
+        message: `applyKittyKeyboardVerdict: loadFallbackKeybindings threw: ${describeError(cause)}`,
+      });
+      entries = [];
+    }
+    // Superseded while the loader was in flight — drop the stale result
+    // rather than overwriting whatever the newer verdict already applied.
+    if (generation !== kittyVerdictGeneration) return;
+    keymap.setFallbackEntries(entries);
+  }
   const config = createConfigService({
     log,
     sink,
@@ -746,6 +862,7 @@ export function buildAssemblyRoot(
     extensionsReloadCommand,
     workspaceRoot,
     keymap,
+    applyKittyKeyboardVerdict,
     chordMachine,
     chordPendingIndicator,
     editorSession,
@@ -996,10 +1113,12 @@ export async function runTecode(
 
   // `buildAssemblyRoot` already ran sync-phase terminal capability
   // detection (color depth, Req 7.4) to construct `root.themeRegistry` —
-  // see that function's TSDoc. The Kitty Keyboard Protocol half of
-  // `TerminalCapabilities` is still a fixed placeholder with nothing
-  // downstream consuming it (Task 4.2's job — `terminalCapabilities.ts`'s
-  // TSDoc).
+  // see that function's TSDoc. The Kitty Keyboard Protocol half (Req 4.7,
+  // design.md §6.5, Task 4.2) is NOT knowable synchronously
+  // (`terminalCapabilities.ts`'s TSDoc) — it is wired below, through
+  // `renderShell`'s `onCapabilitiesResolved` callback, once the render
+  // seam has actually opened (or not opened, for `renderShellHeadless`) a
+  // real terminal.
   const root = buildAssemblyRoot(target.workspaceRoot, { log });
   await root.config.ready;
   emitVerboseStep(startedAt, "config-ready");
@@ -1042,6 +1161,26 @@ export async function runTecode(
     chordMachine: root.chordMachine,
     editorInputRouter: root.editorInputRouter,
     modalService: root.modalService,
+    // Task 4.2's Kitty Keyboard Protocol wiring (Req 4.7, 13.3, design.md
+    // §6.5): `renderShell.tsx`'s `onCapabilitiesResolved` delivers the raw
+    // `@opentui/core` capabilities value (at most twice — synchronously,
+    // then again on a late `"capabilities"` event, that module's TSDoc);
+    // `resolveKittyKeyboardSupport` (`terminalCapabilities.ts`) turns that
+    // into a pure yes/no verdict against the real `$TERM`/`$TERM_PROGRAM`,
+    // and `root.applyKittyKeyboardVerdict` feeds the result into
+    // `keymap`'s `fallback` layer. Fire-and-forget (`void`, not
+    // `await`ed): per this task's <100ms first-frame budget (design.md
+    // §15), the fallback keymap becoming active a moment after the first
+    // frame is fine — it only affects a keystroke handled after that
+    // point — but blocking the first frame ON a filesystem read of the
+    // fallback keymap file would not be.
+    onCapabilitiesResolved: (capabilitiesValue) => {
+      const isKittyCapable = resolveKittyKeyboardSupport(capabilitiesValue, {
+        TERM: process.env["TERM"],
+        TERM_PROGRAM: process.env["TERM_PROGRAM"],
+      });
+      void root.applyKittyKeyboardVerdict(isKittyCapable);
+    },
   });
 
   const firstFrameMs = performance.now() - startedAt;

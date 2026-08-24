@@ -35,6 +35,28 @@ export function getUserKeybindingsPath(): string {
   return join(getUserConfigDir(), "keybindings.json");
 }
 
+/**
+ * Path to the user-level override of the bundled terminal-capability
+ * fallback keymap (Req 4.7, design.md §6.5): `~/.config/tecode/
+ * keybindings.fallback.json` (or the Windows equivalent under
+ * {@link getUserConfigDir}). Deliberately a SEPARATE file from
+ * {@link getUserKeybindingsPath}'s `keybindings.json` — that file is the
+ * highest-precedence `user` layer (Req 4.2), while this one lets a user
+ * customize the `fallback` layer itself (e.g. pick a different
+ * non-colliding alternate for `ctrl+shift+p` on their own legacy
+ * terminal) without needing to duplicate that customization into their
+ * real `keybindings.json` too.
+ *
+ * When present, this file ENTIRELY REPLACES the binary's bundled
+ * `keymap/keybindings.fallback.json` — same whole-file-replace contract
+ * `keybindings.json` has over the `defaults` layer, just one layer lower
+ * (`keymap/fallbackKeybindings.ts`'s `loadFallbackKeybindings`'s TSDoc).
+ * When absent, the loader falls back to the bundled asset.
+ */
+export function getUserFallbackKeybindingsPath(): string {
+  return join(getUserConfigDir(), "keybindings.fallback.json");
+}
+
 /** Path to the user-level `state.json` — persisted UI layout state (sidebar
  * width/visibility, panel height/visibility, active view — Req 6.4,
  * design.md §8.2: "Layout state ... persists to `~/.config/tecode/state.json`

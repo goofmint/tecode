@@ -1,0 +1,15 @@
+[
+  {
+    "key": "ctrl+g",
+    "command": "workbench.action.showCommands"
+  },
+  {
+    "key": "ctrl+e",
+    "command": "explorer.focus"
+  },
+  {
+    "key": "ctrl+l",
+    "command": "editor.action.deleteLine",
+    "when": "editorTextFocus"
+  }
+]

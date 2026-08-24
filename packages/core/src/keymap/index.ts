@@ -34,3 +34,9 @@ export {
   type ChordStateMachineDeps,
   type ChordScheduler,
 } from "./chords";
+export {
+  BUNDLED_FALLBACK_KEYBINDINGS,
+  loadFallbackKeybindings,
+  type FallbackKeybindingsFs,
+  type LoadFallbackKeybindingsDeps,
+} from "./fallbackKeybindings";

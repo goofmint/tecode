@@ -9,7 +9,7 @@
  * real implementation.
  */
 
-import { createCliRenderer } from "@opentui/core";
+import { CliRenderEvents, createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import type { ResolvedTheme } from "@tecode/api";
 import {
@@ -106,6 +106,33 @@ export interface ShellRenderDeps {
    * alone, with no modal overlay at all (not even an inert one) — exactly
    * the pre-Task-3.1 behavior. */
   modalService?: Pick<ModalService, "getState" | "onDidChange" | "setFilter" | "setInputValue">;
+  /**
+   * Terminal-capability reporting (Req 4.7, 13.3; design.md §6.5; Task
+   * 4.2) — called with whatever `@opentui/core`'s `CliRenderer.capabilities`
+   * currently holds (`terminalCapabilities.ts`'s `resolveKittyKeyboardSupport`
+   * is the pure decision function `main.ts` runs the value through; this
+   * callback only DELIVERS the raw value, it does not interpret it — same
+   * separation of concerns `renderShell.tsx`'s other callbacks/services
+   * keep from the policy that consumes them). {@link renderShellToTerminal}
+   * calls this TWICE at most: once synchronously right after the renderer
+   * is created (`renderer.capabilities`'s already-current value at that
+   * point — typically the conservative not-yet-answered default, since the
+   * query is still in flight), and once more if/when a `"capabilities"`
+   * event actually fires with the terminal's real answer (`renderer.once`,
+   * not `.on` — this listener never outlives its own first firing, so it
+   * cannot leak past whatever happens to this renderer afterward). A
+   * terminal that never answers at all (the query timed out —
+   * `terminalCapabilities.ts`'s TSDoc) simply never triggers the second
+   * call; the first, synchronous call already gave the caller a safe
+   * default to act on. Optional and never required: omitting it (every
+   * caller/test that doesn't need the fallback keymap) skips this wiring
+   * entirely — {@link renderShellToTerminal} does not even read
+   * `renderer.capabilities` or subscribe to the event when this is
+   * absent, so there is no dangling subscription either way.
+   * {@link renderShellHeadless} never calls this at all (this module's
+   * TSDoc's "First frame for a headless run").
+   */
+  onCapabilitiesResolved?: (capabilitiesValue: unknown) => void;
 }
 
 /** The render seam's shape: resolves once "first frame" has happened (see
@@ -167,6 +194,17 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
     });
   }
 
+  // Terminal-capability reporting (Req 4.7, 13.3; design.md §6.5; Task
+  // 4.2) — see `ShellRenderDeps.onCapabilitiesResolved`'s TSDoc for the
+  // "at most twice, `.once` not `.on`" contract this implements.
+  if (deps.onCapabilitiesResolved) {
+    const onCapabilitiesResolved = deps.onCapabilitiesResolved;
+    onCapabilitiesResolved(renderer.capabilities);
+    renderer.once(CliRenderEvents.CAPABILITIES, (capabilitiesValue: unknown) => {
+      onCapabilitiesResolved(capabilitiesValue);
+    });
+  }
+
   await renderer.idle();
 };
 
@@ -178,6 +216,13 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
  * frame" for a headless run is simply the moment this resolves — there is
  * no terminal to paint, but the deferred phase still needs a well-defined
  * point to measure startup timing from and to start after.
+ *
+ * Never calls `deps.onCapabilitiesResolved` (Req 4.7, Task 4.2) — there is
+ * no real `CliRenderer`, hence no capability query to report an answer
+ * for. `KeymapState`'s `fallback` layer therefore simply stays whatever
+ * it started as (`[]`) for the lifetime of a headless run, which is
+ * correct: with no real terminal attached, no keystroke ever needs
+ * disambiguating in the first place.
  */
 export const renderShellHeadless: RenderShell = async () => {
   // Intentionally does nothing — see this module's TSDoc.

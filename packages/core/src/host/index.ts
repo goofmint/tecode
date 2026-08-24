@@ -16,6 +16,7 @@ export {
 export {
   getUserConfigDir,
   getUserExtensionsDir,
+  getUserFallbackKeybindingsPath,
   getUserKeybindingsPath,
   getUserLayoutStatePath,
   getUserSettingsPath,

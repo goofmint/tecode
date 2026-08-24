@@ -76,3 +76,55 @@ test("later setUserEntries calls fully replace the previous user layer", () => {
   expect(state.getTable().lookup("ctrl+s", () => undefined)).toBeUndefined();
   expect(state.getTable().lookup("ctrl+w", () => undefined)?.command).toBe("workspace.close");
 });
+
+test("setFallbackEntries rebuilds the table with the fallback layer (Req 4.7)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setFallbackEntries([{ key: "ctrl+g", command: "workbench.action.showCommands" }]);
+
+  const resolved = state.getTable().lookup("ctrl+g", () => undefined);
+  expect(resolved?.command).toBe("workbench.action.showCommands");
+  expect(resolved?.layer).toBe("fallback");
+});
+
+test("fallback entries outrank a defaults-layer binding on the same key", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log, [{ key: "ctrl+e", command: "defaults.command" }]);
+  state.setFallbackEntries([{ key: "ctrl+e", command: "explorer.focus" }]);
+
+  const resolved = state.getTable().lookup("ctrl+e", () => undefined);
+  expect(resolved?.command).toBe("explorer.focus");
+  expect(resolved?.layer).toBe("fallback");
+});
+
+test("an extension entry outranks a fallback entry on the same key (design.md §6.2 precedence)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setFallbackEntries([{ key: "ctrl+g", command: "fallback.command" }]);
+  state.setExtensionEntries([{ key: "ctrl+g", command: "extension.command" }]);
+
+  const resolved = state.getTable().lookup("ctrl+g", () => undefined);
+  expect(resolved?.command).toBe("extension.command");
+  expect(resolved?.layer).toBe("extension");
+});
+
+test("a user entry outranks a fallback entry on the same key — user bindings always win (Req 4.7)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setFallbackEntries([{ key: "ctrl+g", command: "fallback.command" }]);
+  state.setUserEntries([{ key: "ctrl+g", command: "user.command" }]);
+
+  const resolved = state.getTable().lookup("ctrl+g", () => undefined);
+  expect(resolved?.command).toBe("user.command");
+  expect(resolved?.layer).toBe("user");
+});
+
+test("later setFallbackEntries calls fully replace the previous fallback layer", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setFallbackEntries([{ key: "ctrl+g", command: "one" }]);
+  state.setFallbackEntries([{ key: "ctrl+l", command: "two" }]);
+
+  expect(state.getTable().lookup("ctrl+g", () => undefined)).toBeUndefined();
+  expect(state.getTable().lookup("ctrl+l", () => undefined)?.command).toBe("two");
+});
