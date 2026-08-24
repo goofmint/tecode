@@ -100,14 +100,44 @@ describe("registerExtension", () => {
     expect(warnings.some((w) => w.error.message.includes("demo.ext"))).toBe(true);
   });
 
-  test("returns keybindings unchanged, for the caller to accumulate into KeymapLayers.extension", () => {
+  test("returns keybindings stamped with the owning extensionId, for the caller to accumulate into KeymapLayers.extension", () => {
     const log = createHostLog();
     const { sink } = createRecordingSink();
     const commands = createCommandRegistry({ log, sink });
 
     const result = registerExtension("demo.ext", fullManifest(), { commands, log });
 
-    expect(result.keybindings).toEqual([{ key: "ctrl+shift+r", command: "demo.run" }]);
+    expect(result.keybindings).toEqual([
+      { key: "ctrl+shift+r", command: "demo.run", extensionId: "demo.ext" },
+    ]);
+  });
+
+  test("overwrites any extensionId already present on a contribution with the host's own — registerExtension is the only trustworthy source", () => {
+    // In real startup this field is never populated this way — validate.ts's
+    // `validateKeybindingContribution` rebuilds every entry as exactly
+    // `{ key, command, when }` before registerExtension ever sees it
+    // (`manifest.ts`'s `KeybindingContribution.extensionId` TSDoc). This
+    // test instead proves registerExtension's OWN half of that guarantee
+    // directly: even a contribution that already carries a (spoofed)
+    // `extensionId` is unconditionally re-stamped with the real owner,
+    // never trusted as-is.
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const commands = createCommandRegistry({ log, sink });
+    const manifest = fullManifest({
+      contributes: {
+        ...fullManifest().contributes,
+        keybindings: [
+          { key: "ctrl+shift+r", command: "demo.run", extensionId: "someone.else" },
+        ],
+      },
+    });
+
+    const result = registerExtension("demo.ext", manifest, { commands, log });
+
+    expect(result.keybindings).toEqual([
+      { key: "ctrl+shift+r", command: "demo.run", extensionId: "demo.ext" },
+    ]);
   });
 
   test("collects views/languages/themes attributed to the extension", () => {
@@ -283,7 +313,9 @@ describe("loadExtensions", () => {
     expect(result.skipped).toEqual([]);
 
     expect(commands.list().map((c) => c.id)).toEqual(["demo.run"]);
-    expect(result.extensionKeybindings).toEqual([{ key: "ctrl+shift+r", command: "demo.run" }]);
+    expect(result.extensionKeybindings).toEqual([
+      { key: "ctrl+shift+r", command: "demo.run", extensionId: "demo.ext" },
+    ]);
     expect(result.pendingViews).toHaveLength(1);
     expect(result.pendingLanguages).toHaveLength(1);
     expect(result.pendingThemes).toHaveLength(1);

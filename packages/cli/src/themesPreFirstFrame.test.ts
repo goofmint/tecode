@@ -119,6 +119,7 @@ test("Dark Modern is active before renderShell would be called, with zero extens
       "tecode.command-palette",
       "tecode.editor-core",
       "tecode.explorer",
+      "tecode.keybindings-editor",
       "tecode.languages-basic",
       "tecode.statusbar",
       "tecode.themes-default",

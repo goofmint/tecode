@@ -72,6 +72,16 @@ export interface ResolvedBinding {
   /** The binding's own `when` clause source, if it had one — useful for
    * display, not needed for evaluation (already applied by `lookup`). */
   when?: string;
+  /** The extension that contributed this binding, present only when
+   * {@link layer} is `"extension"` (Req 11.7, design.md §13's
+   * `keybindings.showResolved`: "... source layer (default / fallback /
+   * extension id / user) per binding") — copied straight through from
+   * `KeybindingContribution.extensionId` (`@tecode/api`'s `manifest.ts`),
+   * which `host/registration.ts`'s `registerExtension` is the only thing
+   * that ever sets. Always `undefined` for `defaults`/`fallback`/`user`
+   * entries — those layers have no notion of an "owning extension" at
+   * all. */
+  extensionId?: string;
 }
 
 /** One compiled, ordered entry in the internal per-key list. Not exported;
@@ -88,6 +98,9 @@ interface CompiledEntry {
   isRemoval: boolean;
   when?: string;
   compiledWhen?: CompiledWhen;
+  /** Mirrors {@link ResolvedBinding.extensionId} — only ever set when
+   * `layer === "extension"` ({@link compileEntry}). */
+  extensionId?: string;
 }
 
 /** The layered keybinding table's public shape. */
@@ -341,6 +354,13 @@ function compileEntry(
     isRemoval,
     when: contribution.when,
     compiledWhen,
+    // Only ever meaningful on the extension layer (`ResolvedBinding.
+    // extensionId`'s TSDoc) — deliberately gated on `layer === "extension"`
+    // rather than just forwarding `contribution.extensionId` unconditionally,
+    // so a `defaults`/`fallback`/`user` entry can never surface an
+    // `extensionId` here even if its raw JSON happened to carry a stray
+    // one (`keybindings.json` is user-authored, untyped input).
+    extensionId: layer === "extension" ? contribution.extensionId : undefined,
   };
 }
 
@@ -389,6 +409,9 @@ function toResolvedBinding(entry: CompiledEntry): ResolvedBinding {
   };
   if (entry.when !== undefined) {
     resolved.when = entry.when;
+  }
+  if (entry.extensionId !== undefined) {
+    resolved.extensionId = entry.extensionId;
   }
   return resolved;
 }

@@ -161,9 +161,22 @@ export function registerExtension(
     theme,
   }));
 
+  // Stamp every contributed keybinding with the extension that declared it
+  // (Req 11.7, design.md §13's `keybindings.showResolved`: "... and source
+  // layer (default / fallback / extension id / user) per binding"). This
+  // is the ONLY place `extensionId` is ever set — `validate.ts`'s
+  // `validateKeybindingContribution` rebuilds each entry as exactly
+  // `{ key, command, when }` before it ever reaches here, so any
+  // author-supplied `extensionId` in a manifest has already been dropped;
+  // what callers see downstream (`keymap/bindingTable.ts`'s `ResolvedBinding`)
+  // is entirely host-assigned, trustworthy attribution.
+  const keybindings: KeybindingContribution[] = (contributes.keybindings ?? []).map(
+    (keybinding) => ({ ...keybinding, extensionId }),
+  );
+
   return {
     disposables,
-    keybindings: contributes.keybindings ?? [],
+    keybindings,
     views,
     languages,
     themes,

@@ -324,6 +324,47 @@ describe("createBindingTable — entries()", () => {
     const table = createBindingTable(layersOf({}), { log: createHostLog() });
     expect(table.entries().size).toBe(0);
   });
+
+  test("entries() carries extensionId through for an extension-layer binding (Req 11.7)", () => {
+    const layers = layersOf({
+      extension: [
+        { key: "ctrl+shift+r", command: "demo.run", extensionId: "demo.ext" },
+      ],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.entries().get("ctrl+shift+r")).toEqual([
+      { command: "demo.run", key: "ctrl+shift+r", layer: "extension", extensionId: "demo.ext" },
+    ]);
+  });
+
+  test("extensionId is absent (not just undefined) for defaults/fallback/user bindings, even if the raw contribution carried one", () => {
+    const layers = layersOf({
+      // `extensionId` is a legal (if meaningless) field on any layer's
+      // `KeybindingContribution` at the type level — this proves the
+      // TABLE ignores it outside the extension layer, not that the type
+      // system rejects it.
+      defaults: [{ key: "ctrl+p", command: "defaults.command", extensionId: "spoofed" }],
+      fallback: [{ key: "ctrl+alt+p", command: "fallback.command" }],
+      user: [{ key: "ctrl+shift+u", command: "user.command" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.entries().get("ctrl+p")).toEqual([
+      { command: "defaults.command", key: "ctrl+p", layer: "defaults" },
+    ]);
+    expect(table.entries().get("ctrl+alt+p")).toEqual([
+      { command: "fallback.command", key: "ctrl+alt+p", layer: "fallback" },
+    ]);
+    expect(table.entries().get("ctrl+shift+u")).toEqual([
+      { command: "user.command", key: "ctrl+shift+u", layer: "user" },
+    ]);
+    for (const bucket of table.entries().values()) {
+      for (const binding of bucket) {
+        expect(binding.extensionId).toBeUndefined();
+      }
+    }
+  });
 });
 
 describe("createBindingTable — sanity against the KeybindingContribution shape", () => {

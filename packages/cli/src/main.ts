@@ -41,6 +41,7 @@ import {
   pathToUri,
   registerCoreConfiguration,
   registerExtensionsReloadCommand,
+  registerKeybindingsCommands,
   registerModalCommands,
   registerOpenFileCommand,
   registerTabCommands,
@@ -249,6 +250,14 @@ export interface AssemblyRoot {
    * exposes. Disposed alongside every other startup-owned subscription in
    * {@link wireProcessExit}. */
   extensionsReloadCommand: Disposable;
+  /** The `keybindings.internal.ensureFile`/`keybindings.internal.
+   * resolveTable` bridge commands' registration (Task 4.3, Req 11.7,
+   * `ui/keybindingsCommands.ts`) — registered directly on `commands` for
+   * the same privilege-boundary reason as `openFileCommand`/
+   * `themeSelectCommand`/`tabCommands`/`extensionsReloadCommand` above.
+   * Disposed alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  keybindingsCommands: Disposable;
   /** The resolved workspace root this root was built for. */
   workspaceRoot: string;
   /** The layered keybinding table, kept up to date across every startup
@@ -809,6 +818,21 @@ export function buildAssemblyRoot(
     log,
   });
 
+  // `keybindings.internal.ensureFile`/`keybindings.internal.resolveTable`
+  // (Task 4.3, Req 11.7, `ui/keybindingsCommands.ts`'s TSDoc): another PAIR
+  // of PRIVILEGED registrations straight on `commands`, same
+  // privilege-boundary reasoning as `openFileCommand`/`themeSelectCommand`/
+  // `tabCommands`/`extensionsReloadCommand` above — `keybindings-editor`
+  // (the built-in) reaches both purely through `tecode.commands.execute`.
+  // `getTable: () => keymap.getTable()` is a live getter, not a captured
+  // `BindingTable` (matches `liveTable` below), so `showResolved` always
+  // reflects whichever table `keymap` currently holds, including after a
+  // live `keybindings.json` edit reloads the `user` layer.
+  const keybindingsCommands = registerKeybindingsCommands(commands, {
+    getTable: () => keymap.getTable(),
+    log,
+  });
+
   // Live `workbench.colorTheme` config-change subscription (Req 7.5,
   // `ui/themeConfigSync.ts`'s TSDoc) — the INITIAL value is applied by
   // `runTecode` after `config.ready` settles, not here (same TSDoc).
@@ -860,6 +884,7 @@ export function buildAssemblyRoot(
     openFileCommand,
     tabCommands,
     extensionsReloadCommand,
+    keybindingsCommands,
     workspaceRoot,
     keymap,
     applyKittyKeyboardVerdict,
@@ -1055,6 +1080,7 @@ function wireProcessExit(root: AssemblyRoot): void {
     root.openFileCommand.dispose();
     root.tabCommands.dispose();
     root.extensionsReloadCommand.dispose();
+    root.keybindingsCommands.dispose();
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();
@@ -1225,6 +1251,7 @@ export async function runTecode(
     root.openFileCommand.dispose();
     root.tabCommands.dispose();
     root.extensionsReloadCommand.dispose();
+    root.keybindingsCommands.dispose();
     root.modalCommands.dispose();
     root.modalService.dispose();
     root.windowMessageService.dispose();
