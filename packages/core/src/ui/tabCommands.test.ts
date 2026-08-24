@@ -284,6 +284,37 @@ describe("closeDocumentWithPrompt / tab.close (Req 6.5, design.md §14's never-l
     expect(doc.dirty).toBe(true);
   });
 
+  test("dirty + showQuickPick throws: treated exactly like Cancel — nothing closes, the failure is logged", async () => {
+    const { documents, editorSession, log } = buildHarness();
+    const a = await writeFixture("a.txt", "original");
+    const doc = await documents.openDocument(a);
+    editorSession.setActiveDocumentUri(a);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "modified" },
+    ]);
+
+    const closed: string[] = [];
+    documents.onDidClose((d) => closed.push(d.uri));
+
+    const { close } = createTabCommandHandlers({
+      documents,
+      editorSession,
+      showQuickPick: async () => {
+        throw new Error("quick pick exploded");
+      },
+      log,
+    });
+
+    await close();
+
+    expect(closed).toHaveLength(0);
+    expect(documents.documents).toHaveLength(1);
+    expect(doc.dirty).toBe(true);
+    expect(
+      log.entries().some((e) => e.level === "error" && e.error.message.includes(TAB_CLOSE_COMMAND)),
+    ).toBe(true);
+  });
+
   test("a save that reports failure aborts the close — the document stays open, still dirty, unsaved data preserved", async () => {
     const log = createHostLog();
     const sink = createRecordingSink();
@@ -319,7 +350,10 @@ describe("closeDocumentWithPrompt / tab.close (Req 6.5, design.md §14's never-l
     expect(closed).toHaveLength(0);
     expect(documents.documents).toHaveLength(1);
     expect(doc.dirty).toBe(true);
-    expect(log.entries().some((e) => e.level === "error")).toBe(true);
+    // Assert THIS module's own entry, not just "some error was logged": the
+    // same `log` is shared with `DocumentManager` (which reports the write
+    // failure itself), so a bare level check could pass on its entry alone.
+    expect(log.entries().some((e) => e.error.message.includes(`${TAB_CLOSE_COMMAND}: save`))).toBe(true);
   });
 
   test("closing the active tab lets editorSession pick the next active uri on its own", async () => {
