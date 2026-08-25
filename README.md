@@ -356,3 +356,12 @@ your specific legacy terminal without touching your real
 Kitty-capability verdict it depends on, and is not live-reloaded the way
 `settings.json`/`keybindings.json` are (`packages/core/src/keymap/
 fallbackKeybindings.ts`'s own TSDoc).
+
+## Documentation
+
+[`docs/extension-authoring-guide.md`](docs/extension-authoring-guide.md)
+walks through building a `tecode` extension end to end — manifest,
+activation, a command, a sidebar view, a configuration key, a
+keybinding — documents every `tecode.*` API namespace, and covers
+bundling extensions with npm dependencies and the API-version
+compatibility policy.
