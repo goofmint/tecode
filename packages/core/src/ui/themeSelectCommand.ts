@@ -33,6 +33,14 @@ import type { HostError, HostLog } from "../host/errors";
 import type { ThemeRegistry } from "./themeRegistry";
 import type { ThemeService } from "./themeService";
 
+/** Command id this module registers (this module's TSDoc, Req 7.5).
+ * Exported so callers (tests, and any future palette/keybinding wiring)
+ * reference the same string rather than re-typing it — matches every
+ * sibling `ui/*Command.ts` module's own `*_COMMAND_ID` export
+ * (`openFileCommand.ts`'s `OPEN_FILE_COMMAND_ID`,
+ * `extensionsReloadCommand.ts`'s `EXTENSIONS_RELOAD_COMMAND_ID`). */
+export const THEME_SELECT_COMMAND_ID = "theme.select";
+
 /** Dependencies for {@link createThemeSelectHandler}. */
 export interface ThemeSelectDeps {
   /** Enumerates the choices (Req 7.1's theme list) — narrowed to `list`,
@@ -91,7 +99,9 @@ export function createThemeSelectHandler(deps: ThemeSelectDeps): CommandHandler 
   return async () => {
     const themes = deps.themeRegistry.list();
     if (themes.length === 0) {
-      logSafely(deps.log, "warning", { message: "theme.select: no themes are registered." });
+      logSafely(deps.log, "warning", {
+        message: `${THEME_SELECT_COMMAND_ID}: no themes are registered.`,
+      });
       return;
     }
 
@@ -102,7 +112,7 @@ export function createThemeSelectHandler(deps: ThemeSelectDeps): CommandHandler 
       picked = await deps.showQuickPick(items, { placeHolder: "Select a color theme" });
     } catch (cause) {
       logSafely(deps.log, "error", {
-        message: `theme.select: showQuickPick threw: ${describeError(cause)}`,
+        message: `${THEME_SELECT_COMMAND_ID}: showQuickPick threw: ${describeError(cause)}`,
       });
       deps.themeService.revertTheme();
       return;
@@ -116,7 +126,7 @@ export function createThemeSelectHandler(deps: ThemeSelectDeps): CommandHandler 
     const match = themes.find((t) => t.id === picked!.description);
     if (!match) {
       logSafely(deps.log, "warning", {
-        message: `theme.select: picked item did not match any known theme id.`,
+        message: `${THEME_SELECT_COMMAND_ID}: picked item did not match any known theme id.`,
       });
       deps.themeService.revertTheme();
       return;
@@ -127,12 +137,17 @@ export function createThemeSelectHandler(deps: ThemeSelectDeps): CommandHandler 
   };
 }
 
-/** Register {@link createThemeSelectHandler}'s handler as `"theme.select"`
- * on the core `CommandRegistry` (this module's TSDoc — a direct
- * `commands.register` call, not routed through `tecode.commands`). */
+/** Register {@link createThemeSelectHandler}'s handler as
+ * {@link THEME_SELECT_COMMAND_ID} on the core `CommandRegistry` (this
+ * module's TSDoc — a direct `commands.registerCore` call, not routed
+ * through `tecode.commands`). `registerCore`, not `register` (Issue #72):
+ * reserves the id against extension override — `ThemeService.
+ * previewTheme`/`commitTheme`/`revertTheme` are privileged operations no
+ * extension should be able to silently intercept by re-registering this
+ * id. */
 export function registerThemeSelectCommand(
-  commands: { register(id: string, handler: CommandHandler): Disposable },
+  commands: { registerCore(id: string, handler: CommandHandler): Disposable },
   deps: ThemeSelectDeps,
 ): Disposable {
-  return commands.register("theme.select", createThemeSelectHandler(deps));
+  return commands.registerCore(THEME_SELECT_COMMAND_ID, createThemeSelectHandler(deps));
 }

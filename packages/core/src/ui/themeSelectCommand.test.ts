@@ -155,7 +155,7 @@ describe("registerThemeSelectCommand (Req 7.5)", () => {
     const { themeRegistry, themeService } = await buildHarness();
     const registered: Record<string, () => unknown> = {};
     const commands = {
-      register(id: string, handler: () => unknown) {
+      registerCore(id: string, handler: () => unknown) {
         registered[id] = handler;
         return { dispose() {} };
       },

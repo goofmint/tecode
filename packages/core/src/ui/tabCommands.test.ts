@@ -493,7 +493,7 @@ describe("registerTabCommands (Task 3.5)", () => {
   test("registers all 4 commands with title/category, and dispose() is idempotent", async () => {
     const registered: Array<{ id: string; meta?: { title?: string; category?: string } }> = [];
     const fakeRegistry = {
-      register(id: string, _handler: unknown, meta?: { title?: string; category?: string }) {
+      registerCore(id: string, _handler: unknown, meta?: { title?: string; category?: string }) {
         registered.push({ id, meta });
         let disposed = false;
         return {

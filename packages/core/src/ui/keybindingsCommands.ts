@@ -70,16 +70,17 @@
  * of the palette while remaining fully reachable via `commands.execute`
  * — `when` has no bearing on `execute` itself.
  *
- * **Known, accepted limitation — command override (Issue #72)**: both
- * ids are registered on the plain `CommandRegistry`, which is last-wins
- * (`commands/registry.ts`'s `storeEntry`) — a third-party extension
- * could re-register either `keybindings.internal.*` id and shadow this
- * module's real implementation, the same way it could shadow
- * `theme.select`, `workbench.action.files.openUri`, any `modal.*`/
- * `tab.*` command, or `extensions.reload`. This is a known, repo-wide
- * property of every privileged bridge command registered this way, not
- * something specific to keybindings — tracked centrally in Issue #72,
- * and deliberately NOT addressed by this module.
+ * **Command override — fixed by Issue #72**: both ids are registered via
+ * `commands.registerCore` (`commands/registry.ts`), not the plain
+ * `register` — `registerCore` marks the id reserved, so a subsequent
+ * `register`/`registerLazy` call under either `keybindings.internal.*` id
+ * (an extension's runtime `tecode.commands.register` call, OR a manifest's
+ * `contributes.commands` reaching `registerLazy` via `host/registration.
+ * ts`) is rejected rather than silently shadowing this module's real
+ * implementation — the same fix applied repo-wide to every privileged
+ * bridge command registered this way (`theme.select`,
+ * `workbench.action.files.openUri`, every `modal.*`/`tab.*` command, and
+ * `extensions.reload`).
  */
 
 import {
@@ -369,9 +370,13 @@ export function createKeybindingsCommandsHandlers(
 /** The narrow `CommandRegistry` slice
  * {@link registerKeybindingsCommands} needs — matches
  * `tabCommands.ts`'s `TabCommandsRegistrar`/`modalCommands.ts`'s
- * `ModalCommandsRegistrar` narrowing style. */
+ * `ModalCommandsRegistrar` narrowing style. `registerCore`, not `register`
+ * (Issue #72, this module's TSDoc's now-resolved "Known, accepted
+ * limitation" section below): these are privileged bridge commands and
+ * must reserve their ids against extension override, including via a
+ * manifest's `contributes.commands` reaching `registerLazy`. */
 export interface KeybindingsCommandsRegistrar {
-  register(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable;
+  registerCore(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable;
 }
 
 /**
@@ -389,10 +394,10 @@ export function registerKeybindingsCommands(
 ): Disposable {
   const handlers = createKeybindingsCommandsHandlers(deps);
   const disposables: Disposable[] = [
-    commands.register(KEYBINDINGS_ENSURE_FILE_COMMAND_ID, () => handlers.ensureFile(), {
+    commands.registerCore(KEYBINDINGS_ENSURE_FILE_COMMAND_ID, () => handlers.ensureFile(), {
       when: HIDDEN_FROM_LISTINGS_WHEN,
     }),
-    commands.register(KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID, () => handlers.resolveTable(), {
+    commands.registerCore(KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID, () => handlers.resolveTable(), {
       when: HIDDEN_FROM_LISTINGS_WHEN,
     }),
   ];

@@ -2,7 +2,25 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir as nodeReaddir, rm, stat as nodeStat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BASE_THEME_ID, getUserExtensionsDir, pathToUri, type DiscoveryFs } from "@tecode/core";
+import {
+  BASE_THEME_ID,
+  EXTENSIONS_RELOAD_COMMAND_ID,
+  getUserExtensionsDir,
+  KEYBINDINGS_ENSURE_FILE_COMMAND_ID,
+  KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID,
+  MODAL_ACCEPT_COMMAND,
+  MODAL_CLOSE_COMMAND,
+  MODAL_SELECT_NEXT_COMMAND,
+  MODAL_SELECT_PREVIOUS_COMMAND,
+  OPEN_FILE_COMMAND_ID,
+  pathToUri,
+  TAB_CLOSE_COMMAND,
+  TAB_CLOSE_OTHERS_COMMAND,
+  TAB_NEXT_COMMAND,
+  TAB_PREVIOUS_COMMAND,
+  THEME_SELECT_COMMAND_ID,
+  type DiscoveryFs,
+} from "@tecode/core";
 import pkg from "../package.json";
 import { buildAssemblyRoot, runDeferredPhase } from "./main";
 
@@ -295,6 +313,142 @@ test("runDeferredPhase reports a bad extension without failing startup (Req 2.4)
     expect(loadResult.loaded).toEqual([]);
     expect(loadResult.skipped.length).toBe(1);
     expect(loadResult.skipped[0]?.extensionId).toBe("broken");
+    await extensionHost.disposeAll();
+  } finally {
+    root.config.dispose();
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+// --- Issue #72: core commands are reserved BEFORE any extension can load ---
+//
+// The whole reserved-id guarantee (`commands/registry.ts`'s `registerCore`)
+// depends on one assembly-order fact: `buildAssemblyRoot`'s synchronous
+// phase registers all 13 core command ids via `registerCore` BEFORE
+// `runDeferredPhase`'s `loadExtensions` call ever runs (this file's own
+// `buildAssemblyRoot`/`runDeferredPhase` pair — the deferred phase is only
+// ever invoked separately, after the sync phase already returned). These
+// two tests pin that fact directly, rather than trusting it as an
+// unverified assumption the unit-level `registry.test.ts` cases can't see.
+const RESERVED_CORE_COMMAND_IDS = [
+  OPEN_FILE_COMMAND_ID,
+  MODAL_SELECT_NEXT_COMMAND,
+  MODAL_SELECT_PREVIOUS_COMMAND,
+  MODAL_ACCEPT_COMMAND,
+  MODAL_CLOSE_COMMAND,
+  KEYBINDINGS_ENSURE_FILE_COMMAND_ID,
+  KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID,
+  EXTENSIONS_RELOAD_COMMAND_ID,
+  TAB_NEXT_COMMAND,
+  TAB_PREVIOUS_COMMAND,
+  TAB_CLOSE_COMMAND,
+  TAB_CLOSE_OTHERS_COMMAND,
+  THEME_SELECT_COMMAND_ID,
+];
+
+test("buildAssemblyRoot registers every reserved core command id before runDeferredPhase (loadExtensions) ever runs", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "tecode-cli-order-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = dir;
+  process.env["APPDATA"] = dir;
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(dir);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+  }
+
+  try {
+    await root.config.ready;
+
+    // runDeferredPhase (and therefore loadExtensions) has NOT been called
+    // at this point — buildAssemblyRoot's synchronous phase is the only
+    // thing that has run. Every reserved id is already registered.
+    const ids = new Set(root.commands.list().map((c) => c.id));
+    for (const id of RESERVED_CORE_COMMAND_IDS) {
+      expect(ids.has(id)).toBe(true);
+    }
+  } finally {
+    root.config.dispose();
+    root.chordMachine.dispose();
+    root.editorSession.dispose();
+    root.editorLangIdSync.dispose();
+    root.themeConfigSync.dispose();
+    root.themeSelectCommand.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an extension cannot shadow a core command: a manifest declaring tab.close is rejected, and a runtime register() override is rejected too, end to end through runDeferredPhase", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+  }
+
+  try {
+    await root.config.ready;
+
+    // Before any extension loads, tab.close is already the real core
+    // command (Req 6.5's tab.close, `ui/tabCommands.ts`).
+    expect(root.commands.list().some((c) => c.id === TAB_CLOSE_COMMAND)).toBe(true);
+
+    const extensionDir = join(workspaceDir, ".tecode", "extensions", "shadow-attempt");
+    await mkdir(extensionDir, { recursive: true });
+    await writeFile(
+      join(extensionDir, "manifest.ts"),
+      `export default {
+        id: "fixture.shadow-attempt",
+        version: "0.0.1",
+        apiVersion: "1.0",
+        activationEvents: ["onStartup"],
+        contributes: {
+          commands: [{ id: "${TAB_CLOSE_COMMAND}", title: "Evil Close" }]
+        },
+      };\n`,
+      "utf8",
+    );
+    await writeFile(
+      join(extensionDir, "index.ts"),
+      `export function activate(ctx) {
+        ctx.subscriptions.push(
+          ctx.api.commands.register("${TAB_CLOSE_COMMAND}", () => "shadowed-by-extension"),
+        );
+      }\n`,
+      "utf8",
+    );
+
+    const { extensionHost, loadResult } = await runDeferredPhase(root, {
+      fs: createHermeticDiscoveryFs(),
+      builtins: [],
+    });
+
+    expect(loadResult.loaded.map((e) => e.extensionId)).toEqual(["fixture.shadow-attempt"]);
+    expect(extensionHost.getState("fixture.shadow-attempt")).toBe("active");
+
+    // Neither the manifest's contributes.commands declaration (registerLazy)
+    // NOR the runtime tecode.commands.register call in activate() managed to
+    // take over tab.close — the real core handler is still the one that
+    // runs. (No open document, so the real handler is itself a no-op, but
+    // critically it does NOT resolve "shadowed-by-extension".)
+    const result = await root.api.commands.execute(TAB_CLOSE_COMMAND);
+    expect(result).not.toBe("shadowed-by-extension");
+
     await extensionHost.disposeAll();
   } finally {
     root.config.dispose();

@@ -2,6 +2,25 @@ import { expect, test } from "bun:test";
 import type { HostError } from "../host/errors";
 import { createHostLog } from "../host/errors";
 import { createCommandRegistry } from "./registry";
+import { OPEN_FILE_COMMAND_ID } from "../ui/openFileCommand";
+import {
+  MODAL_ACCEPT_COMMAND,
+  MODAL_CLOSE_COMMAND,
+  MODAL_SELECT_NEXT_COMMAND,
+  MODAL_SELECT_PREVIOUS_COMMAND,
+} from "../ui/modalCommands";
+import {
+  KEYBINDINGS_ENSURE_FILE_COMMAND_ID,
+  KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID,
+} from "../ui/keybindingsCommands";
+import { EXTENSIONS_RELOAD_COMMAND_ID } from "../ui/extensionsReloadCommand";
+import {
+  TAB_CLOSE_COMMAND,
+  TAB_CLOSE_OTHERS_COMMAND,
+  TAB_NEXT_COMMAND,
+  TAB_PREVIOUS_COMMAND,
+} from "../ui/tabCommands";
+import { THEME_SELECT_COMMAND_ID } from "../ui/themeSelectCommand";
 
 /** A {@link StatusSink} stub that records every error it receives, for
  * assertions (design.md §5, §14). */
@@ -514,3 +533,223 @@ test("registerLazy twice for the same ID logs a re-registration warning (last-wi
   // One for the re-registration, one for the not-activated-yet report.
   expect(warnings.some((w) => w.error.message.includes("re-registered"))).toBe(true);
 });
+
+// --- registerCore / reserved ids (Issue #72) --------------------------
+//
+// Issue #72: pre-fix, `storeEntry` was pure last-wins with no id policy at
+// all — any extension could silently take over a core-owned command id via
+// either `tecode.commands.register` OR a manifest's `contributes.commands`
+// (which reaches `registerLazy` through `host/registration.ts`). These
+// tests exercise `registerCore` (the host-internal third registration
+// method that both registers AND reserves an id) and the corresponding
+// rejection paths on `register`/`registerLazy`.
+
+test("registerCore registers normally, exactly like register()", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerCore("core.action.foo", () => "core-handler");
+
+  expect(await registry.execute("core.action.foo")).toBe("core-handler");
+  expect(registry.list().map((d) => d.id)).toEqual(["core.action.foo"]);
+});
+
+test("registerCore rejects command IDs that are not namespace.verb form, like register()", () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  expect(() => registry.registerCore("save", () => undefined)).toThrow(TypeError);
+});
+
+test("register() on an id reserved by registerCore is rejected: the core handler still runs, a warning is logged, the sink is notified, and the returned Disposable is a no-op", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerCore("core.action.foo", () => "core-handler");
+  const rejected = registry.register("core.action.foo", () => "extension-handler");
+
+  // The core handler ran, not the extension's rejected one.
+  expect(await registry.execute("core.action.foo")).toBe("core-handler");
+
+  const warnings = log.entries().filter((e) => e.level === "warning");
+  expect(warnings.some((w) => w.error.message.includes("core.action.foo"))).toBe(true);
+  expect(errors.some((e) => e.message.includes("core.action.foo"))).toBe(true);
+
+  // A real, no-op Disposable — never throws, and disposing it removes
+  // nothing (the core registration is untouched).
+  expect(() => rejected.dispose()).not.toThrow();
+  expect(await registry.execute("core.action.foo")).toBe("core-handler");
+});
+
+test("registerLazy() on an id reserved by registerCore is rejected the same way, attributing the extensionId on the reported HostError", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerCore("core.action.foo", () => "core-handler");
+  const rejected = registry.registerLazy("core.action.foo", { extensionId: "sneaky.ext" });
+
+  expect(await registry.execute("core.action.foo")).toBe("core-handler");
+
+  expect(errors.at(-1)?.extensionId).toBe("sneaky.ext");
+  expect(errors.at(-1)?.message).toContain("core.action.foo");
+
+  const warnings = log.entries().filter((e) => e.level === "warning");
+  expect(warnings.some((w) => w.error.extensionId === "sneaky.ext")).toBe(true);
+
+  expect(() => rejected.dispose()).not.toThrow();
+  expect(await registry.execute("core.action.foo")).toBe("core-handler");
+});
+
+test("registerCore twice under the same id is last-wins with a re-registration warning, exactly like register()", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerCore("core.action.foo", () => "first");
+  registry.registerCore("core.action.foo", () => "second");
+
+  expect(await registry.execute("core.action.foo")).toBe("second");
+
+  const warnings = log.entries().filter((e) => e.level === "warning");
+  expect(warnings.some((w) => w.error.message.includes("re-registered"))).toBe(true);
+});
+
+test("a non-reserved id is unaffected by the reserved-id check: register() re-registration still last-wins with no rejection reported", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.register("editor.action.foo", () => "first");
+  registry.register("editor.action.foo", () => "second");
+
+  expect(await registry.execute("editor.action.foo")).toBe("second");
+  // No "reserved" rejection was ever reported — this is ordinary
+  // last-wins, ungated.
+  expect(errors.some((e) => e.message.toLowerCase().includes("reserved"))).toBe(false);
+});
+
+test("a non-reserved id is unaffected by the reserved-id check: registerLazy() re-registration still last-wins with no rejection reported", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  registry.registerLazy("demo.run", { extensionId: "first.ext" });
+  registry.registerLazy("demo.run", { extensionId: "second.ext" });
+
+  const result = await registry.execute("demo.run");
+  expect(result).toBeUndefined(); // still lazy, not-activated-yet — unrelated to reservation.
+  expect(errors.some((e) => e.message.toLowerCase().includes("reserved"))).toBe(false);
+});
+
+test("disposing the core registration clears the reservation, so the id can be registered normally afterward", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  const core = registry.registerCore("core.action.foo", () => "core-handler");
+  core.dispose();
+
+  // Unreserved AND unregistered now — an ordinary register() succeeds and
+  // its handler actually runs, not rejected.
+  registry.register("core.action.foo", () => "extension-handler");
+  expect(await registry.execute("core.action.foo")).toBe("extension-handler");
+});
+
+test("a stale registerCore Disposable from a superseded core registration clears neither the entry nor the reservation", async () => {
+  const log = createHostLog();
+  const { errors, sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  const first = registry.registerCore("core.action.foo", () => "first");
+  registry.registerCore("core.action.foo", () => "second"); // supersedes `first`.
+
+  first.dispose(); // stale — must be a no-op, matching register()'s own entry-identity guard.
+
+  expect(await registry.execute("core.action.foo")).toBe("second");
+
+  // Still reserved: an extension registration is still rejected.
+  registry.register("core.action.foo", () => "extension-handler");
+  expect(await registry.execute("core.action.foo")).toBe("second");
+  expect(errors.some((e) => e.message.includes("core.action.foo"))).toBe(true);
+});
+
+test("double-dispose of a registerCore registration is a no-op, matching register()'s dispose semantics", async () => {
+  const log = createHostLog();
+  const { sink } = createRecordingSink();
+  const registry = createCommandRegistry({ log, sink });
+
+  const core = registry.registerCore("core.action.foo", () => "ok");
+  core.dispose();
+  expect(() => core.dispose()).not.toThrow();
+
+  expect(await registry.execute("core.action.foo")).toBeUndefined();
+  // Still cleared exactly once — registrable again afterward.
+  registry.register("core.action.foo", () => "extension-handler");
+  expect(await registry.execute("core.action.foo")).toBe("extension-handler");
+});
+
+// --- every core-owned command id is actually reserved (Issue #72) -----
+//
+// Table-driven over the 13 ids the 6 `ui/*Command.ts` registrar modules
+// register via `registerCore` (openFileCommand.ts: 1, modalCommands.ts: 4,
+// keybindingsCommands.ts: 2, extensionsReloadCommand.ts: 1, tabCommands.ts:
+// 4, themeSelectCommand.ts: 1). The list below is built from each module's
+// own exported `*_COMMAND_ID` constant, not retyped strings, so it cannot
+// silently drift out of sync with the real registrar modules if one is
+// renamed or a new command is added.
+const RESERVED_CORE_COMMAND_IDS: readonly string[] = [
+  OPEN_FILE_COMMAND_ID,
+  MODAL_SELECT_NEXT_COMMAND,
+  MODAL_SELECT_PREVIOUS_COMMAND,
+  MODAL_ACCEPT_COMMAND,
+  MODAL_CLOSE_COMMAND,
+  KEYBINDINGS_ENSURE_FILE_COMMAND_ID,
+  KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID,
+  EXTENSIONS_RELOAD_COMMAND_ID,
+  TAB_NEXT_COMMAND,
+  TAB_PREVIOUS_COMMAND,
+  TAB_CLOSE_COMMAND,
+  TAB_CLOSE_OTHERS_COMMAND,
+  THEME_SELECT_COMMAND_ID,
+];
+
+test("RESERVED_CORE_COMMAND_IDS covers every id the 6 registrar modules actually export (sanity guard on the table itself)", () => {
+  expect(RESERVED_CORE_COMMAND_IDS).toHaveLength(13);
+  // Every id follows the namespace.verb convention every other command id
+  // in this codebase does.
+  for (const id of RESERVED_CORE_COMMAND_IDS) {
+    expect(id).toMatch(/^[^\s.]+(\.[^\s.]+)+$/);
+  }
+  // No duplicates — each module owns a distinct id.
+  expect(new Set(RESERVED_CORE_COMMAND_IDS).size).toBe(RESERVED_CORE_COMMAND_IDS.length);
+});
+
+for (const id of RESERVED_CORE_COMMAND_IDS) {
+  test(`"${id}": registerCore reserves it, so both register() and registerLazy() from an extension are rejected and the core handler still runs`, async () => {
+    const log = createHostLog();
+    const { errors, sink } = createRecordingSink();
+    const registry = createCommandRegistry({ log, sink });
+
+    registry.registerCore(id, () => "core-handler");
+
+    const viaRegister = registry.register(id, () => "extension-handler-a");
+    expect(await registry.execute(id)).toBe("core-handler");
+
+    const viaLazy = registry.registerLazy(id, { extensionId: "sneaky.ext" });
+    expect(await registry.execute(id)).toBe("core-handler");
+
+    // Both rejections reported through log + sink, never thrown.
+    expect(errors.length).toBeGreaterThanOrEqual(2);
+    const warnings = log.entries().filter((e) => e.level === "warning");
+    expect(warnings.filter((w) => w.error.message.includes(id)).length).toBeGreaterThanOrEqual(2);
+
+    // Both returned Disposables are harmless no-ops.
+    expect(() => viaRegister.dispose()).not.toThrow();
+    expect(() => viaLazy.dispose()).not.toThrow();
+    expect(await registry.execute(id)).toBe("core-handler");
+  });
+}

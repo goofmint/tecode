@@ -143,7 +143,7 @@ describe("registerOpenFileCommand (Task 3.2, Req 11.3)", () => {
     const deps = createFakeDeps();
     const registered: Record<string, (...args: unknown[]) => unknown> = {};
     const commands = {
-      register(id: string, handler: (...args: unknown[]) => unknown) {
+      registerCore(id: string, handler: (...args: unknown[]) => unknown) {
         registered[id] = handler;
         return { dispose() {} };
       },
@@ -161,7 +161,7 @@ describe("registerOpenFileCommand (Task 3.2, Req 11.3)", () => {
     const deps = createFakeDeps();
     let capturedMeta: { title?: string; category?: string; when?: string } | undefined;
     const commands = {
-      register(
+      registerCore(
         _id: string,
         _handler: (...args: unknown[]) => unknown,
         meta?: { title?: string; category?: string; when?: string },

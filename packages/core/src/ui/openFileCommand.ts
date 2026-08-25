@@ -138,10 +138,10 @@ export function createOpenFileCommandHandler(deps: OpenFileCommandDeps): Command
  * `when`-filtered listing while staying fully reachable via
  * `commands.execute`. */
 export function registerOpenFileCommand(
-  commands: { register(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable },
+  commands: { registerCore(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable },
   deps: OpenFileCommandDeps,
 ): Disposable {
-  return commands.register(OPEN_FILE_COMMAND_ID, createOpenFileCommandHandler(deps), {
+  return commands.registerCore(OPEN_FILE_COMMAND_ID, createOpenFileCommandHandler(deps), {
     when: HIDDEN_FROM_LISTINGS_WHEN,
   });
 }

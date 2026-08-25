@@ -77,6 +77,7 @@ export {
 export {
   createThemeSelectHandler,
   registerThemeSelectCommand,
+  THEME_SELECT_COMMAND_ID,
   type ThemeSelectDeps,
 } from "./themeSelectCommand";
 
