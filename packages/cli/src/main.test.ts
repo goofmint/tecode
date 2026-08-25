@@ -443,9 +443,22 @@ test("an extension cannot shadow a core command: a manifest declaring tab.close 
 
     // Neither the manifest's contributes.commands declaration (registerLazy)
     // NOR the runtime tecode.commands.register call in activate() managed to
-    // take over tab.close — the real core handler is still the one that
-    // runs. (No open document, so the real handler is itself a no-op, but
-    // critically it does NOT resolve "shadowed-by-extension".)
+    // take over tab.close — the real core registration is still the one in
+    // the registry.
+    //
+    // The registry entry's OWN metadata is what proves that, and it has to
+    // be asserted rather than just the execute() result: with no open
+    // document the real core handler is itself a no-op returning
+    // `undefined`, and a successful manifest takeover would leave a
+    // handler-less lazy entry whose execute() ALSO returns `undefined`
+    // (the "not activated yet" path) — so `result !== "shadowed-by-
+    // extension"` alone holds even when the core command has in fact been
+    // destroyed. `title` distinguishes them unambiguously: "Close Editor"
+    // is `ui/tabCommands.ts`'s own meta, "Evil Close" is the manifest's.
+    expect(root.commands.list().find((c) => c.id === TAB_CLOSE_COMMAND)?.title).toBe(
+      "Close Editor",
+    );
+
     const result = await root.api.commands.execute(TAB_CLOSE_COMMAND);
     expect(result).not.toBe("shadowed-by-extension");
 
