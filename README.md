@@ -61,3 +61,12 @@ collects those into a target × size Markdown table written to the run's
 job summary, checked against `scripts/release.ts`'s own
 `SIZE_LIMIT_BYTES` (120,000,000 bytes, the decimal — stricter — reading of
 "≤ 120 MB").
+
+## Documentation
+
+[`docs/extension-authoring-guide.md`](docs/extension-authoring-guide.md)
+walks through building a `tecode` extension end to end — manifest,
+activation, a command, a sidebar view, a configuration key, a
+keybinding — documents every `tecode.*` API namespace, and covers
+bundling extensions with npm dependencies and the API-version
+compatibility policy.

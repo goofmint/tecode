@@ -27,14 +27,20 @@
  * anything) actually lives under the host machine's real
  * `~/.config/tecode/extensions`.
  *
- * Reads three optional CLI args — a command id to `commands.execute()`
+ * Reads four optional CLI args — a command id to `commands.execute()`
  * after startup activation, a `sidebar.view` id to check for a resolved
- * (non-lazy, real-component) registration, and a workspace root whose
+ * (non-lazy, real-component) registration, a workspace root whose
  * `.tecode/extensions` directory should be scanned alongside the user one
- * (omitted/empty scans the user directory only) — and prints exactly ONE line of
- * JSON (a {@link HarnessResult}) to stdout, then exits 0. Any unexpected
- * throw from the harness's OWN setup (not the pipeline under test, which
- * is documented to never throw) is caught at the bottom, reported as
+ * (omitted/empty scans the user directory only), and a `tecode.config`
+ * key to read back after activation (Issue #37's extension-authoring-guide
+ * walkthrough fixture: proves a manifest's `contributes.configuration`
+ * default actually reaches `config.get`, the same `registerConfiguration`
+ * → `defaultsLayer` path `config/service.ts`'s `registerConfiguration`
+ * documents, through the real pipeline rather than by assertion about
+ * shared code) — and prints exactly ONE line of JSON (a
+ * {@link HarnessResult}) to stdout, then exits 0. Any unexpected throw
+ * from the harness's OWN setup (not the pipeline under test, which is
+ * documented to never throw) is caught at the bottom, reported as
  * `{ fatal: <message> }` on stdout, and exits 1.
  */
 
@@ -77,16 +83,22 @@ interface HarnessResult {
    * run — lets the test assert that a broken sibling's failure was
    * actually surfaced, not silently swallowed. */
   errorLogMessages: string[];
+  /** `config.get(<configKeyArg>)` after startup activation, or `undefined`
+   * when no `configKeyArg` was given — proves a loaded manifest's
+   * `contributes.configuration` default is actually readable through
+   * `tecode.config.get`, not just present in the manifest's own data. */
+  configValue: unknown;
 }
 
 async function main(): Promise<void> {
-  const [, , commandIdArg, viewIdArg, workspaceRootArg] = process.argv;
+  const [, , commandIdArg, viewIdArg, workspaceRootArg, configKeyArg] = process.argv;
   const commandId = commandIdArg ?? "";
   const viewId = viewIdArg ?? "";
   // Empty/absent means "scan the user directory only" — `loadExtensions`
   // skips the workspace source entirely when given no `workspaceRoot`
   // (`host/discovery.ts`'s `getWorkspaceExtensionsDir` call site).
   const workspaceRoot = workspaceRootArg ?? "";
+  const configKey = configKeyArg ?? "";
 
   const log = createHostLog();
   const sink = createNoopStatusSink();
@@ -161,6 +173,7 @@ async function main(): Promise<void> {
       .entries()
       .filter((e) => e.level === "error")
       .map((e) => e.error.message),
+    configValue: configKey ? config.get(configKey) : undefined,
   };
 
   console.log(JSON.stringify(result));
