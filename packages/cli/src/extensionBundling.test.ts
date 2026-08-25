@@ -83,6 +83,13 @@ async function run(cmd: string[], cwd: string): Promise<void> {
   expect(exitCode, `${cmd.join(" ")} (cwd=${cwd}) exited ${exitCode}\nstdout:\n${stdout}\nstderr:\n${stderr}`).toBe(0);
 }
 
+/** Drive `externalExtensionLoadHarness.ts` as a child process against
+ * `homeDir` as its `HOME`/`APPDATA` and execute `commandId` once the
+ * pipeline has activated, returning its single JSON result line. Same
+ * subprocess technique and failure reporting as
+ * `externalExtensionLoading.test.ts`'s own helper — here it is what proves
+ * the BUNDLED `index.js` (with `index.ts` and `node_modules` deleted) is
+ * genuinely what the host loaded and ran. */
 async function runHarness(homeDir: string, commandId: string): Promise<HarnessResult> {
   const harnessPath = join(import.meta.dir, "externalExtensionLoadHarness.ts");
   const proc = Bun.spawn({

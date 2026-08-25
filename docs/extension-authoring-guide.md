@@ -646,8 +646,17 @@ storagePath: string }` (Req 2.6). Covered in full in Step 2 above.
 
 ## 3. Bundling extensions with npm dependencies
 
-An extension is a directory with `manifest.ts` and `index.ts` (optionally
-`package.json` and `node_modules` — Req 10.3). Extensions run under Bun
+An extension is a directory with a manifest and a loadable entry point:
+`manifest.ts` (or `manifest.js` — `discovery.ts` prefers `.ts`) plus
+`index.ts` while you develop, or a bundled `index.js` for distribution.
+Note the two preferences run in *opposite* directions: the manifest
+resolver prefers `.ts`, while `extensionRecords.ts`'s
+`loadUserOrWorkspaceModule` prefers `index.js` over `index.ts` precisely so
+a shipped bundle wins over leftover sources. A distributed extension needs
+no `index.ts` at all — `extensionBundling.test.ts` deletes it, along with
+`node_modules` and `package.json`, and proves the bare `manifest.ts` +
+`index.js` pair still loads and activates. Optionally `package.json` and
+`node_modules` while developing (Req 10.3). Extensions run under Bun
 with unrestricted access to `node:*` modules, `Bun` APIs, and npm packages
 (Req 10.2) — nothing is sandboxed.
 

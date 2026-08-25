@@ -68,6 +68,14 @@ interface HarnessResult {
   fatal?: string;
 }
 
+/** Drive `externalExtensionLoadHarness.ts` as a child process against
+ * `homeDir` as its `HOME`/`APPDATA`, returning its single JSON result line
+ * (this file's TSDoc on why a subprocess is the only way to exercise a
+ * real `user`-sourced `index.ts` import — `externalExtensionLoading.test.ts`
+ * establishes the same pattern). Fails the test with the child's stderr
+ * attached if it printed no JSON or reported a fatal, so a harness that
+ * died during setup surfaces as that, not as a confusing assertion
+ * mismatch further down. */
 async function runHarness(
   homeDir: string,
   commandId: string,
