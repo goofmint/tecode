@@ -63,14 +63,18 @@ on:
     tags:
       - "v*"
 
-# Read-only: this workflow never writes repository contents and never
-# creates a GitHub Release — it only builds binaries and uploads them as
+# Read-only at the WORKFLOW level, deliberately (narrowed in Issue #36's
+# PR #76): `build` and `summary` only build binaries and upload them as
 # Actions artifacts, which `actions/upload-artifact` does through the
-# Actions API rather than the contents scope. A write-scoped
-# `GITHUB_TOKEN` here would be reachable by any compromised dependency
-# action for no benefit. A future step that publishes an actual Release
-# will need `contents: write` back — scope it to that job, not the
-# workflow.
+# Actions API rather than the contents scope — a write-scoped
+# `GITHUB_TOKEN` on either job would be reachable by any compromised
+# dependency action for no benefit. `publish` below (Issue #38 "5.2 User
+# documentation and release") is the one job that actually creates the
+# GitHub Release — it scopes `contents: write` to ITSELF, in its own `jobs.
+# publish.permissions` block, exactly as this comment previously said a
+# future publishing step should. Do not move that grant back up here: the
+# workflow-level default must stay `read` so `build`/`summary` keep the
+# narrowest token they can.
 permissions:
   contents: read
 
@@ -109,14 +113,24 @@ jobs:
       - run: bun install --frozen-lockfile
       # `scripts/release.ts`'s own target-name filter (its TSDoc's
       # "Usage") — builds ONLY this runner's target, so a runner never
-      # attempts (and fails on) one of the other five.
+      # attempts (and fails on) one of the other five. This single
+      # invocation also writes `dist/<binaryFileName>.sha256` (Issue #38
+      # "5.2 User documentation and release", `scripts/release.ts`'s
+      # `writeChecksumFile`, wired into this script's own `main()` right
+      # after a successful, in-budget build) — there is no separate
+      # checksum step here on purpose, so the checksum can never drift from
+      # what this exact build step produced.
       - name: Build ${{ matrix.target.bunTarget }}
         run: bun run release ${{ matrix.target.bunTarget }}
       - name: Record size for the summary job
         shell: bash
         run: |
           mkdir -p size-report
-          BIN=$(ls dist/tecode-* 2>/dev/null | head -n1)
+          # Excludes the `.sha256` sibling explicitly — relying on `ls`'s
+          # lexical sort (a prefix always sorts before anything that
+          # extends it, so the real binary would win `head -n1` anyway) is
+          # correct today but fragile to read; this is unambiguous.
+          BIN=$(ls dist/tecode-* 2>/dev/null | grep -v '\.sha256$' | head -n1)
           if [ -z "$BIN" ]; then
             echo "release: no binary found in dist/ for ${{ matrix.target.bunTarget }}" >&2
             exit 1
@@ -127,14 +141,30 @@ jobs:
         with:
           # Unique per target so all six land as distinct release assets,
           # never overwriting each other (`actions/upload-artifact` would
-          # silently collide on a shared name across matrix jobs).
+          # silently collide on a shared name across matrix jobs). The
+          # `.sha256` sibling is excluded here (its own `checksum-*`
+          # artifact below) so `publish`'s later binary/checksum download
+          # passes stay simple, unambiguous globs rather than needing to
+          # filter one out of the other.
           name: tecode-${{ matrix.target.bunTarget }}
-          path: dist/tecode-*
+          path: |
+            dist/tecode-*
+            !dist/*.sha256
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: size-report-${{ matrix.target.bunTarget }}
           path: size-report/${{ matrix.target.bunTarget }}.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          # Issue #38 "5.2 User documentation and release": the SHA-256
+          # checksum `bun run release`'s own `writeChecksumFile` wrote
+          # alongside this target's binary — `publish` downloads every
+          # `checksum-*` artifact and attaches each `.sha256` file to the
+          # Release next to the binary it describes.
+          name: checksum-${{ matrix.target.bunTarget }}
+          path: dist/*.sha256
           if-no-files-found: error
 
   summary:
@@ -184,3 +214,70 @@ jobs:
               echo "**$MISSING of 6 targets did not report a size** — see the \`build\` job's per-target logs (a failed or skipped matrix leg never uploads its size-report artifact)."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  # Issue #38 "5.2 User documentation and release": publish the actual
+  # GitHub Release once every matrix leg has succeeded. `needs: build` with
+  # no `if: always()` (unlike `summary` above) is the gate that matters
+  # here — GitHub Actions runs a job that `needs` a matrix job only when
+  # EVERY instance of that matrix succeeded, so a single failed/skipped
+  # target (a real regression, or one of the six runner labels going stale
+  # — this file's own top-of-file comment) silently skips `publish`
+  # entirely rather than shipping a Release with fewer than six binaries.
+  # `summary` is deliberately NOT a dependency here: it is purely
+  # informational (`if: always()`, and can run — and even fail on its own
+  # unrelated grounds — independently of whether every real binary
+  # actually built), and gating `publish` on it too would let a `summary`-
+  # job-only hiccup block a release whose six binaries are otherwise fine.
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    # The ONE job in this workflow that writes repository contents (this
+    # file's own top-of-file `permissions:` comment) — scoped here, to
+    # exactly this job, rather than at the workflow level, so the
+    # `build`/`summary` jobs' tokens stay read-only no matter what.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download every target's binary
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tecode-bun-*
+          path: release-assets
+          merge-multiple: true
+      - name: Download every target's checksum
+        uses: actions/download-artifact@v4
+        with:
+          pattern: checksum-*
+          path: release-assets
+          merge-multiple: true
+      - name: Confirm all 6 binaries and all 6 checksums are present before publishing anything
+        shell: bash
+        run: |
+          BIN_COUNT=$(ls release-assets/tecode-* 2>/dev/null | grep -v '\.sha256$' | wc -l)
+          SHA_COUNT=$(ls release-assets/*.sha256 2>/dev/null | wc -l)
+          echo "release: found $BIN_COUNT binaries and $SHA_COUNT checksums in release-assets/"
+          ls -la release-assets/
+          if [ "$BIN_COUNT" -ne 6 ] || [ "$SHA_COUNT" -ne 6 ]; then
+            echo "release: refusing to publish — expected 6 binaries and 6 checksums, got $BIN_COUNT and $SHA_COUNT" >&2
+            exit 1
+          fi
+      # `${{ ... }}` is substituted into the script text *before* bash parses
+      # it, and `v$(id)` is a valid Git ref name (`git check-ref-format`
+      # accepts it), so interpolating `github.ref_name` straight into `run:`
+      # would let anyone who can push a tag run arbitrary commands under this
+      # job's `contents: write` token. Passing it through `env:` instead makes
+      # it a shell *variable*, which bash never re-parses for substitutions.
+      - name: Create the GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --title "tecode $RELEASE_TAG" \
+            --notes-file docs/release-notes-template.md \
+            release-assets/*

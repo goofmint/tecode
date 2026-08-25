@@ -1,0 +1,51 @@
+// keybindings.json — a sample tecode user keybindings file (Req
+// 4.1-4.4, 9.1; design.md §6.2). Copy this to
+// ~/.config/tecode/keybindings.json (or %APPDATA%\tecode\keybindings.json
+// on Windows) and edit it there, or just run "Open Keyboard Shortcuts
+// (JSON)" (ctrl+k ctrl+s, packages/builtin/keybindings-editor) from a
+// running tecode, which creates the file from this same commented
+// template (packages/core/src/ui/keybindingsCommands.ts's
+// KEYBINDINGS_TEMPLATE) if it doesn't exist yet.
+//
+// This is the highest-precedence keybinding layer (defaults < fallback <
+// extension < user, packages/core/src/keymap/bindingTable.ts) — entries
+// here override core defaults, the terminal-capability fallback keymap,
+// and anything a built-in or third-party extension contributes. This file
+// is watched — no restart needed after you save a change (run
+// "keybindings.showResolved" from the command palette to confirm what
+// took effect).
+//
+// Each entry has the shape:
+//
+//   { "key": "<chord>", "command": "<commandId>", "when"?: "<expression>" }
+//
+//   - key      A single stroke (e.g. "ctrl+s") or a two-stroke chord,
+//              its strokes space-separated (e.g. "ctrl+k ctrl+s").
+//   - command  The command id to run. Prefix it with "-" to REMOVE a
+//              default binding instead of adding one — for example
+//              "-editor.action.deleteLine" unbinds whatever key that
+//              command's default currently sits on. A removal entry
+//              may not also carry a "when" clause.
+//   - when     Optional. A boolean context expression using &&, ||, !,
+//              and == over context keys such as editorFocus,
+//              editorTextFocus, terminalFocus, and explorerFocus (e.g.
+//              "editorTextFocus && editorLangId == 'ts'"). Omit it to
+//              bind unconditionally.
+//
+// The three entries below are real, working examples against this
+// repo's own built-in commands — uncomment README.md's "Keybindings
+// reference" table for the full set of what's already bound by default.
+[
+  // theme.select (packages/core/src/ui/themeSelectCommand.ts) has no
+  // default keybinding in this MVP — it's palette-only. Give it one.
+  { "key": "ctrl+alt+t", "command": "theme.select" },
+
+  // "Go to File" by URI (packages/core/src/ui/openFileCommand.ts), only
+  // while the editor pane has focus.
+  { "key": "ctrl+alt+n", "command": "workbench.action.files.openUri", "when": "editorFocus" },
+
+  // Free up ctrl+d — editor-core's default binding for "add selection to
+  // next find match" (packages/builtin/editor-core/manifest.ts) — for
+  // something else.
+  { "key": "ctrl+d", "command": "-editor.action.addSelectionToNextFindMatch" }
+]

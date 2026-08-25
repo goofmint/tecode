@@ -2,7 +2,12 @@
  * Drives the compiled-binary release matrix (Issue #35 "4.4 Compiled binary
  * builds"; Req 8.5, 13.2; design.md §17: "Release: `bun build --compile` per
  * target (darwin/linux/windows × x64/arm64) from `cli`... A `scripts/
- * release.ts` drives the 6-target matrix and size assertions.").
+ * release.ts` drives the 6-target matrix and size assertions."), plus
+ * (Issue #38 "5.2 User documentation and release") a SHA-256 checksum
+ * written alongside each successfully built binary — {@link sha256Hex},
+ * {@link formatChecksumLine}, {@link computeChecksumLine}, and
+ * {@link writeChecksumFile} below — for the release workflow's publish job
+ * to attach to the GitHub Release next to the binary it describes.
  *
  * Usage: `bun run release [target ...]` — with no arguments, attempts all
  * six {@link RELEASE_TARGETS}; with one or more `bun build --target=...`
@@ -185,6 +190,109 @@ export function binaryFileName(target: ReleaseTarget): string {
 }
 
 /**
+ * SHA-256 hex digest of `data` (Issue #38 "5.2 User documentation and
+ * release": every binary a `v*` tag push publishes ships with a checksum
+ * so a downloader can verify it before running an unfamiliar binary).
+ * Uses Bun's built-in `CryptoHasher` directly — no checksum dependency for
+ * something the runtime already provides natively, matching this
+ * codebase's house convention of not reaching for a library where a
+ * couple of lines against a platform API suffice.
+ */
+export function sha256Hex(data: Uint8Array): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(data);
+  return hasher.digest("hex");
+}
+
+/**
+ * Render one checksum line in the exact format both `sha256sum` (GNU
+ * coreutils, Linux) and `shasum -a 256` (macOS/BSD) produce AND consume
+ * via their own `-c`/`--check` flag: `<hex digest><two spaces><filename>\n`
+ * — the two spaces are that format's own "binary mode" marker, not
+ * incidental whitespace, so this must not be collapsed to one.
+ * `fileName` is always {@link binaryFileName}'s bare output, never a full
+ * path: a checksum file is meant to sit ALONGSIDE the binary it describes
+ * (the release workflow downloads every target's binary and its `.sha256`
+ * file into the same flat directory before attaching both to the
+ * Release), and embedding a build-machine-specific absolute path would
+ * make the line fail `-c` verification anywhere else.
+ */
+export function formatChecksumLine(hexDigest: string, fileName: string): string {
+  return `${hexDigest}  ${fileName}\n`;
+}
+
+/** Dependencies {@link computeChecksumLine}/{@link writeChecksumFile} need
+ * beyond the target itself — matches {@link BuildTargetOptions}'s
+ * injectable-seam convention (a real default, overridable so
+ * `scripts/release.test.ts` can inject a fixed byte buffer and a fake hash
+ * function instead of needing a real ~110 MB compiled binary on disk). */
+export interface ChecksumOptions {
+  /** Directory (relative to `repoRoot`, or absolute) the binary was
+   * written into by {@link buildTarget}. Defaults to `"dist"` — must
+   * match whatever `buildTarget` actually used for this to find anything. */
+  distDir?: string;
+  /** Working directory the (relative) `distDir` is resolved against.
+   * Defaults to `process.cwd()`. */
+  repoRoot?: string;
+  /** Reads the binary's raw bytes. Defaults to `Bun.file(path).bytes()`. */
+  readBytes?: (path: string) => Promise<Uint8Array>;
+  /** Computes the hex digest from those bytes. Defaults to
+   * {@link sha256Hex}. */
+  hash?: (data: Uint8Array) => string;
+}
+
+async function defaultReadBytes(path: string): Promise<Uint8Array> {
+  return await Bun.file(path).bytes();
+}
+
+/**
+ * Compute one target's checksum line ({@link formatChecksumLine}'s shape)
+ * by reading its already-built binary off disk. Resolves the binary's path
+ * the exact same way {@link buildTarget} does —
+ * `resolve(repoRoot, distDir, binaryFileName(target))` — deliberately
+ * reusing that same expression rather than a second hand-rolled join, for
+ * the identical reason {@link buildTarget}'s own TSDoc gives for computing
+ * its `--outfile`/`stat` path exactly once ("Absolute vs. relative
+ * `distDir`"): two independently-written path-joins have already
+ * silently disagreed for an absolute `distDir` once in this file's
+ * history, and this avoids repeating that mistake for a third callsite.
+ */
+export async function computeChecksumLine(
+  target: ReleaseTarget,
+  options: ChecksumOptions = {},
+): Promise<string> {
+  const distDir = options.distDir ?? "dist";
+  const repoRoot = options.repoRoot ?? process.cwd();
+  const readBytes = options.readBytes ?? defaultReadBytes;
+  const hash = options.hash ?? sha256Hex;
+
+  const fileName = binaryFileName(target);
+  const filePath = resolve(repoRoot, distDir, fileName);
+  const bytes = await readBytes(filePath);
+  return formatChecksumLine(hash(bytes), fileName);
+}
+
+/**
+ * Write `<binaryFileName(target)>.sha256` next to the binary itself — the
+ * exact sibling-file convention `sha256sum <file> > <file>.sha256`
+ * produces by hand, and what the release workflow's per-target build job
+ * uploads as its own artifact (alongside the binary) for the publish job
+ * to download and attach to the GitHub Release. Returns the checksum
+ * file's own absolute path.
+ */
+export async function writeChecksumFile(
+  target: ReleaseTarget,
+  options: ChecksumOptions = {},
+): Promise<string> {
+  const distDir = options.distDir ?? "dist";
+  const repoRoot = options.repoRoot ?? process.cwd();
+  const line = await computeChecksumLine(target, options);
+  const checksumPath = resolve(repoRoot, distDir, `${binaryFileName(target)}.sha256`);
+  await Bun.write(checksumPath, line);
+  return checksumPath;
+}
+
+/**
  * Recognize `bun build --compile`'s failure signature for Finding 2's
  * cross-compilation limitation (this module's TSDoc): `@opentui/core`'s
  * dynamic `import(\`@opentui/core-${process.platform}-${process.arch}/
@@ -354,12 +462,28 @@ async function main(argv: string[]): Promise<void> {
   await mkdir(distDir, { recursive: true });
 
   const outcomes: BuildOutcome[] = [];
+  // Tracked separately from `outcomes` (whose `status` field only ever
+  // describes the BUILD step) — a checksum failure is its own distinct
+  // failure mode (a successfully built, correctly sized binary whose
+  // `.sha256` sibling failed to write) and must still fail the script, not
+  // be silently swallowed just because the build itself was fine.
+  let checksumFailed = false;
   for (const target of targets) {
     console.log(`release: building ${target.bunTarget}...`);
     const outcome = await buildTarget(target, { distDir, repoRoot: process.cwd() });
     outcomes.push(outcome);
     if (outcome.status === "ok") {
       console.log(`release: ${target.bunTarget} — OK, ${formatBytesAsMB(outcome.sizeBytes!)} (limit ${formatBytesAsMB(SIZE_LIMIT_BYTES)})`);
+      // Only a successfully-built, in-budget binary gets a checksum — an
+      // "oversized"/"build-failed" outcome has no binary worth checksumming
+      // (or, for "oversized", one that must not be shipped at all).
+      try {
+        const checksumPath = await writeChecksumFile(target, { distDir, repoRoot: process.cwd() });
+        console.log(`release: ${target.bunTarget} — checksum written to ${checksumPath}`);
+      } catch (cause) {
+        checksumFailed = true;
+        console.error(`release: ${target.bunTarget} — FAILED to write checksum: ${cause}`);
+      }
     } else if (outcome.status === "oversized") {
       console.error(
         `release: ${target.bunTarget} — FAILED (over size budget): ${formatBytesAsMB(outcome.sizeBytes!)} > ${formatBytesAsMB(SIZE_LIMIT_BYTES)}`,
@@ -382,7 +506,7 @@ async function main(argv: string[]): Promise<void> {
   }
 
   const failed = outcomes.filter((o) => o.status !== "ok");
-  if (unknown.length > 0 || failed.length > 0) {
+  if (unknown.length > 0 || failed.length > 0 || checksumFailed) {
     process.exit(1);
   }
 }

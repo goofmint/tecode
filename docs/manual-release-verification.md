@@ -48,8 +48,9 @@ matrix automates):
 
 1. On a `darwin`/`x64`, `darwin`/`arm64`, `linux`/`arm64`, `windows`/`x64`,
    or `windows`/`arm64` machine with Bun installed, clone the repo and run
-   `bun install` — this links that host's OWN `@opentui/core-<platform>-
-   <arch>` package, which is what makes the build possible at all.
+   `bun install` — this links that host's OWN
+   `@opentui/core-<platform>-<arch>` package, which is what makes the
+   build possible at all.
 2. Run `bun run release bun-<platform>-<arch>` (the exact target name from
    `scripts/release.ts`'s `RELEASE_TARGETS`, e.g. `bun run release
    bun-darwin-arm64`).
@@ -116,11 +117,12 @@ highlighting as a human actually SEES them cannot be captured by a
 headless subprocess test.
 
 **What's already covered automatically, in-process, against the same
-production code the binary contains**: `packages/cli/src/
-highlightIncremental.e2e.test.ts` exercises the real highlight pipeline
-end to end against `languages-basic`'s embedded grammars;
-`packages/cli/src/themeSelectDefaultThemes.test.ts` and `themesVisual.
-test.tsx` exercise `theme.select` and the rendered theme output against
+production code the binary contains**:
+`packages/cli/src/highlightIncremental.e2e.test.ts` exercises the real
+highlight pipeline end to end against `languages-basic`'s embedded
+grammars; `packages/cli/src/themeSelectDefaultThemes.test.ts` and
+`themesVisual.test.tsx` exercise `theme.select` and the rendered theme
+output against
 the real `themes-default` built-in, using OpenTUI's headless renderer (Req
 13.4's own "UI components SHALL be covered by snapshot tests using
 OpenTUI's headless renderer"). Both run against the exact same
@@ -138,9 +140,9 @@ inside tmux):
    `%APPDATA%\tecode\` on Windows) — a genuinely clean profile, so nothing
    the binary reads was left over from a dev checkout.
 3. Open a real terminal session in one of the supported terminals above.
-4. Run `./tecode-<platform>-<arch> <path-to-a-directory-containing-a-.ts-
-   file>` with NO `TECODE_HEADLESS` set, so it renders to the real
-   terminal.
+4. Run
+   `./tecode-<platform>-<arch> <path-to-a-directory-containing-a-.ts-file>`
+   with NO `TECODE_HEADLESS` set, so it renders to the real terminal.
 5. Confirm: the shell renders (sidebar, editor area, status bar) within
    about 100 ms of launch — no visible flash-of-unstyled or blank frame.
 6. Open the `.ts` file (via the explorer or `ctrl+p` quick-open) and

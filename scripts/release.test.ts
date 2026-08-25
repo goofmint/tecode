@@ -13,17 +13,21 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   binaryFileName,
   buildTarget,
   classifyBuildFailure,
+  computeChecksumLine,
   formatBytesAsMB,
+  formatChecksumLine,
   parseTargetFilter,
   RELEASE_TARGETS,
+  sha256Hex,
   SIZE_LIMIT_BYTES,
+  writeChecksumFile,
   type ReleaseTarget,
 } from "./release";
 
@@ -180,6 +184,101 @@ describe("buildTarget's --outfile / stat path parity (Finding 5)", () => {
       expect(outcome.sizeBytes).toBe("fake-compiled-binary-bytes".length);
     } finally {
       await rm(absoluteDistDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("sha256Hex (Issue #38's checksum publishing)", () => {
+  test("matches the well-known SHA-256 digest of a fixed, injected input", () => {
+    // Known-good vectors (NIST/RFC test vectors, also reproducible via a
+    // real `sha256sum`/`shasum -a 256` — no real build artifact needed,
+    // exactly this task's own "unit-test it against injected fixed input"
+    // requirement) — proves this codebase's use of `Bun.CryptoHasher`
+    // produces the SAME digest every real `sha256sum -c` verification
+    // against a shipped binary would expect.
+    expect(sha256Hex(new TextEncoder().encode("abc"))).toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+    expect(sha256Hex(new TextEncoder().encode(""))).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+  });
+});
+
+describe("formatChecksumLine (sha256sum/shasum -a 256 compatible output)", () => {
+  test("renders <hex><TWO spaces><filename>\\n — the binary-mode marker both tools require", () => {
+    const line = formatChecksumLine("deadbeef", "tecode-linux-x64");
+    expect(line).toBe("deadbeef  tecode-linux-x64\n");
+    // Spelled out explicitly so a future accidental single-space
+    // regression fails loudly rather than needing the reader to count
+    // spaces in the string literal above.
+    expect(line.split("tecode-linux-x64")[0]).toBe("deadbeef  ");
+  });
+
+  test("uses only binaryFileName's bare output, never a path", () => {
+    const target = RELEASE_TARGETS.find((t) => t.bunTarget === "bun-windows-arm64")!;
+    const line = formatChecksumLine("cafebabe", binaryFileName(target));
+    expect(line).toBe("cafebabe  tecode-windows-arm64.exe\n");
+  });
+});
+
+describe("computeChecksumLine (injectable seam, no real build)", () => {
+  test("feeds the injected readBytes output through the injected hash function, keyed off binaryFileName", async () => {
+    const target = RELEASE_TARGETS.find((t) => t.bunTarget === "bun-darwin-arm64")!;
+    const seenPaths: string[] = [];
+    const seenBytes: Uint8Array[] = [];
+    const fixedBytes = new TextEncoder().encode("fixed-injected-binary-content");
+
+    const line = await computeChecksumLine(target, {
+      distDir: "dist",
+      repoRoot: "/repo",
+      readBytes: async (path) => {
+        seenPaths.push(path);
+        return fixedBytes;
+      },
+      hash: (data) => {
+        seenBytes.push(data);
+        return "0123456789abcdef";
+      },
+    });
+
+    expect(seenPaths).toEqual([resolve("/repo", "dist", binaryFileName(target))]);
+    expect(seenBytes).toEqual([fixedBytes]);
+    expect(line).toBe(`0123456789abcdef  ${binaryFileName(target)}\n`);
+  });
+
+  test("defaults to the real sha256Hex when no hash function is injected", async () => {
+    const target = RELEASE_TARGETS.find((t) => t.bunTarget === "bun-linux-x64")!;
+    const line = await computeChecksumLine(target, {
+      distDir: "dist",
+      repoRoot: "/repo",
+      readBytes: async () => new TextEncoder().encode("abc"),
+    });
+    expect(line).toBe(
+      `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  ${binaryFileName(target)}\n`,
+    );
+  });
+});
+
+describe("writeChecksumFile (the actual <binaryFileName>.sha256 sibling)", () => {
+  test("writes the checksum line to <binaryFileName>.sha256 next to where the binary itself would be", async () => {
+    const target = RELEASE_TARGETS.find((t) => t.bunTarget === "bun-linux-x64")!;
+    const distDir = await mkdtemp(resolve(tmpdir(), "release-test-checksum-"));
+
+    try {
+      const checksumPath = await writeChecksumFile(target, {
+        distDir,
+        repoRoot: "/unused-since-distDir-is-already-absolute",
+        readBytes: async () => new TextEncoder().encode("abc"),
+      });
+
+      expect(checksumPath).toBe(resolve(distDir, `${binaryFileName(target)}.sha256`));
+      const written = await readFile(checksumPath, "utf8");
+      expect(written).toBe(
+        `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  ${binaryFileName(target)}\n`,
+      );
+    } finally {
+      await rm(distDir, { recursive: true, force: true });
     }
   });
 });
