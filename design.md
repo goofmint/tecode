@@ -83,6 +83,8 @@ Duplicate extension IDs resolve by discovery order — later wins (workspace > u
 
 Registration walks `contributes` and pushes declarations into the command registry (as *lazy commands*), keymap service, slot registry (as *lazy views*), config schema registry, language registry, and theme registry — all without touching `index.ts`.
 
+A manifest's `contributes.commands` entries reach `registerLazy` (§5) the same way a runtime `tecode.commands.register` call does, so a manifest declaring a core-reserved command ID is rejected there too, not only on the runtime path.
+
 ### 4.2 Activation
 
 Activation events (*Req 2.5*):
@@ -110,6 +112,8 @@ Built-ins are compiled into the binary as ordinary imports (their manifest data 
 - `register(id, handler, meta?)` returns a `Disposable`; re-registering an existing ID replaces the handler and logs a warning (last-wins keeps hot-reload simple).
 - `execute(id, ...args)` is async and **never throws** (*Req 3.4, 3.5*): unknown ID → status-bar error `Command not found: <id>`; handler exception → caught, logged to the host log, surfaced in the status bar; the returned promise resolves to `undefined` in both failure cases and to the handler's return value on success.
 - `list()` returns `{ id, title, category, when }[]` for the palette; entries whose `when` evaluates false against current context are filtered by the palette, not the registry.
+- `registerCore(id, handler, meta?)` is a host-internal fourth method — not part of `tecode.commands` (`api/create.ts` names only `register`/`execute`/`list` on that namespace) — reachable only from the composition root (`cli/main.ts`'s `buildAssemblyRoot`, which calls it for every core command before `runDeferredPhase`'s `loadExtensions` runs). It registers exactly like `register` and additionally marks `id` reserved; disposing the returned `Disposable` clears the reservation along with the entry.
+- A `register`/`registerLazy` call on a reserved ID is rejected rather than last-wins (*Req 3.6*): the registry reports the rejection to the host log and the status bar and returns a no-op `Disposable`, leaving the core handler in place and never throwing.
 
 ## 6. Keymap Service
 

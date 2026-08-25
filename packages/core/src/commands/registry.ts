@@ -90,7 +90,7 @@ export interface CommandRegistry {
    * check below) an id reserved by {@link registerCore} — Issue #72's fix
    * for the pre-fix behavior where any extension could silently take over
    * a core-owned command id (last-wins `storeEntry`, no id policy at all):
-   * a reserved id instead logs a warning and notifies `sink`, then returns
+   * a reserved id instead logs an error and notifies `sink`, then returns
    * a no-op {@link Disposable}, WITHOUT registering anything and WITHOUT
    * throwing — a malformed extension manifest/`activate(ctx)` must not
    * crash the whole extension over a naming collision it didn't cause.
@@ -264,13 +264,22 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
    * caller's {@link RegisterLazyOptions.extensionId}), is attributed on the
    * reported {@link HostError} so a misbehaving extension is identifiable
    * from the log/status bar, matching every other extension-attributed
-   * `HostError` in this module. */
+   * `HostError` in this module.
+   *
+   * Logged at `"error"`, not `"warning"`: this matches
+   * `host/registration.ts`'s `reportSkip`, which reports a refused
+   * extension with `logSafely(deps.log, "error", err)` + `notifySafely`. A
+   * reserved-id rejection means the extension's command does not exist —
+   * the same class of outcome as a skipped extension — unlike
+   * {@link storeEntry}'s "Command re-registered, replacing previous
+   * handler" notice, which stays `"warning"` because the command still
+   * works there; only this rejection path changes. */
   function rejectReserved(id: string, extensionId?: string): Disposable {
     const err: HostError = {
       message: `Command "${id}" is reserved for core and cannot be registered by an extension.`,
       ...(extensionId !== undefined ? { extensionId } : {}),
     };
-    logSafely("warning", err);
+    logSafely("error", err);
     notifySafely(err);
     return noopDisposable();
   }

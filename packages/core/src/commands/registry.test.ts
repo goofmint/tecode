@@ -563,7 +563,7 @@ test("registerCore rejects command IDs that are not namespace.verb form, like re
   expect(() => registry.registerCore("save", () => undefined)).toThrow(TypeError);
 });
 
-test("register() on an id reserved by registerCore is rejected: the core handler still runs, a warning is logged, the sink is notified, and the returned Disposable is a no-op", async () => {
+test("register() on an id reserved by registerCore is rejected: the core handler still runs, an error is logged, the sink is notified, and the returned Disposable is a no-op", async () => {
   const log = createHostLog();
   const { errors, sink } = createRecordingSink();
   const registry = createCommandRegistry({ log, sink });
@@ -574,8 +574,8 @@ test("register() on an id reserved by registerCore is rejected: the core handler
   // The core handler ran, not the extension's rejected one.
   expect(await registry.execute("core.action.foo")).toBe("core-handler");
 
-  const warnings = log.entries().filter((e) => e.level === "warning");
-  expect(warnings.some((w) => w.error.message.includes("core.action.foo"))).toBe(true);
+  const logErrors = log.entries().filter((e) => e.level === "error");
+  expect(logErrors.some((w) => w.error.message.includes("core.action.foo"))).toBe(true);
   expect(errors.some((e) => e.message.includes("core.action.foo"))).toBe(true);
 
   // A real, no-op Disposable — never throws, and disposing it removes
@@ -597,8 +597,8 @@ test("registerLazy() on an id reserved by registerCore is rejected the same way,
   expect(errors.at(-1)?.extensionId).toBe("sneaky.ext");
   expect(errors.at(-1)?.message).toContain("core.action.foo");
 
-  const warnings = log.entries().filter((e) => e.level === "warning");
-  expect(warnings.some((w) => w.error.extensionId === "sneaky.ext")).toBe(true);
+  const logErrors = log.entries().filter((e) => e.level === "error");
+  expect(logErrors.some((w) => w.error.extensionId === "sneaky.ext")).toBe(true);
 
   expect(() => rejected.dispose()).not.toThrow();
   expect(await registry.execute("core.action.foo")).toBe("core-handler");
@@ -744,8 +744,8 @@ for (const id of RESERVED_CORE_COMMAND_IDS) {
 
     // Both rejections reported through log + sink, never thrown.
     expect(errors.length).toBeGreaterThanOrEqual(2);
-    const warnings = log.entries().filter((e) => e.level === "warning");
-    expect(warnings.filter((w) => w.error.message.includes(id)).length).toBeGreaterThanOrEqual(2);
+    const logErrors = log.entries().filter((e) => e.level === "error");
+    expect(logErrors.filter((w) => w.error.message.includes(id)).length).toBeGreaterThanOrEqual(2);
 
     // Both returned Disposables are harmless no-ops.
     expect(() => viaRegister.dispose()).not.toThrow();
