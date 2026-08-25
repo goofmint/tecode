@@ -179,7 +179,7 @@ describe("registerExtensionsReloadCommand (Req 2.8)", () => {
   test("registers under extensions.reload with a palette title/category", () => {
     const registered: { id: string; meta?: { title?: string; category?: string } }[] = [];
     const commands = {
-      register(id: string, _handler: unknown, meta?: { title?: string; category?: string }) {
+      registerCore(id: string, _handler: unknown, meta?: { title?: string; category?: string }) {
         registered.push({ id, meta });
         return { dispose() {} };
       },
@@ -201,7 +201,7 @@ describe("registerExtensionsReloadCommand (Req 2.8)", () => {
     let disposeCalled = false;
     const registered: Record<string, (...args: unknown[]) => unknown> = {};
     const commands = {
-      register(id: string, handler: (...args: unknown[]) => unknown) {
+      registerCore(id: string, handler: (...args: unknown[]) => unknown) {
         registered[id] = handler;
         return {
           dispose() {

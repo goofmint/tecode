@@ -13,8 +13,9 @@
  * **Narrowing, not re-implementing** (design.md §12's "prevent accidental
  * monkey-patching across extensions" extends to the host itself): several
  * services expose more than their `tecode.*` projection —
- * `CommandRegistry.registerLazy` is host-internal (extensions never
- * manifest-declare lazy commands directly), and `ContextService.onDidChange`
+ * `CommandRegistry.registerLazy`/`registerCore` are host-internal
+ * (extensions never manifest-declare lazy commands directly, nor reserve a
+ * core command id — Issue #72), and `ContextService.onDidChange`
  * is consumed by focus tracking/the keymap service, not by
  * `tecode.context`. Building each namespace object explicitly, naming only
  * the methods `@tecode/api` declares, is what keeps those extra surfaces
@@ -71,8 +72,8 @@ import {
  * one already-built instance of each core service (design.md §12). */
 export interface CreateTecodeApiDeps {
   /** Backs `tecode.commands`. Only `register`/`execute`/`list` are
-   * exposed — `registerLazy` stays host-internal (see this module's
-   * TSDoc). */
+   * exposed — `registerLazy`/`registerCore` stay host-internal (see this
+   * module's TSDoc). */
   commands: CommandRegistry;
   /** Backs `tecode.workspace.openDocument`/`documents`/`onDidOpen`/
    * `onDidClose`/`onDidSave`. */

@@ -77,10 +77,24 @@ export interface CommandRegistryDeps {
 }
 
 /** The public shape of the command registry — the implementation behind
- * `tecode.commands` (Req 10.1), plus `registerLazy` (design.md §4.1),
- * which is host-internal (extensions never call it directly; the `tecode`
- * API surface handed to extensions exposes only `register`). */
+ * `tecode.commands` (Req 10.1), plus `registerLazy` (design.md §4.1) and
+ * `registerCore` (Issue #72), both of which are host-internal (extensions
+ * never call either directly; the `tecode` API surface handed to
+ * extensions exposes only `register`/`execute`/`list` — see
+ * `api/create.ts`'s `commandsNamespace`). */
 export interface CommandRegistry {
+  /**
+   * Register a command as `tecode.commands.register` does for an
+   * extension (Req 3.1, 3.2). Rejects (see this interface's
+   * {@link registerCore} TSDoc for the asymmetry with the `isValidCommandId`
+   * check below) an id reserved by {@link registerCore} — Issue #72's fix
+   * for the pre-fix behavior where any extension could silently take over
+   * a core-owned command id (last-wins `storeEntry`, no id policy at all):
+   * a reserved id instead logs an error and notifies `sink`, then returns
+   * a no-op {@link Disposable}, WITHOUT registering anything and WITHOUT
+   * throwing — a malformed extension manifest/`activate(ctx)` must not
+   * crash the whole extension over a naming collision it didn't cause.
+   */
   register(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable;
   /**
    * Register a command declared in a manifest's `contributes.commands`
@@ -89,9 +103,56 @@ export interface CommandRegistry {
    * immediately, but `execute`-ing it before the owning extension has
    * activated reports a "not activated yet" error rather than running
    * anything. Same last-wins/duplicate-warning/`Disposable` semantics as
-   * {@link register}.
+   * {@link register} — including the same reserved-id rejection (Issue
+   * #72): `host/registration.ts` walks `contributes.commands` straight
+   * into this method, so an extension manifest declaring
+   * `{ "id": "tab.close" }` reaches `registerCore`'s reservation exactly
+   * the same way a runtime `tecode.commands.register("tab.close", ...)`
+   * call would — both paths must reject, not just `register`.
    */
   registerLazy(id: string, options: RegisterLazyOptions): Disposable;
+  /**
+   * Host-internal third registration method (Issue #72): registers exactly
+   * like {@link register} (Req 3.1, 3.2 — same `namespace.verb` id
+   * validation, same last-wins-with-warning behavior for two `registerCore`
+   * calls under the same id) AND marks `id` reserved, so every subsequent
+   * `register`/`registerLazy` call under that id — from an extension, via
+   * either the runtime `tecode.commands.register` or a manifest's
+   * `contributes.commands` — is rejected instead of silently replacing the
+   * core handler.
+   *
+   * **Structurally unreachable from extensions**: `api/create.ts` builds
+   * the frozen `tecode.commands` namespace by naming only
+   * `register`/`execute`/`list` off this registry — `registerCore` (like
+   * `registerLazy`) is simply never copied onto that object, so no
+   * extension can reach it even indirectly. Only composition-root code
+   * (`cli/main.ts`'s `buildAssemblyRoot`, registering the 6 core command
+   * modules under `ui/`) ever calls this method, ahead of
+   * `runDeferredPhase`'s `loadExtensions` call — see `main.ts`'s own
+   * assembly-order TSDoc/tests for why that ordering is what makes the
+   * reservation effective against every extension, not just ones loaded
+   * later.
+   *
+   * **Malformed id still throws, unlike a reserved-id collision**: an
+   * invalid `namespace.verb` id passed to `registerCore` is a programming
+   * error in THIS codebase's own core command modules (never an
+   * extension's fault, since extensions cannot reach this method at all),
+   * so it keeps {@link register}'s existing `TypeError`-throwing behavior
+   * — there is no third-party `activate(ctx)` call on the stack here to
+   * protect from a crash.
+   *
+   * **Dispose clears the reservation**: disposing a `registerCore`
+   * registration also removes `id` from the reserved set (only when that
+   * dispose call actually removes the CURRENT entry — a stale
+   * `Disposable` from a registration a later `registerCore`/`register`
+   * call already superseded is a no-op for both the entry and the
+   * reservation, mirroring {@link register}'s existing entry-identity
+   * dispose guard). Rationale: a disposed core command no longer exists,
+   * so nothing is left to protect — the id becomes an ordinary, available
+   * `namespace.verb` string again, registrable by anyone (matches this
+   * registry's existing "dispose really means gone" contract elsewhere).
+   */
+  registerCore(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable;
   execute(id: string, ...args: unknown[]): Promise<unknown>;
   list(): CommandDescriptor[];
 }
@@ -126,6 +187,9 @@ export function isValidCommandId(id: string): boolean {
 export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistry {
   const { log, sink, activateExtension } = deps;
   const commands = new Map<string, CommandEntry>();
+  // Ids reserved by registerCore (Issue #72) — checked by register/
+  // registerLazy before they ever touch `commands` or `storeEntry`.
+  const reserved = new Set<string>();
 
   /** Guarded `log.append` — an injected log must not be able to break the
    * registry's error paths (execute's never-throwing contract). */
@@ -146,13 +210,29 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
     }
   }
 
-  /** Shared last-wins storage behind both {@link register} and
-   * {@link registerLazy}: warns on an existing entry under `id`, stores
-   * `entry`, and returns the identity-checked `Disposable` common to both
-   * (mirrors the entry-identity comparison design.md §5 relies on so a
-   * stale handle from a superseded registration never removes a newer
-   * one). */
-  function storeEntry(id: string, entry: CommandEntry): Disposable {
+  /** A `Disposable` whose `dispose()` does nothing — returned by
+   * `register`/`registerLazy` for a rejected, reserved id (Issue #72):
+   * nothing was ever stored, so there is nothing to remove, but the
+   * caller still gets a real `Disposable` to push onto `ctx.subscriptions`
+   * without a type-check special case. */
+  function noopDisposable(): Disposable {
+    return {
+      dispose() {
+        // Intentionally does nothing — see this function's TSDoc.
+      },
+    };
+  }
+
+  /** Shared last-wins storage behind {@link register}, {@link registerLazy},
+   * and {@link registerCore}: warns on an existing entry under `id`, stores
+   * `entry`, and returns the identity-checked `Disposable` common to all
+   * three (mirrors the entry-identity comparison design.md §5 relies on so
+   * a stale handle from a superseded registration never removes a newer
+   * one). `onRemoved`, when given, fires exactly when THIS dispose call
+   * actually removes the current entry (Issue #72's `registerCore`: a
+   * stale/already-superseded dispose is a no-op for the reservation too,
+   * not just the entry). */
+  function storeEntry(id: string, entry: CommandEntry, onRemoved?: () => void): Disposable {
     if (commands.has(id)) {
       logSafely("warning", {
         message: `Command re-registered, replacing previous handler: ${id}`,
@@ -170,9 +250,38 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
         // replaced/removed it, and this dispose must be a no-op then.
         if (commands.get(id) === entry) {
           commands.delete(id);
+          onRemoved?.();
         }
       },
     };
+  }
+
+  /** Reject `id` for an extension-facing {@link register}/
+   * {@link registerLazy} call: reports through both `log` and `sink`
+   * (Issue #72's "policy rejection, not a crash" — see
+   * {@link CommandRegistry.register}'s TSDoc) and returns
+   * {@link noopDisposable}. `extensionId`, when known (a `registerLazy`
+   * caller's {@link RegisterLazyOptions.extensionId}), is attributed on the
+   * reported {@link HostError} so a misbehaving extension is identifiable
+   * from the log/status bar, matching every other extension-attributed
+   * `HostError` in this module.
+   *
+   * Logged at `"error"`, not `"warning"`: this matches
+   * `host/registration.ts`'s `reportSkip`, which reports a refused
+   * extension with `logSafely(deps.log, "error", err)` + `notifySafely`. A
+   * reserved-id rejection means the extension's command does not exist —
+   * the same class of outcome as a skipped extension — unlike
+   * {@link storeEntry}'s "Command re-registered, replacing previous
+   * handler" notice, which stays `"warning"` because the command still
+   * works there; only this rejection path changes. */
+  function rejectReserved(id: string, extensionId?: string): Disposable {
+    const err: HostError = {
+      message: `Command "${id}" is reserved for core and cannot be registered by an extension.`,
+      ...(extensionId !== undefined ? { extensionId } : {}),
+    };
+    logSafely("error", err);
+    notifySafely(err);
+    return noopDisposable();
   }
 
   function register(
@@ -185,6 +294,9 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
         `Invalid command ID "${id}": expected namespace.verb form (Req 3.2)`,
       );
     }
+    if (reserved.has(id)) {
+      return rejectReserved(id);
+    }
     return storeEntry(id, { handler, meta, lazy: false });
   }
 
@@ -194,11 +306,28 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
         `Invalid command ID "${id}": expected namespace.verb form (Req 3.2)`,
       );
     }
+    if (reserved.has(id)) {
+      return rejectReserved(id, options.extensionId);
+    }
     return storeEntry(id, {
       meta: options.meta ?? {},
       extensionId: options.extensionId,
       lazy: true,
     });
+  }
+
+  function registerCore(
+    id: string,
+    handler: CommandHandler,
+    meta: CommandMeta = {},
+  ): Disposable {
+    if (!isValidCommandId(id)) {
+      throw new TypeError(
+        `Invalid command ID "${id}": expected namespace.verb form (Req 3.2)`,
+      );
+    }
+    reserved.add(id);
+    return storeEntry(id, { handler, meta, lazy: false }, () => reserved.delete(id));
   }
 
   async function execute(id: string, ...args: unknown[]): Promise<unknown> {
@@ -270,5 +399,5 @@ export function createCommandRegistry(deps: CommandRegistryDeps): CommandRegistr
     }));
   }
 
-  return { register, registerLazy, execute, list };
+  return { register, registerLazy, registerCore, execute, list };
 }

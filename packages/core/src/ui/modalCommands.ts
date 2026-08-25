@@ -70,9 +70,11 @@ export const MODAL_DEFAULT_KEYBINDINGS: KeybindingContribution[] = [
 
 /** Narrow surface {@link registerModalCommands} needs from the core command
  * registry — matches `themeSelectCommand.ts`'s own `commands` parameter
- * shape. */
+ * shape. `registerCore`, not `register` (Issue #72): these commands are
+ * core-owned infrastructure and must reserve their ids against extension
+ * override. */
 export interface ModalCommandsRegistrar {
-  register(id: string, handler: CommandHandler): Disposable;
+  registerCore(id: string, handler: CommandHandler): Disposable;
 }
 
 /**
@@ -86,10 +88,10 @@ export function registerModalCommands(
   modalService: Pick<ModalService, "selectNext" | "selectPrevious" | "accept" | "cancel">,
 ): Disposable {
   const disposables: Disposable[] = [
-    commands.register(MODAL_SELECT_NEXT_COMMAND, () => modalService.selectNext()),
-    commands.register(MODAL_SELECT_PREVIOUS_COMMAND, () => modalService.selectPrevious()),
-    commands.register(MODAL_ACCEPT_COMMAND, () => modalService.accept()),
-    commands.register(MODAL_CLOSE_COMMAND, () => modalService.cancel()),
+    commands.registerCore(MODAL_SELECT_NEXT_COMMAND, () => modalService.selectNext()),
+    commands.registerCore(MODAL_SELECT_PREVIOUS_COMMAND, () => modalService.selectPrevious()),
+    commands.registerCore(MODAL_ACCEPT_COMMAND, () => modalService.accept()),
+    commands.registerCore(MODAL_CLOSE_COMMAND, () => modalService.cancel()),
   ];
   let disposed = false;
   return {

@@ -128,14 +128,18 @@ export function createExtensionsReloadHandler(deps: ExtensionsReloadDeps): Comma
 
 /** Register {@link createExtensionsReloadHandler}'s handler as
  * `"extensions.reload"` on the core `CommandRegistry` (this module's
- * TSDoc — a direct `commands.register` call, not routed through
+ * TSDoc — a direct `commands.registerCore` call, not routed through
  * `tecode.commands`, for the same privilege-boundary reason
- * `registerThemeSelectCommand`/`registerOpenFileCommand` document). */
+ * `registerThemeSelectCommand`/`registerOpenFileCommand` document).
+ * `registerCore`, not `register` (Issue #72): reserves the id against
+ * extension override — re-executing the whole process is exactly the kind
+ * of privileged capability a third-party extension must never be able to
+ * silently take over. */
 export function registerExtensionsReloadCommand(
-  commands: { register(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable },
+  commands: { registerCore(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable },
   deps: ExtensionsReloadDeps,
 ): Disposable {
-  return commands.register(EXTENSIONS_RELOAD_COMMAND_ID, createExtensionsReloadHandler(deps), {
+  return commands.registerCore(EXTENSIONS_RELOAD_COMMAND_ID, createExtensionsReloadHandler(deps), {
     title: "Reload Window",
     category: "Extensions",
   });
