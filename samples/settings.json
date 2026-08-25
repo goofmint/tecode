@@ -1,0 +1,54 @@
+// settings.json — a sample tecode user settings file (Req 9.1-9.5;
+// design.md §11). Copy this to ~/.config/tecode/settings.json (or
+// %APPDATA%\tecode\settings.json on Windows — packages/core/src/host/
+// paths.ts's getUserSettingsPath) and edit it there; tecode does not
+// auto-create this file the way it does keybindings.json (there is no
+// "settings.open" command in this MVP), so this sample is the canonical
+// starting point.
+//
+// This is JSONC: `//` comments and trailing commas are both accepted
+// (Req 9.1). Keys are flat, dot-separated strings, exactly as declared by
+// whichever schema registered them — core's own
+// (packages/core/src/config/coreDefaults.ts) or a built-in extension's
+// manifest.ts (its contributes.configuration block). This file is watched
+// — no restart needed after you save a change (Req 9.4); a workspace's own
+// .tecode/settings.json (Req 9.2) overlays on top of whatever is set here.
+//
+// See README.md's "Settings reference" table for the full list, including
+// which of Req 9.5's named keys are not implemented yet.
+{
+  // --- Core (packages/core/src/config/coreDefaults.ts) ---
+
+  // The active color theme's id (ThemeRegistry, Req 7.5, 11.4).
+  "workbench.colorTheme": "tecode.dark-modern",
+
+  // Show line numbers in the editor gutter.
+  "editor.lineNumbers": true,
+
+  // The number of spaces a tab is equal to.
+  "editor.tabSize": 4,
+
+  // Insert spaces (up to the next editor.tabSize stop) when pressing Tab,
+  // instead of a literal "\t".
+  "editor.insertSpaces": true,
+
+  // --- explorer (packages/builtin/explorer/manifest.ts) ---
+
+  // Show hidden (dot-prefixed) and .gitignore-ignored files in the
+  // explorer sidebar.
+  "explorer.showHidden": false
+
+  // Req 9.5 also names "editor.wordWrap" and "files.autoSave" among the
+  // MVP settings. As of this release, NEITHER is implemented: no
+  // contributes.configuration schema registers either key, and nothing
+  // reads config.get("editor.wordWrap") or config.get("files.autoSave")
+  // outside of test fixtures exercising the config-merge machinery in the
+  // abstract (verified by grepping packages/ for both key strings). Setting
+  // them here would have no effect — they are left commented out below,
+  // rather than omitted outright, so this sample stays traceable against
+  // Req 9.5's full list instead of silently dropping two of its six named
+  // keys:
+  //
+  // "editor.wordWrap": "off",
+  // "files.autoSave": "off"
+}
