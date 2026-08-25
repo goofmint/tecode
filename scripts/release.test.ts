@@ -147,15 +147,22 @@ describe("buildTarget's --outfile / stat path parity (Finding 5)", () => {
       const fakeSpawn = ((opts: { cmd: readonly string[] }) => {
         const outfileFlagIndex = opts.cmd.indexOf("--outfile");
         capturedOutfile = opts.cmd[outfileFlagIndex + 1];
-        // Simulate `bun build --compile` itself having already written the
-        // binary at --outfile by the time it exits, synchronously, before
-        // this fake "process" object is even returned — buildTarget only
-        // stats AFTER awaiting `exited`.
-        void writeFile(capturedOutfile!, "fake-compiled-binary-bytes");
+        // Model the real contract: `bun build --compile` has finished
+        // writing its output by the time it exits. `buildTarget` awaits
+        // `exited` and only then `stat`s, so the write MUST be chained
+        // into `exited` rather than started beside it.
+        //
+        // A previous version fired `void writeFile(...)` and resolved
+        // `exited` immediately, claiming in a comment that the write was
+        // synchronous. It is not — `node:fs/promises`'s `writeFile` is
+        // async, so `stat` raced it. That passed on a fast local disk and
+        // failed on CI, which is exactly the shape of flake this suite
+        // must not ship.
+        const wrote = writeFile(capturedOutfile!, "fake-compiled-binary-bytes");
         return {
           stdout: null,
           stderr: "",
-          exited: Promise.resolve(0),
+          exited: wrote.then(() => 0),
         };
       }) as unknown as typeof Bun.spawn;
 
