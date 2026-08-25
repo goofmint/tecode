@@ -18,19 +18,20 @@ is reproducible locally with one `bun run` script:
 
 `bunx tsc --noEmit` is also worth running locally before pushing (not its
 own CI job — `bun test`'s own module resolution already fails loudly on a
-real type error in a file any test imports, and `lint`'s `typescript-
-eslint` rules catch most of the rest — but a standalone typecheck is the
-fastest way to confirm a change is clean before opening a PR).
+real type error in a file any test imports, and `lint`'s
+`typescript-eslint` rules catch most of the rest — but a standalone
+typecheck is the fastest way to confirm a change is clean before opening
+a PR).
 
 **Branch protection** (repo configuration, not something a commit can set):
 for pull requests to actually be blocked on `lint`/`test`/`contract`/
 `snapshot` failures per this issue's completion requirements, a repo admin
 must add each job as a required status check under Settings → Branches →
 branch protection rule for `main` ("Require status checks to pass before
-merging", then select `Lint (ESLint incl. layering rule)`, `Test (full bun
-test suite)`, `Contract suite (API_VERSION gate)`, and `Snapshot (headless-
-renderer cell-grid suite)` by name — they only appear in that picker after
-each has run at least once on a branch or PR). `performance` is
+merging", then select `Lint (ESLint incl. layering rule)`,
+`Test (full bun test suite)`, `Contract suite (API_VERSION gate)`, and
+`Snapshot (headless-renderer cell-grid suite)` by name — they only appear
+in that picker after each has run at least once on a branch or PR). `performance` is
 deliberately left out of that required list: Req 13.1's thresholds already
 carry generous headroom specifically to avoid CI flakiness, but a shared
 runner's noise floor is still less predictable run-to-run than the other
@@ -101,12 +102,14 @@ checkout are the only two ways to run it.
 2. Verify the checksum (each binary ships with a `<binary>.sha256`
    sibling asset — `scripts/release.ts`'s `writeChecksumFile`):
    - macOS/Linux: `shasum -a 256 -c tecode-<platform>-<arch>.sha256`
-   - Windows (PowerShell): compare `(Get-FileHash .\tecode-windows-<arch>.exe
-     -Algorithm SHA256).Hash` against the hex digest inside the matching
-     `.sha256` file (case-insensitive).
+   - Windows (PowerShell): compare
+     `(Get-FileHash .\tecode-windows-<arch>.exe -Algorithm SHA256).Hash`
+     against the hex digest inside the matching `.sha256` file
+     (case-insensitive).
 3. macOS/Linux only: `chmod +x tecode-<platform>-<arch>`.
-4. Run it against a file or a directory: `./tecode-<platform>-<arch>
-   <path>` (`.\tecode-windows-<arch>.exe <path>` on Windows). First frame
+4. Run it against a file or a directory:
+   `./tecode-<platform>-<arch> <path>`
+   (`.\tecode-windows-<arch>.exe <path>` on Windows). First frame
    renders within ~100 ms (Req 12.2); everything past that — grammars,
    themes, `keybindings.fallback.json` — is embedded in the single binary
    (`scripts/release.ts`'s TSDoc, "Why there is no extra bundler config for
@@ -251,13 +254,14 @@ Shortcuts (JSON)" (`ctrl+k ctrl+s`) if that file doesn't exist yet.
 
 ## Settings reference
 
-Settings live in `~/.config/tecode/settings.json` (`%APPDATA%\tecode\
-settings.json` on Windows — `packages/core/src/host/paths.ts`'s
-`getUserSettingsPath`), JSONC (comments and trailing commas accepted, Req
-9.1), watched and applied live with no restart (Req 9.4). A workspace's
-own `.tecode/settings.json` overlays on top (Req 9.2). `samples/
-settings.json` (in this repository) is a working, commented starting
-point covering every key below.
+Settings live in `~/.config/tecode/settings.json`
+(`%APPDATA%\tecode\settings.json` on Windows —
+`packages/core/src/host/paths.ts`'s `getUserSettingsPath`), JSONC
+(comments and trailing commas accepted, Req 9.1), watched and applied
+live with no restart (Req 9.4). A workspace's own
+`.tecode/settings.json` overlays on top (Req 9.2).
+`samples/settings.json` (in this repository) is a working, commented
+starting point covering every key below.
 
 Req 9.5 names six MVP settings; the table marks which of them a real
 `contributes.configuration` schema registers today, and which do not
@@ -330,8 +334,9 @@ something a default binds, while still sitting below EVERY extension and
 user binding means the user's own `keybindings.json` always wins, with no
 special-casing needed to override a fallback entry.
 
-The bundled fallback keymap (`packages/core/src/keymap/
-keybindings.fallback.json`) ships three entries today:
+The bundled fallback keymap
+(`packages/core/src/keymap/keybindings.fallback.json`) ships three
+entries today:
 
 | Key | Command | When |
 |---|---|---|
@@ -354,8 +359,8 @@ merged with it — letting you pick your own non-colliding alternates for
 your specific legacy terminal without touching your real
 `keybindings.json`. This layer is resolved once at startup, alongside the
 Kitty-capability verdict it depends on, and is not live-reloaded the way
-`settings.json`/`keybindings.json` are (`packages/core/src/keymap/
-fallbackKeybindings.ts`'s own TSDoc).
+`settings.json`/`keybindings.json` are
+(`packages/core/src/keymap/fallbackKeybindings.ts`'s own TSDoc).
 
 ## Documentation
 

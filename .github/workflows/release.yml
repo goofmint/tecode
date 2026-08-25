@@ -265,11 +265,19 @@ jobs:
             echo "release: refusing to publish — expected 6 binaries and 6 checksums, got $BIN_COUNT and $SHA_COUNT" >&2
             exit 1
           fi
+      # `${{ ... }}` is substituted into the script text *before* bash parses
+      # it, and `v$(id)` is a valid Git ref name (`git check-ref-format`
+      # accepts it), so interpolating `github.ref_name` straight into `run:`
+      # would let anyone who can push a tag run arbitrary commands under this
+      # job's `contents: write` token. Passing it through `env:` instead makes
+      # it a shell *variable*, which bash never re-parses for substitutions.
       - name: Create the GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "tecode ${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" \
+            --title "tecode $RELEASE_TAG" \
             --notes-file docs/release-notes-template.md \
             release-assets/*

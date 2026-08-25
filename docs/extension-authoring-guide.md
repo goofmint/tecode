@@ -25,9 +25,9 @@ its declared default — all through the same `loadExtensions` →
 `buildExtensionRecords` → `createExtensionHost` pipeline a real tecode
 process runs at startup. What that test **cannot** do, because this
 environment has no TTY and ships no released binary, is prove that copying
-this extension into a compiled `tecode` binary's `~/.config/tecode/
-extensions/` directory and launching it on a real terminal produces the
-same result for a human. See "What remains unverified" at the very end of
+this extension into a compiled `tecode` binary's
+`~/.config/tecode/extensions/` directory and launching it on a real
+terminal produces the same result for a human. See "What remains unverified" at the very end of
 this document for the precise, unsoftened statement of that gap.
 
 ## Contents
@@ -52,9 +52,9 @@ guide to cover, each one runnable as soon as you add it.
 places `packages/core/src/host/paths.ts`'s `getUserExtensionsDir`/
 `getWorkspaceExtensionsDir` resolve (design.md §4.1, Req 2.1):
 
-- `~/.config/tecode/extensions/<your-extension-name>/` (or `%APPDATA%\
-  tecode\extensions\<your-extension-name>\` on Windows) — loads for every
-  workspace you open.
+- `~/.config/tecode/extensions/<your-extension-name>/` (or
+  `%APPDATA%\tecode\extensions\<your-extension-name>\` on Windows) — loads
+  for every workspace you open.
 - `<workspace-root>/.tecode/extensions/<your-extension-name>/` — loads only
   when tecode is opened on that workspace, and is the natural place for an
   extension you're developing alongside a specific project.
