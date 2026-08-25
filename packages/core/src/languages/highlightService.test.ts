@@ -791,6 +791,159 @@ describe("createHighlightService — ranged incremental recompute (Req 13.1)", (
   });
 });
 
+/**
+ * `getSpansForLine`'s reference-stability contract (this module's TSDoc on
+ * {@link HighlightService.getSpansForLine} — added for Issue #65, the
+ * property `ui/editorView.tsx`'s `editorLineRowPropsEqual` now relies on
+ * to memoize each visible row on `spans` identity instead of a coarse
+ * whole-view revision counter): an untouched line's spans array is the
+ * EXACT SAME object across calls; a line whose spans actually changed
+ * (directly edited, or reached by a cascading recolor via `changedRanges`)
+ * always gets a fresh one.
+ */
+describe("createHighlightService — getSpansForLine reference stability (Req 13.1, Issue #65)", () => {
+  const fourLines = "let alpha = 1;\nlet beta = 22;\nlet gamma = 333;\nlet delta = 4444;";
+
+  test("an untouched line's spans array is the SAME reference before and after an edit elsewhere (delta-zero splice)", async () => {
+    const backend = createRangedMockBackend(tokenize);
+    const fakeDocs = createFakeDocuments();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///live.ts", "typescript", fourLines);
+    fakeDocs.open(document);
+    await tick();
+
+    const before0 = service.getSpansForLine(document.uri, 0);
+    const before2 = service.getSpansForLine(document.uri, 2);
+    const before3 = service.getSpansForLine(document.uri, 3);
+
+    // Same-line replace on line 1 — no line-count delta, so `spliceLineSpans`
+    // takes the in-place path and every OTHER line's map entry is left
+    // completely untouched.
+    document.applyEdits([
+      { range: { start: { line: 1, character: 4 }, end: { line: 1, character: 8 } }, newText: "renamed" },
+    ]);
+
+    // Repeated calls for the untouched lines return the IDENTICAL array —
+    // not merely `.toEqual` content equality.
+    expect(service.getSpansForLine(document.uri, 0)).toBe(before0);
+    expect(service.getSpansForLine(document.uri, 2)).toBe(before2);
+    expect(service.getSpansForLine(document.uri, 3)).toBe(before3);
+  });
+
+  test("the directly-edited line's spans array is a NEW reference, distinct from before the edit", async () => {
+    const backend = createRangedMockBackend(tokenize);
+    const fakeDocs = createFakeDocuments();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///live.ts", "typescript", fourLines);
+    fakeDocs.open(document);
+    await tick();
+
+    const before1 = service.getSpansForLine(document.uri, 1);
+    document.applyEdits([
+      { range: { start: { line: 1, character: 4 }, end: { line: 1, character: 8 } }, newText: "renamed" },
+    ]);
+    const after1 = service.getSpansForLine(document.uri, 1);
+
+    expect(after1).not.toBe(before1);
+    expect(after1).toEqual([
+      { startCol: 0, endCol: 3, capture: "variable" },
+      { startCol: 4, endCol: 11, capture: "variable" },
+      { startCol: 14, endCol: 16, capture: "number" },
+    ]);
+  });
+
+  test("a line with no captures returns the SAME shared empty-array reference, before AND after an unrelated edit", async () => {
+    // Line 1 ("") has no captures at all.
+    const backend = createRangedMockBackend(tokenize);
+    const fakeDocs = createFakeDocuments();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///live.ts", "typescript", "let a = 1;\n\nlet b = 2;");
+    fakeDocs.open(document);
+    await tick();
+
+    const blankBefore = service.getSpansForLine(document.uri, 1);
+    expect(blankBefore).toEqual([]);
+
+    document.applyEdits([
+      { range: { start: { line: 0, character: 4 }, end: { line: 0, character: 5 } }, newText: "renamed" },
+    ]);
+
+    const blankAfter = service.getSpansForLine(document.uri, 1);
+    expect(blankAfter).toBe(blankBefore);
+    // Also stable for a line that was NEVER queried before this call, and
+    // for a query on an entirely different (also-empty) line.
+    expect(service.getSpansForLine(document.uri, 5)).toBe(blankBefore);
+  });
+
+  test("a cascading recolor gives every line it reaches a NEW reference, while lines outside the cascade keep theirs", async () => {
+    // Same shape as the "cascading-recolor trap" test above: deleting a
+    // block comment's terminator recolors everything below it, even though
+    // the edit itself touches only line 1.
+    const text = "let a = 1;\n/* short */\nlet b = 2;\nlet c = 3;\nlet d = 4;";
+    const backend = createRangedMockBackend(tokenizeWithComments, commentMarkerSignature);
+    const fakeDocs = createFakeDocuments();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///live.ts", "typescript", text);
+    fakeDocs.open(document);
+    await tick();
+
+    const before0 = service.getSpansForLine(document.uri, 0);
+    const before2 = service.getSpansForLine(document.uri, 2);
+    const before3 = service.getSpansForLine(document.uri, 3);
+    const before4 = service.getSpansForLine(document.uri, 4);
+
+    const closeCol = text.split("\n")[1]!.indexOf("*/");
+    document.applyEdits([
+      { range: { start: { line: 1, character: closeCol }, end: { line: 1, character: closeCol + 2 } }, newText: "" },
+    ]);
+
+    // Line 0 is above the edit and outside every changed range — untouched,
+    // same reference.
+    expect(service.getSpansForLine(document.uri, 0)).toBe(before0);
+    // Lines 2-4 recolor from "variable"/"number" tokens to "comment" (the
+    // comment now runs to EOF) — every one of them gets a fresh array, not
+    // just the edited line 1.
+    expect(service.getSpansForLine(document.uri, 2)).not.toBe(before2);
+    expect(service.getSpansForLine(document.uri, 3)).not.toBe(before3);
+    expect(service.getSpansForLine(document.uri, 4)).not.toBe(before4);
+    expect(service.getSpansForLine(document.uri, 2)).toEqual([{ startCol: 0, endCol: 10, capture: "comment" }]);
+    expect(service.getSpansForLine(document.uri, 4)).toEqual([{ startCol: 0, endCol: 10, capture: "comment" }]);
+  });
+
+  test("the full-recompute fallback (no changedRanges) does NOT preserve reference identity — correct, just not memo-friendly", async () => {
+    // Documents this contract's documented boundary: a backend without
+    // `changedRanges` (the plain `createMockBackend`) always falls back to
+    // a full recompute, which allocates a brand-new Map/arrays every time —
+    // `EditorView` still renders correct content in this case, it just
+    // can't skip any row's render body.
+    const backend = createMockBackend();
+    const fakeDocs = createFakeDocuments();
+    const service = createHighlightService(
+      buildDeps({ documents: fakeDocs, backend, languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }) }),
+    );
+    const document = createTestDocument("file:///plain.ts", "typescript", fourLines);
+    fakeDocs.open(document);
+    await tick();
+
+    const before0 = service.getSpansForLine(document.uri, 0);
+    document.applyEdits([
+      { range: { start: { line: 1, character: 4 }, end: { line: 1, character: 8 } }, newText: "renamed" },
+    ]);
+    const after0 = service.getSpansForLine(document.uri, 0);
+
+    expect(after0).not.toBe(before0); // Different reference...
+    expect(after0).toEqual(before0); // ...but still the same content.
+  });
+});
+
 describe("createHighlightService — failure degradation (design.md §14)", () => {
   test("a grammar load failure degrades to plaintext with exactly one warning, even across repeated opens/edits", async () => {
     const log = createHostLog();

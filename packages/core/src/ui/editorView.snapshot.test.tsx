@@ -10,11 +10,17 @@ import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import type { CapturedFrame } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
-import type { Disposable, ResolvedTheme, Selection } from "@tecode/api";
+import type { Disposable, LanguageContribution, ResolvedTheme, Selection } from "@tecode/api";
 import { createBaseTheme } from "../api/stubs";
 import { createHostLog } from "../host/errors";
 import { createDocument, type CoreDocument } from "../buffer/document";
-import type { HighlightSpan } from "../languages/highlightService";
+import { createHighlightService, type HighlightServiceDeps, type HighlightSpan } from "../languages/highlightService";
+import type {
+  ParserCapture,
+  ParserLanguageHandle,
+  ParserRange,
+  ParserTree,
+} from "../languages/parserBackend";
 import type { ConfigService } from "../config/service";
 import { ThemeProvider, toColorInput } from "./theme";
 import { createInitialEditorState, createInitialFindState, type EditorState, type FindState } from "./editorState";
@@ -334,6 +340,18 @@ describe("EditorView — CJK/emoji lines (design.md §8.3's cell-width mapping)"
   });
 });
 
+/**
+ * **This describe block's tests never wire a `highlightService` prop at
+ * all** — every `EditorView` here relies solely on `useLineTicks` for its
+ * dirty-range signal. That means they prove NOTHING about the coarse
+ * `highlightRevision` counter that pre-Issue-#65 code compared per row (the
+ * whole reason a real edit re-rendered every visible row despite these
+ * tests passing): with no `highlightService`, that counter stayed a
+ * constant `0` forever and the memo comparator never exercised it. Do not
+ * read "these pass" as "the highlight-driven whole-viewport re-render was
+ * covered" — it was not; see the "REAL highlightService" describe block
+ * below, added specifically because this gap let that bug ship unnoticed.
+ */
 describe("EditorView — dirty-range re-render (Req 13.1, design.md §7.1)", () => {
   test("editing one line does not re-execute the render of unrelated visible lines", async () => {
     const document = createTestDocument("a\nb\nc\nd\ne");
@@ -471,7 +489,18 @@ const noLineNumbersConfig = { get: () => false } as unknown as ConfigService;
  * below renders exactly one document, so no per-uri branching is needed).
  * `fire()` lets a test simulate the service's `onDidChange` (a line-
  * invalidation signal, `highlightService.ts`'s TSDoc) without a real
- * parse/edit pipeline behind it. */
+ * parse/edit pipeline behind it.
+ *
+ * **Deliberately does NOT model `getSpansForLine`'s reference-stability
+ * contract** (`spansByLine[line] ?? []` below hands back a fresh array on
+ * EVERY call, even for an unchanged line) — fine for the coloring/overlay
+ * assertions this fake exists for, but it means no test using this fake
+ * can prove anything about the per-row memo skip that contract enables:
+ * every row using this fake always looks "changed" by identity, regardless
+ * of what a real service would report. The "REAL highlightService" describe
+ * block further below (`createLiveHighlightService`) exists specifically to
+ * cover that gap — it is what actually exercises `createHighlightService`'s
+ * production span-caching behavior end to end through `EditorView`. */
 function createFakeHighlightService(spansByLine: Record<number, HighlightSpan[]>) {
   const listeners = new Set<() => void>();
   return {
@@ -635,5 +664,314 @@ describe("EditorView — syntax highlighting (Req 8.1-8.3, design.md §10)", () 
     });
 
     expect(renderedLines.length).toBeGreaterThan(before);
+  });
+});
+
+/** Words as `"variable"`, digit runs as `"number"` — same shape as
+ * `highlightService.test.ts`'s `tokenize`. */
+function tokenizeWords(text: string): ParserCapture[] {
+  const captures: ParserCapture[] = [];
+  const re = /[A-Za-z_][A-Za-z0-9_]*|\d+/g;
+  let match: RegExpExecArray | null;
+  const zero = { row: 0, column: 0 };
+  while ((match = re.exec(text))) {
+    captures.push({
+      name: /^\d/.test(match[0]) ? "number" : "variable",
+      startIndex: match.index,
+      endIndex: match.index + match[0].length,
+      startPosition: zero,
+      endPosition: zero,
+    });
+  }
+  return captures;
+}
+
+/** {@link tokenizeWords}, plus multi-line `"comment"` captures over every
+ * `/* ... *``/` region (an unterminated `/*` runs to end of text) — the
+ * `EditorView`-level twin of `highlightService.test.ts`'s
+ * `tokenizeWithComments`, needed so the cascade test below has a capture
+ * whose extent can GROW past the edited line when its terminator is
+ * deleted. */
+function tokenizeWithComments(text: string): ParserCapture[] {
+  const captures: ParserCapture[] = [];
+  const zero = { row: 0, column: 0 };
+  let pos = 0;
+  for (;;) {
+    const open = text.indexOf("/*", pos);
+    const stretchEnd = open === -1 ? text.length : open;
+    for (const token of tokenizeWords(text.slice(pos, stretchEnd))) {
+      captures.push({ ...token, startIndex: token.startIndex + pos, endIndex: token.endIndex + pos });
+    }
+    if (open === -1) break;
+    const close = text.indexOf("*/", open + 2);
+    const end = close === -1 ? text.length : close + 2;
+    captures.push({ name: "comment", startIndex: open, endIndex: end, startPosition: zero, endPosition: zero });
+    if (close === -1) break;
+    pos = end;
+  }
+  return captures;
+}
+
+/** The ordered sequence of comment delimiters in `text` — matches
+ * `highlightService.test.ts`'s `commentMarkerSignature`: while an edit
+ * leaves this sequence intact, highlight effects can't cascade past the
+ * edited region in this mock language; when it changes (deleting a
+ * terminator), they can. */
+function commentMarkerSignature(text: string): string {
+  return Array.from(text.matchAll(/\/\*|\*\//g), (m) => m[0]).join(",");
+}
+
+/**
+ * A REAL {@link createHighlightService}, wired with a hand-rolled mock
+ * `ParserBackend`/`AssetResolver`/`LanguageRegistry` (matches
+ * `highlightService.test.ts`'s own "ALL tests use hand-rolled mock
+ * backends" convention — never real `web-tree-sitter`) — as opposed to
+ * every OTHER test above's {@link createFakeHighlightService}, which fakes
+ * the `HighlightService` INTERFACE directly and so can never exercise the
+ * `getSpansForLine` reference-stability contract this describe block
+ * exists to prove (Issue #65's finding: those fakes are exactly why the
+ * whole-viewport re-render bug they'd have caught passed unnoticed —
+ * `spansByLine[line] ?? []` hands back a FRESH array every call,
+ * masking whether `EditorLineRow`'s memo comparator ever relied on
+ * `highlightRevision` at all).
+ *
+ * `captures(tree, range?)` runs `computeCaptures` over the tree's text and,
+ * when `range` is given, filters to intersecting captures — exercising
+ * `highlightService.ts`'s `spliceLineSpans` ranged path (not the
+ * full-recompute fallback), which is what makes `getSpansForLine`'s
+ * reference-stability contract hold at all. `changedRanges` reports a
+ * common-prefix/suffix diff, widened to the end of the text when `signature`
+ * (when given) differs between the old and new text — same cascade model as
+ * `highlightService.test.ts`'s `createRangedMockBackend`.
+ */
+function createTokenizingBackend(
+  computeCaptures: (text: string) => ParserCapture[] = tokenizeWords,
+  signature?: (text: string) => string,
+) {
+  const textOf = (tree: ParserTree): string => (tree as unknown as { text: string }).text;
+  return {
+    async init() {},
+    async loadLanguage(bytes: Uint8Array): Promise<ParserLanguageHandle> {
+      return { bytes };
+    },
+    compileQuery() {
+      return {
+        captures(tree: ParserTree, range?: ParserRange): ParserCapture[] {
+          const all = computeCaptures(textOf(tree));
+          if (!range) return all;
+          return all.filter((c) => c.endIndex > range.startIndex && c.startIndex < range.endIndex);
+        },
+      };
+    },
+    parse(_language: ParserLanguageHandle, text: string): ParserTree {
+      return { text, edit() {} } as unknown as ParserTree;
+    },
+    changedRanges(oldTree: ParserTree, newTree: ParserTree): ParserRange[] {
+      const oldText = textOf(oldTree);
+      const newText = textOf(newTree);
+      if (oldText === newText) return [];
+      const minLen = Math.min(oldText.length, newText.length);
+      let prefix = 0;
+      while (prefix < minLen && oldText[prefix] === newText[prefix]) prefix++;
+      let suffix = 0;
+      while (
+        suffix < minLen - prefix &&
+        oldText[oldText.length - 1 - suffix] === newText[newText.length - 1 - suffix]
+      ) {
+        suffix++;
+      }
+      const startIndex = prefix;
+      let endIndex = newText.length - suffix;
+      if (signature && signature(oldText) !== signature(newText)) endIndex = newText.length;
+      endIndex = Math.max(startIndex, endIndex);
+      const pointAt = (offset: number) => {
+        const before = newText.slice(0, offset).split(/\r\n|\n/);
+        return { row: before.length - 1, column: before[before.length - 1]!.length };
+      };
+      return [{ startIndex, endIndex, startPosition: pointAt(startIndex), endPosition: pointAt(endIndex) }];
+    },
+  };
+}
+
+/** A minimal fake `documents` (matches `highlightService.test.ts`'s
+ * `createFakeDocuments`, trimmed to what this file needs: a document
+ * already open at construction time, never a second `open`/`close`). */
+function fakeDocumentsWith(document: CoreDocument) {
+  return {
+    documents: [document] as readonly CoreDocument[],
+    onDidOpen(): Disposable {
+      return { dispose() {} };
+    },
+    onDidClose(): Disposable {
+      return { dispose() {} };
+    },
+  };
+}
+
+const tsContribution: LanguageContribution = {
+  id: "typescript",
+  extensions: [".ts"],
+  grammar: "ts.wasm",
+  highlights: "ts.scm",
+};
+
+/** A real {@link createHighlightService}, already parsed and settled, over
+ * a fresh `typescript` document created from `text` — `backend` defaults to
+ * the plain word/number tokenizer ({@link createTokenizingBackend}'s own
+ * default), overridable per test (e.g. the cascade test below passes the
+ * comment-aware one). */
+async function createLiveHighlightService(
+  text: string,
+  backend: ReturnType<typeof createTokenizingBackend> = createTokenizingBackend(),
+) {
+  const document = createDocument({
+    uri: "file:///live.ts",
+    languageId: "typescript",
+    text,
+    sink: createRecordingSink(),
+    log: createHostLog(),
+  });
+  const deps: HighlightServiceDeps = {
+    documents: fakeDocumentsWith(document),
+    languageRegistry: { getLanguage: () => tsContribution, getBaseDir: () => undefined },
+    assetResolver: { resolveGrammar: async () => new Uint8Array([1]), resolveHighlights: async () => "query" },
+    backend,
+    log: createHostLog(),
+    sink: createRecordingSink(),
+  };
+  const service = createHighlightService(deps);
+  // Let the fire-and-forget grammar load + initial parse settle
+  // (`createHighlightService`'s `whenIdle` covers the load; one more
+  // microtask flush covers the `.then` continuation that runs the parse
+  // itself and subscribes to `onDidChange`).
+  await service.whenIdle();
+  await Promise.resolve();
+  return { document, service };
+}
+
+describe("EditorView — dirty-row re-render with a REAL highlightService (Req 13.1, Issue #65)", () => {
+  test("a single-character edit re-renders only the edited row, not every visible row", async () => {
+    // 12 lines, well under the 20-row default viewport, so every line is
+    // visible and would (pre-fix) all be forced to re-render together.
+    const lines = Array.from({ length: 12 }, (_, i) => `let value${i} = ${i};`);
+    const { document, service } = await createLiveHighlightService(lines.join("\n"));
+    const state = stateWith(document.uri, [cursorAt(0, 0)]);
+    const renderedLines: number[] = [];
+
+    const { renderOnce } = await testRender(
+      <EditorView
+        document={document}
+        state={state}
+        viewportHeight={12}
+        highlightService={service}
+        onDebugLineRender={(line) => renderedLines.push(line)}
+      />,
+      { width: 30, height: 13 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    // The initial mount may render each row more than once (`editorState.
+    // ts`'s `useHighlightRevision`/`useLineTicks` both force one extra
+    // render right after subscribing, to close the subscribe-after-render
+    // race — this module's TSDoc) — settle that with one more flush before
+    // recording the steady-state baseline this test actually cares about.
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(new Set(renderedLines)).toEqual(new Set(Array.from({ length: 12 }, (_, i) => i)));
+
+    renderedLines.length = 0;
+    act(() => {
+      // Same-line replace on line 5 — no line-count delta, a plain
+      // single-character keystroke's shape.
+      document.applyEdits([
+        { range: { start: { line: 5, character: 9 }, end: { line: 5, character: 9 } }, newText: "X" },
+      ]);
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // ONLY the edited row re-executed its render body — every other
+    // visible row's memo comparator skipped it (`prev.spans === next.spans`
+    // for every untouched line, per `highlightService.ts`'s
+    // reference-stability contract).
+    expect(renderedLines).toEqual([5]);
+  });
+
+  test("a cascading recolor re-renders and re-colors every line it reaches, not just the edited line", async () => {
+    // An unterminated block comment: deleting its "*/" recolors everything
+    // below it to `"comment"`, even though the edit itself touches only
+    // line 1 (mirrors `highlightService.test.ts`'s own cascading-recolor
+    // trap, at the `EditorView`/React level this time).
+    const text = "let a = 1;\n/* short */\nlet b = 2;\nlet c = 3;\nlet d = 4;";
+    const { document, service } = await createLiveHighlightService(
+      text,
+      createTokenizingBackend(tokenizeWithComments, commentMarkerSignature),
+    );
+    const state = stateWith(document.uri, [cursorAt(0, 0)]);
+    const renderedLines: number[] = [];
+    const theme: ResolvedTheme = {
+      ...createBaseTheme(),
+      tokens: {
+        variable: { foreground: { r: 10, g: 20, b: 30 } },
+        comment: { foreground: { r: 90, g: 90, b: 90 } },
+      },
+    };
+
+    const { renderOnce, captureSpans } = await testRender(
+      <ThemeProvider theme={theme}>
+        <EditorView
+          document={document}
+          state={state}
+          viewportHeight={5}
+          config={noLineNumbersConfig}
+          highlightService={service}
+          onDebugLineRender={(line) => renderedLines.push(line)}
+        />
+      </ThemeProvider>,
+      { width: 30, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Before the edit: line 2 ("let b = 2;") colors "b" as a variable.
+    const bBefore = flatten(captureSpans()).find((s) => s.row === 2 && s.text === "b");
+    expect(bBefore?.fg).toEqual(toColorInput({ r: 10, g: 20, b: 30 }));
+
+    renderedLines.length = 0;
+    const closeCol = text.split("\n")[1]!.indexOf("*/");
+    act(() => {
+      document.applyEdits([
+        { range: { start: { line: 1, character: closeCol }, end: { line: 1, character: closeCol + 2 } }, newText: "" },
+      ]);
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Lines 2-4 (below the edit) re-rendered too — not just line 1 — and
+    // their coloring actually changed to reflect the cascade.
+    //
+    // Asserted as an EXACT set, not with `toContain`: a regression back to
+    // re-rendering the whole viewport still re-renders lines 2-4, so
+    // `toContain` alone would pass on exactly the bug this file exists to
+    // catch. Line 0 sits above the edit and the cascade never reaches it,
+    // so it must NOT appear — and its color staying correct (asserted
+    // below) does not prove its render body was skipped.
+    expect([...new Set(renderedLines)].sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
+
+    const frame = flatten(captureSpans());
+    const lineAfter = (row: number) => frame.filter((s) => s.row === row);
+    // The entire text of lines 2-4 is now ONE "comment"-colored run each
+    // (no more per-token "variable"/"number" splitting), and line 0 (above
+    // the edit, never touched by the cascade) is unaffected.
+    expect(lineAfter(2).map((s) => s.text).join("").trimEnd()).toBe("let b = 2;");
+    const bAfter = lineAfter(2).find((s) => s.text.includes("b"));
+    expect(bAfter?.fg).toEqual(toColorInput({ r: 90, g: 90, b: 90 }));
+    const aStill = flatten(captureSpans()).find((s) => s.row === 0 && s.text.includes("a"));
+    expect(aStill?.fg).toEqual(toColorInput({ r: 10, g: 20, b: 30 }));
   });
 });

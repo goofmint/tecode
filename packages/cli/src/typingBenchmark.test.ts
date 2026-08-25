@@ -154,18 +154,130 @@ const KEYSTROKE_COUNT = 20;
  * closing the last ~2x to 16 ms is a render-pipeline follow-up, not a
  * highlighting one.
  *
- * Per Task 2.10's own instruction ("if p95 exceeds 16 ms meaningfully...
- * keep the honest measurement, set the enforced threshold to a level the
- * suite passes reliably, and clearly report the miss"): this threshold is
- * set with ~2.5x headroom over the ACTUAL worst measured p95 (≈ 39.6 ms
- * across 4 runs; the same headroom ratio the previous 1000 ms threshold
- * carried over its ~400 ms measurements) — not at the 16 ms target, which
- * is unreachable without the render-pipeline follow-up above —
- * comfortably above typical CI-runner slowdown while still catching a
- * genuine regression (e.g. a full-document recompute creeping back onto
+ * **Issue #65 — the "~23 ms document-size-independent overhead" attribution
+ * above was WRONG, and this is the correction.** That paragraph's own
+ * measurement (median ≈ 23 ms / p95 ≈ 27 ms on a 100-LINE file, versus
+ * 27.8-31.1 ms / 32.6-39.6 ms on the 10,000-line file) was read as "a fixed
+ * cost independent of document size", and guessed at React `act()` +
+ * OpenTUI's headless test-renderer as the likely source. Both the number
+ * and the hypothesis were wrong:
+ *
+ * - **The hypothesis, directly disproved**: a bare `act(() => {})` measured
+ *   median ≈ 0.001 ms; a no-op `renderOnce()` measured median ≈ 0.32 ms on a
+ *   1-line document and ≈ 0.70 ms on a 10,000-line one. There is no
+ *   multi-millisecond harness floor anywhere in `act`/`renderOnce`
+ *   themselves.
+ * - **The real shape of the cost is VIEWPORT-bound, not document-size-bound
+ *   or harness-bound**: full keystroke-to-render measured ≈ 6.1 ms on a
+ *   1-line document, ≈ 16.3 ms on a 100-line document, ≈ 19.7 ms on a
+ *   10,000-line document. The big jump is 1 -> 100 lines (+10 ms); 100 ->
+ *   10,000 lines only adds +3.4 ms. A 1-line document has exactly 1 visible
+ *   row under the ~20-row viewport this harness/the real editor both use;
+ *   the 100-line and 10,000-line documents both fill it. Instrumented
+ *   counting confirmed it directly: one keystroke on the 10,000-line
+ *   document re-executed all 20 visible `EditorLineRow` render bodies, not
+ *   just the edited line.
+ * - **Root cause**: `ui/editorState.ts`'s `useHighlightRevision` collapsed
+ *   `HighlightService.onDidChange` into a single whole-`EditorView` counter,
+ *   which `ui/editorView.tsx`'s `editorLineRowPropsEqual` compared against
+ *   every visible row's `highlightRevision` prop. Every keystroke fires
+ *   `onDidChange` (the incremental reparse always does, even when a given
+ *   row's own spans didn't change), bumping that ONE counter, so every
+ *   visible row's memo check failed together regardless of whether that
+ *   row's own content or spans actually changed. `spliceLineSpans`'s span
+ *   COMPUTATION was already correctly ranged/incremental (untouched lines
+ *   keep their cached spans) — only the React invalidation signal riding on
+ *   top of it was coarse.
+ * - **The fix**: `getSpansForLine` (`languages/highlightService.ts`) now
+ *   guarantees a line's returned spans array is the SAME reference across
+ *   calls unless that line's spans actually changed (directly edited, or
+ *   reached by a cascading recolor via `changedRanges`) — see its own
+ *   TSDoc's "Reference-stability contract". `editorLineRowPropsEqual` now
+ *   compares `prev.spans === next.spans` per row instead of the shared
+ *   revision counter, so an edit re-renders only the row(s) whose spans
+ *   actually changed. Proven both ways: `ui/editorView.snapshot.test.tsx`'s
+ *   "dirty-row re-render with a REAL highlightService" describe block adds
+ *   a test (wiring the production `createHighlightService`, unlike every
+ *   PRE-EXISTING test in this file's sibling describe blocks, which never
+ *   wire a `highlightService` at all and so could never have caught this)
+ *   that fails on unfixed code (a single-char edit re-rendered all 12
+ *   visible rows) and passes after the fix (re-renders exactly the 1 edited
+ *   row); a cascade-correctness test alongside it proves lines reached only
+ *   by `changedRanges` (not the edit's own line) still re-render and
+ *   re-color correctly, so the fix does not trade correctness for speed.
+ *
+ * **Re-measured after the fix** (same machine, same corpus/harness, 10,000
+ * lines, 20-sample runs; 10 consecutive runs): median ≈ 10.0-11.8 ms, p95 ≈
+ * 12.3-24.3 ms — versus 5 consecutive BEFORE-fix runs on the exact same
+ * machine in the exact same session (not the older, differently-provisioned
+ * numbers a few paragraphs up): median ≈ 18.6-19.5 ms, p95 ≈ 22.7-31.2 ms.
+ * Roughly a 45% median reduction; p95's worst observed value dropped from
+ * 31.2 ms to 24.3 ms. Both before and after, `renderer.getStats()`
+ * (OpenTUI's own frame-timing instrumentation, logged alongside the metric
+ * below as `renderer*` fields, advisory-only) shows OpenTUI's own average
+ * frame-commit time roughly halved too (≈ 3.2-3.4 ms before -> ≈ 1.2-1.6 ms
+ * after) — consistent with fewer rows being diffed/painted per frame, not
+ * just fewer React render-body calls. The 16 ms target (Req 13.1) is now
+ * MET on the median in every after-fix run, and met on p95 in most of them
+ * — not yet guaranteed on every run, so it is not asserted as a hard gate
+ * here (see threshold discussion below).
+ *
+ * **Threshold, tightened**: per Task 2.10's own instruction ("if p95
+ * exceeds 16 ms meaningfully... keep the honest measurement, set the
+ * enforced threshold to a level the suite passes reliably, and clearly
+ * report the miss") and this file's own established precedent of ~2.5x
+ * headroom over the worst OBSERVED p95 (the ratio both the original 1000 ms
+ * threshold and the prior 100 ms threshold were each picked with): the
+ * worst after-fix p95 observed across 10 runs was 24.3 ms; 2.5x that is
+ * ≈ 60.7 ms. This constant is set to 65 ms — a hair above the strict 2.5x
+ * line, kept deliberately round and on the safe side given this file's own
+ * run-to-run p95 variance (12.3-24.3 ms is a ~2x spread even on one quiet
+ * machine) and the explicit instruction to never tighten to a value that
+ * risks flaking a loaded CI runner. This is a REAL tightening (100 -> 65),
+ * not a cosmetic one, and still catches the same class of regression the
+ * old 100 ms threshold was chosen to catch (e.g. a full-document recompute,
+ * or the whole-viewport re-render this task just fixed, creeping back onto
  * the keystroke path would blow straight past it).
+ *
+ * **What's still NOT measured — a real-TTY production run, honestly left
+ * unmeasured, not fabricated**: this benchmark (like every test in this
+ * repo) runs against `@opentui/react/test-utils`'s headless test renderer
+ * inside `act()`. Two separate, compounding gaps mean this number is not
+ * simply "what a real terminal session would see":
+ *
+ * 1. `main.ts`'s headless auto-detection (`!process.stdout.isTTY`, ~line
+ *    1186) forces the no-op `renderShellHeadless` whenever stdout is not a
+ *    TTY — which is always true in this sandboxed environment, so
+ *    `runTecode`'s REAL render path (`renderShell.tsx`'s
+ *    `renderShellToTerminal`) never runs here at all, headless or not.
+ * 2. `@opentui/react`'s `createRoot` uses React's `ConcurrentRoot`, and
+ *    nothing in tecode ever calls `flushSync`. `act()` forces React to
+ *    flush synchronously on every call in this benchmark; outside `act()`,
+ *    a real interactive session relies on React's own scheduler (and
+ *    OpenTUI's `targetFps`-driven render loop pulling whatever's committed
+ *    at tick time) to eventually commit and paint a keystroke's effect — a
+ *    single `renderer.idle()` call gives no such guarantee. `act()` may be
+ *    hiding real async-commit scheduling latency production would pay, or
+ *    it may be adding synchronous-flush overhead production wouldn't —
+ *    this benchmark cannot tell you which.
+ *
+ * One concrete attempt was made to close gap 2 for this task (a suggestion
+ * to drive a real `CliRenderer` with `bufferedOutput: "memory"` instead of
+ * `act()`): the installed `@opentui/core@0.1.107`'s `CliRendererConfig` has
+ * no `bufferedOutput` option at all (confirmed against its `.d.ts`) — that
+ * API does not exist in the version this repo is pinned to. Building an
+ * equivalent no-`act()` harness would mean spoofing a TTY-like `stdout`
+ * (the same `isTTY = true` trick `@opentui/core`'s OWN `testing.js` mock
+ * streams already use internally, which is what `testRender` builds on —
+ * so the renderer being exercised is already the SAME real `CliRenderer`
+ * class, not a stub) and then polling the rendered buffer for a keystroke's
+ * effect without `act()`'s synchronous flush guarantee — exactly the
+ * ambiguity in point 2 above, unresolved by a different config flag. That
+ * is a new, nontrivial harness, not a config change, and was judged out of
+ * scope for this task. No production number is reported — this gap stays
+ * an honestly-recorded limitation, not a fabricated figure.
  */
-const P95_THRESHOLD_MS = 100;
+const P95_THRESHOLD_MS = 65;
 
 /** Nearest-rank percentile over an ALREADY-SORTED ascending array (Task
  * 2.10's "aggregate median and p95"). */
@@ -247,6 +359,19 @@ describe("Typing latency on a 10,000-line file (Task 2.10, Req 13.1, design.md �
           }
         }
 
+        // Supplementary decomposition, alongside the wall-clock samples
+        // below: OpenTUI's OWN frame-timing instrumentation
+        // (`CliRenderer.setGatherStats`/`getStats`, @opentui/core@0.1.107)
+        // reports the renderer's own commit time and how many frames it
+        // actually painted across the whole keystroke loop — separating
+        // "OpenTUI's render/commit cost" from "React `act()` + everything
+        // else" in the wall-clock number above, and confirming one
+        // keystroke commits one frame (not several queued up). Advisory
+        // only — not asserted on, so a version/behavior difference here
+        // can never fail this test.
+        renderer.setGatherStats(true);
+        renderer.resetStats();
+
         const latenciesMs: number[] = [];
         for (const ch of keystrokes) {
           const startedAt = performance.now();
@@ -264,9 +389,14 @@ describe("Typing latency on a 10,000-line file (Task 2.10, Req 13.1, design.md �
         const sorted = [...latenciesMs].sort((a, b) => a - b);
         const medianMs = percentile(sorted, 0.5);
         const p95Ms = percentile(sorted, 0.95);
+        const rendererStats = renderer.getStats();
 
         // Single-line JSON metric for CI trend tracking (this file's
-        // TSDoc, matching `main.ts`'s `emitMetric` shape).
+        // TSDoc, matching `main.ts`'s `emitMetric` shape). `renderer*`
+        // fields are OpenTUI's own instrumentation (advisory, see above) —
+        // `rendererFrameCount` close to `KEYSTROKE_COUNT` confirms one
+        // keystroke commits one frame, and `rendererAvgFrameTimeMs` is
+        // OpenTUI's own share of the wall-clock `medianMs`/`p95Ms` above.
         console.log(
           JSON.stringify({
             event: "tecode.typingBenchmark",
@@ -276,6 +406,9 @@ describe("Typing latency on a 10,000-line file (Task 2.10, Req 13.1, design.md �
             p95Ms: Number(p95Ms.toFixed(3)),
             thresholdMs: P95_THRESHOLD_MS,
             targetMs: 16,
+            rendererFrameCount: rendererStats.frameCount,
+            rendererAvgFrameTimeMs: Number(rendererStats.averageFrameTime.toFixed(3)),
+            rendererMaxFrameTimeMs: Number(rendererStats.maxFrameTime.toFixed(3)),
           }),
         );
 

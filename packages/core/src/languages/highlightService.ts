@@ -107,6 +107,16 @@ export interface HighlightSpan {
   capture: string;
 }
 
+/** A shared, permanently-empty spans array — what {@link getSpansForLine}
+ * returns for a line with no captures (this module's Finding, below), so
+ * that case never allocates. Its identity is load-bearing, not just an
+ * allocation saving: `getSpansForLine`'s TSDoc's reference-stability
+ * contract requires that repeated "no spans" answers for the same line come
+ * back as the exact same reference, and a fresh `[]` literal on every call
+ * would silently violate that for every unhighlighted line (blank lines,
+ * whitespace, anything the grammar doesn't capture). */
+const EMPTY_SPANS: readonly HighlightSpan[] = [];
+
 /** One language's loaded, ready-to-query assets — cached per language id
  * (this module's TSDoc's "Per-language asset cache"). */
 interface LanguageAssets {
@@ -171,16 +181,48 @@ export interface HighlightServiceDeps {
 
 /** The highlight service's public surface (Req 8.1-8.3). */
 export interface HighlightService {
-  /** Every current highlight span on `line` of the document at `uri` — `[]`
+  /**
+   * Every current highlight span on `line` of the document at `uri` — `[]`
    * for an unknown uri, a bypassed (plaintext or degraded) document, a
    * document whose language is still loading, or a line with no captures.
-   * Never throws. */
+   * Never throws.
+   *
+   * **Reference-stability contract** (Req 13.1, added alongside `ui/
+   * editorView.tsx`'s per-line memoization — see that module's
+   * `editorLineRowPropsEqual`): two calls for the same `uri`/`line` return
+   * the EXACT SAME array reference unless that line's spans actually
+   * changed since the previous call — either because an edit touched the
+   * line directly, or because tree-sitter's `changedRanges` reported a
+   * cascading recolor reaching it (`spliceLineSpans`'s dirty-range union).
+   * A line with no captures always returns the same shared empty-array
+   * constant, never a fresh `[]`. This is what lets `EditorView` memoize
+   * each visible row on `spans` identity alone, instead of the coarser
+   * whole-viewport `onDidChange` signal below — `EditorLineRow`'s memo
+   * comparator compares `prev.spans === next.spans` directly. The
+   * guarantee holds precisely because {@link spliceLineSpans} either
+   * reuses an untouched line's existing cached array unchanged (delta-zero
+   * in-place splice) or carries it over to its shifted key (non-zero
+   * delta) — it never rebuilds an entry it didn't need to. It does NOT
+   * hold across a full {@link recomputeLineSpans} pass (a document's
+   * initial parse, or every edit on a backend without `changedRanges`):
+   * that path always allocates a brand-new `Map` and brand-new per-line
+   * arrays, so identity is NOT preserved there — correct (the result is
+   * still bit-for-bit right), just not memo-friendly; `EditorView` simply
+   * re-renders every visible row in that case, same as before this
+   * contract existed.
+   */
   getSpansForLine(uri: Uri, line: number): readonly HighlightSpan[];
   /** Fires whenever ANY tracked document's spans change (a parse settling,
    * an incremental reparse after an edit) — a line-invalidation signal, not
    * a diff: a consumer re-fetches whatever `getSpansForLine` calls it
    * needs. Carries no payload, same "just re-render/re-check" shape as
-   * `ThemeRegistry.onDidChange`/`FindService.onDidChange`. */
+   * `ThemeRegistry.onDidChange`/`FindService.onDidChange`. Still whole-
+   * service-coarse even after `getSpansForLine`'s reference-stability
+   * contract above: this event tells a consumer WHEN to re-fetch, not
+   * WHICH lines changed — `EditorView` reacts to it by re-rendering
+   * itself (`editorState.ts`'s `useHighlightRevision`) and re-fetching
+   * every visible line's spans, relying on `getSpansForLine`'s own
+   * identity guarantee (not this event) to keep unaffected rows cheap. */
   onDidChange: Event<void>;
   /**
    * Resolves once every per-language asset load that is currently tracked
@@ -656,8 +698,8 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
 
   function getSpansForLine(uri: Uri, line: number): readonly HighlightSpan[] {
     const state = states.get(uri);
-    if (!state || state.bypass || !state.lineSpans) return [];
-    return state.lineSpans.get(line) ?? [];
+    if (!state || state.bypass || !state.lineSpans) return EMPTY_SPANS;
+    return state.lineSpans.get(line) ?? EMPTY_SPANS;
   }
 
   function onDidChange(listener: Listener<void>): Disposable {

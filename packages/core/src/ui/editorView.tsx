@@ -49,12 +49,29 @@
  *
  * **Dirty-range re-render** (Req 13.1, design.md §7.1's "rendering sync"):
  * `EditorLineRow` is `memo`-wrapped, keyed by (and compared on) its line
- * index's {@link useLineTicks} revision plus a per-line "does a
- * selection/cursor touch this line" summary key — both stay referentially
- * *stable* (as values, not object identities) across a render that does not
- * affect a given line, so an edit to line N does not re-invoke the row
- * function for any other visible line, even though `EditorView` itself
- * re-renders on every document change.
+ * index's {@link useLineTicks} revision, a per-line "does a selection/
+ * cursor touch this line" summary key, and its own `spans` array's
+ * REFERENCE (not a revision number — see below) — all three stay stable
+ * across a render that does not affect a given line, so an edit to line N
+ * does not re-invoke the row function for any other visible line, even
+ * though `EditorView` itself re-renders on every document change.
+ *
+ * The `spans` comparison relies on `languages/highlightService.ts`'s
+ * `HighlightService.getSpansForLine` TSDoc's reference-stability contract:
+ * an untouched line's spans array is the exact same object across calls: a
+ * changed line (including a cascading recolor reaching it via tree-sitter's
+ * `changedRanges`, not just the edited line itself) always gets a fresh
+ * one. An earlier revision of this component instead compared a single
+ * whole-`EditorView` `highlightRevision` counter (`editorState.ts`'s
+ * `useHighlightRevision`) against every row — coarser than necessary,
+ * since `HighlightService.onDidChange` doesn't say which lines changed, so
+ * EVERY visible row was forced to re-render on every keystroke regardless
+ * of whether that row's own spans actually changed (Issue #65: measured on
+ * a 10,000-line document, one keystroke re-executed all 20 visible rows).
+ * `useHighlightRevision` is still called, purely to force `EditorView`
+ * itself to re-render (and thus re-fetch each row's `getSpansForLine`
+ * result) when the service reports a change with no other prop change —
+ * see that hook's own TSDoc.
  *
  * **Scope note on `viewportHeight`**: this task measures the available rows
  * via an explicit, caller-supplied `viewportHeight` prop rather than
@@ -84,11 +101,14 @@ import { styleToTextColors, toColorInput, useTheme } from "./theme";
  * (this module's TSDoc — a placeholder ahead of real layout measurement). */
 const DEFAULT_VIEWPORT_HEIGHT = 20;
 
-/** A shared empty-array reference for a line with no highlight spans (no
- * `highlightService` wired in, or `getSpansForLine` itself returned `[]`)
- * — avoids allocating a fresh empty array per visible line per render. Not
- * part of {@link editorLineRowPropsEqual}'s comparison either way
- * (`highlightRevision` is what that relies on), but cheap to share. */
+/** A shared empty-array reference for a line with no `highlightService`
+ * wired in at all — avoids allocating a fresh empty array per visible line
+ * per render. Only used on that "no service" path: when a service IS wired
+ * in, `getSpansForLine` returns its OWN shared empty-array constant for a
+ * line with no captures (`highlightService.ts`'s TSDoc), which is a
+ * DIFFERENT reference than this one but equally stable — either way, IS
+ * part of {@link editorLineRowPropsEqual}'s comparison now (`prev.spans ===
+ * next.spans`), not just an allocation saving. */
 const EMPTY_SPANS: readonly HighlightSpan[] = [];
 
 /** One line's worth of colored text, after {@link buildLineRuns} has merged
@@ -355,17 +375,15 @@ interface EditorLineRowProps {
   /** Index into `findMatches` of the CURRENT match, `-1` for none. */
   activeFindMatchIndex: number;
   /** This line's syntax-highlight spans (Req 8.1, design.md §10) — passed
-   * through to {@link buildLineRuns} for the render body; `highlightRevision`
-   * (not this array's identity) is what the memo comparator actually
-   * relies on, same "array threaded through, revision compared" split as
-   * `findMatches`/`overlayKey` above. */
+   * through to {@link buildLineRuns} for the render body, AND this array's
+   * own REFERENCE is what the memo comparator relies on (unlike
+   * `findMatches`/`overlayKey` above, which compare a separate summary key
+   * instead of the array itself): `languages/highlightService.ts`'s
+   * `HighlightService.getSpansForLine` TSDoc's reference-stability contract
+   * guarantees a fresh array only when this line's spans actually changed,
+   * so `prev.spans === next.spans` is both precise and correct — see this
+   * module's top-of-file "Dirty-range re-render" TSDoc. */
   spans: readonly HighlightSpan[];
-  /** From {@link useHighlightRevision} — bumps whenever the highlight
-   * service reports ANY change; every visible row shares this SAME number
-   * (`editorState.ts`'s `useHighlightRevision` TSDoc explains why it can't
-   * be scoped any finer than "the whole `EditorView`" without a per-line
-   * payload on the service's own `onDidChange`). */
-  highlightRevision: number;
   /** From {@link useLineTicks} — the primary "this line's text changed" memo
    * signal for observed rows (this module's TSDoc); see `text` above for why
    * it isn't sufficient alone. */
@@ -391,7 +409,7 @@ function editorLineRowPropsEqual(prev: EditorLineRowProps, next: EditorLineRowPr
     prev.text === next.text &&
     prev.tick === next.tick &&
     prev.overlayKey === next.overlayKey &&
-    prev.highlightRevision === next.highlightRevision &&
+    prev.spans === next.spans &&
     prev.gutterWidth === next.gutterWidth &&
     prev.showLineNumbers === next.showLineNumbers &&
     prev.isActiveLine === next.isActiveLine &&
@@ -525,7 +543,11 @@ export function EditorView(props: EditorViewProps): ReactNode {
   const theme = useTheme();
   const lineTicks = useLineTicks(document);
   const highlightService = props.highlightService;
-  const highlightRevision = useHighlightRevision(highlightService);
+  // Return value intentionally unused — this hook's only job here is
+  // forcing a re-render when the service fires (see its own TSDoc); each
+  // row's `spans` reference, not a shared revision number, is what
+  // actually drives the per-row memo comparison below.
+  useHighlightRevision(highlightService);
   const contextFocusRef = useFocusTracking("editorTextFocus");
   const [isFocused, isFocusedRef] = useIsFocused();
   const onTextPlaneNode = props.onTextPlaneNode;
@@ -596,7 +618,6 @@ export function EditorView(props: EditorViewProps): ReactNode {
         findMatches={findMatches}
         activeFindMatchIndex={activeFindMatchIndex}
         spans={highlightService?.getSpansForLine(document.uri, line) ?? EMPTY_SPANS}
-        highlightRevision={highlightRevision}
         tick={lineTicks.getLineTick(line)}
         overlayKey={lineOverlayKey(line, state.selections, findMatches, activeFindMatchIndex)}
         gutterWidth={gutterWidth}
