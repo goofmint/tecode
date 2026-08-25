@@ -350,9 +350,11 @@ export const TAB_DEFAULT_KEYBINDINGS: KeybindingContribution[] = [
 /** Narrow surface {@link registerTabCommands} needs from the core command
  * registry (matches `themeSelectCommand.ts`'s own `commands` parameter
  * shape, extended with the optional `meta` third argument
- * `CommandRegistry.register` already accepts). */
+ * `CommandRegistry.register` already accepts). `registerCore`, not
+ * `register` (Issue #72): reserves each `tab.*` id against extension
+ * override. */
 export interface TabCommandsRegistrar {
-  register(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable;
+  registerCore(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable;
 }
 
 /**
@@ -369,10 +371,10 @@ export function registerTabCommands(
   const handlers = createTabCommandHandlers(deps);
   const category = "View";
   const disposables: Disposable[] = [
-    commands.register(TAB_NEXT_COMMAND, handlers.next, { title: "Next Editor", category }),
-    commands.register(TAB_PREVIOUS_COMMAND, handlers.previous, { title: "Previous Editor", category }),
-    commands.register(TAB_CLOSE_COMMAND, handlers.close, { title: "Close Editor", category }),
-    commands.register(TAB_CLOSE_OTHERS_COMMAND, handlers.closeOthers, {
+    commands.registerCore(TAB_NEXT_COMMAND, handlers.next, { title: "Next Editor", category }),
+    commands.registerCore(TAB_PREVIOUS_COMMAND, handlers.previous, { title: "Previous Editor", category }),
+    commands.registerCore(TAB_CLOSE_COMMAND, handlers.close, { title: "Close Editor", category }),
+    commands.registerCore(TAB_CLOSE_OTHERS_COMMAND, handlers.closeOthers, {
       title: "Close Other Editors",
       category,
     }),

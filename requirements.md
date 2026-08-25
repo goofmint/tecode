@@ -41,7 +41,7 @@ The following points were open in the draft specification and are resolved here 
 1. THE core SHALL provide only: the extension host, the command registry, keymap resolution, document/buffer management, the UI shell with slots, and configuration loading. Features such as the file tree, search, Git integration, and LSP SHALL NOT be part of the core.
 2. THE codebase SHALL be organized as `packages/core` (implementation), `packages/builtin` (bundled extensions), `packages/cli` (entry point and bundling), and an `api` package containing only type definitions.
 3. THE `api` package SHALL have no dependencies; `core` SHALL depend only on `api`; `builtin` extensions SHALL import only from `api` and SHALL NOT import `core` directly; `cli` SHALL contain wiring only.
-4. WHEN a built-in extension needs a capability, it SHALL use the same public extension API available to third-party extensions, with no privileged core access.
+4. WHEN a built-in extension needs a capability, it SHALL use the same public extension API available to third-party extensions, with no privileged core access. (The core-reserved-command-ID registration path introduced by Requirement 3.6 is not an exception: it is called only from core's own UI modules, never from `packages/builtin`, which registers commands through the same `tecode.commands.register` third-party extensions use and is rejected under Requirement 3.6 exactly the same way on a reserved ID.)
 5. WHEN one component needs to invoke behavior in another (UI, keybindings, palette, extension-to-extension), it SHALL do so by executing a command through the command registry, not by direct function call across module boundaries.
 
 ### Requirement 2: Extension Host and Lifecycle
@@ -70,6 +70,7 @@ The following points were open in the draft specification and are resolved here 
 3. Command metadata SHALL support `title` (palette display name), `category`, and `when` (visibility condition).
 4. WHEN `execute` is called with an unknown command ID, THE system SHALL display an error in the status bar and SHALL NOT throw an exception to the caller.
 5. WHEN a registered command's handler throws, THE system SHALL catch the error, surface it in the UI, and keep the editor responsive.
+6. WHEN an extension attempts to register a command ID that core has already reserved, THE system SHALL reject the registration — keeping the core handler in place — and SHALL report the rejection through the host log and status bar rather than throwing (built-in extensions are rejected the same way as third-party ones; see Requirement 1.4).
 
 ### Requirement 4: Keybindings
 

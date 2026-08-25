@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createHostLog } from "@tecode/core";
+import { createHostLog, TAB_CLOSE_COMMAND, TAB_DEFAULT_KEYBINDINGS } from "@tecode/core";
 import { createKeymapState } from "./keymapState";
 
 test("starts with an empty table (no defaults/fallback/extension/user layers yet)", () => {
@@ -127,4 +127,39 @@ test("later setFallbackEntries calls fully replace the previous fallback layer",
 
   expect(state.getTable().lookup("ctrl+g", () => undefined)).toBeUndefined();
   expect(state.getTable().lookup("ctrl+l", () => undefined)?.command).toBe("two");
+});
+
+// --- Issue #72: reserving a command id against extension override is a
+// `CommandRegistry` (`commands/registry.ts`) concept, entirely separate
+// from the keymap/`BindingTable` layer here — a user must still be able to
+// rebind a core-reserved command (like tab.close) to a different key.
+// `BindingTable`/`KeymapState` never consult `CommandRegistry` at all
+// (`command` is just an opaque string to them, `bindingTable.ts`'s own
+// TSDoc), so no change was needed here for Issue #72 — this test proves
+// that directly with the real reserved id and its real default binding,
+// rather than leaving it an unverified assumption.
+test("a user keybindings.json entry still rebinds tab.close (a core-reserved command, Issue #72) to a different key", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log, TAB_DEFAULT_KEYBINDINGS);
+
+  // tab.close's real shipped default (ui/tabCommands.ts's TAB_DEFAULT_KEYBINDINGS).
+  expect(state.getTable().lookup("ctrl+w", () => undefined)?.command).toBe(TAB_CLOSE_COMMAND);
+
+  // The user layer removes the default binding and rebinds the SAME
+  // command id to a brand-new key — exactly the "-command" + new-entry
+  // pattern keybindingsCommands.ts's KEYBINDINGS_TEMPLATE documents for
+  // users.
+  state.setUserEntries([
+    { key: "ctrl+w", command: `-${TAB_CLOSE_COMMAND}` },
+    { key: "ctrl+alt+w", command: TAB_CLOSE_COMMAND },
+  ]);
+
+  // Old key no longer resolves tab.close at all.
+  expect(state.getTable().lookup("ctrl+w", () => undefined)).toBeUndefined();
+  // New key resolves tab.close, from the user layer — the reservation on
+  // `CommandRegistry` (which only governs who may call `register`/
+  // `registerLazy` for the id) has no bearing on this at all.
+  const resolved = state.getTable().lookup("ctrl+alt+w", () => undefined);
+  expect(resolved?.command).toBe(TAB_CLOSE_COMMAND);
+  expect(resolved?.layer).toBe("user");
 });

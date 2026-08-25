@@ -191,6 +191,7 @@ export {
   TAB_NEXT_COMMAND,
   TAB_PREVIOUS_COMMAND,
   Tabs,
+  THEME_SELECT_COMMAND_ID,
   ThemeProvider,
   toColorInput,
   Tree,
