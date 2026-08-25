@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHostLog, type HostLogEntry } from "@tecode/core";
-import { resolveStartupTarget } from "./argv";
+import { resolveConfigDirOverride, resolveStartupTarget } from "./argv";
 
 let dir: string | undefined;
 
@@ -89,4 +89,61 @@ test("parent directory of a nested file resolves correctly", async () => {
   const target = await resolveStartupTarget([filePath], "/irrelevant", log);
   expect(target.workspaceRoot).toBe(dirname(filePath));
   expect(target.initialFilePath).toBe(filePath);
+});
+
+// --- resolveConfigDirOverride (Req 9.6, Issue #81 Phase 1) ---
+
+test("resolveConfigDirOverride returns the token immediately after --config", () => {
+  expect(resolveConfigDirOverride(["--config", "/tmp/cfg"])).toBe("/tmp/cfg");
+});
+
+test("resolveConfigDirOverride returns undefined when --config is absent", () => {
+  expect(resolveConfigDirOverride([])).toBeUndefined();
+  expect(resolveConfigDirOverride(["./src"])).toBeUndefined();
+});
+
+test("resolveConfigDirOverride returns undefined when --config is the last token (no value follows)", () => {
+  expect(resolveConfigDirOverride(["--config"])).toBeUndefined();
+  expect(resolveConfigDirOverride(["./src", "--config"])).toBeUndefined();
+});
+
+test("resolveConfigDirOverride finds --config regardless of surrounding tokens", () => {
+  expect(resolveConfigDirOverride(["./src", "--config", "/tmp/cfg"])).toBe("/tmp/cfg");
+  expect(resolveConfigDirOverride(["--config", "/tmp/cfg", "./src"])).toBe("/tmp/cfg");
+});
+
+// --- resolveStartupTarget's --config non-confusion (Req 9.6, Issue #81 Phase 1) ---
+
+test("--config's value is not mistaken for the positional argument: a directory still follows it", async () => {
+  dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+  const srcDir = join(dir, "src");
+  await mkdir(srcDir, { recursive: true });
+
+  const log = createHostLog();
+  const target = await resolveStartupTarget(
+    ["--config", "/tmp/some-config-dir", srcDir],
+    "/irrelevant",
+    log,
+  );
+  expect(target).toEqual({ workspaceRoot: srcDir });
+});
+
+test("--config with no following positional opens nothing (falls back to cwd)", async () => {
+  const log = createHostLog();
+  const target = await resolveStartupTarget(
+    ["--config", "/tmp/some-config-dir"],
+    "/fallback-cwd",
+    log,
+  );
+  expect(target).toEqual({ workspaceRoot: "/fallback-cwd" });
+  // The config dir's value itself was never treated as a bad startup
+  // path — no warning should have been logged about it.
+  expect(log.entries()).toEqual([]);
+});
+
+test("a plain positional argument still opens normally when --config is entirely absent", async () => {
+  dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+  const log = createHostLog();
+  const target = await resolveStartupTarget([dir], "/irrelevant", log);
+  expect(target).toEqual({ workspaceRoot: dir });
 });

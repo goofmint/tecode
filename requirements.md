@@ -146,6 +146,7 @@ The following points were open in the draft specification and are resolved here 
 3. Extensions SHALL declare their settings schema via `contributes.configuration`, and SHALL read values via `tecode.config.get(key)`.
 4. WHEN a settings file is saved, THE system SHALL apply the changes immediately and fire `onDidChangeConfiguration`.
 5. THE MVP settings SHALL include at least: `workbench.colorTheme`, `editor.tabSize`, `editor.insertSpaces`, `editor.wordWrap`, `editor.lineNumbers`, `explorer.showHidden`, and `files.autoSave`.
+6. WHEN tecode is launched with `--config <dir>`, THE system SHALL read the user settings and user keybindings layers from `<dir>/settings.json` and `<dir>/keybindings.json` instead of their home-directory defaults, leaving the workspace settings layer (`.tecode/settings.json`) unaffected.
 
 ### Requirement 10: Public Extension API
 

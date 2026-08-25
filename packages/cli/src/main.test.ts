@@ -163,6 +163,76 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
   }
 });
 
+// --- buildAssemblyRoot's `configDir` deps (Req 9.6, Issue #81 Phase 1's
+// `--config <dir>` flag) — the end-to-end proof that a `--config`
+// directory's `settings.json`/`keybindings.json` genuinely take effect,
+// not just that the string was threaded through unchanged. ---
+
+test("buildAssemblyRoot's configDir makes a --config directory's settings.json genuinely take effect", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const configDir = await mkdtemp(join(tmpdir(), "tecode-cli-config-"));
+  await writeFile(
+    join(configDir, "settings.json"),
+    JSON.stringify({ "editor.tabSize": 2 }),
+    "utf8",
+  );
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { configDir });
+    await root.config.ready;
+
+    // The value actually came from configDir's settings.json, not from
+    // core's own default (4, `config/coreDefaults.ts`) — proof the
+    // override was genuinely read, not merely accepted and ignored.
+    expect(root.config.get<number>("editor.tabSize")).toBe(2);
+  } finally {
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test("buildAssemblyRoot's configDir makes a --config directory's keybindings.json genuinely take effect", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const configDir = await mkdtemp(join(tmpdir(), "tecode-cli-config-"));
+  await writeFile(
+    join(configDir, "keybindings.json"),
+    JSON.stringify([{ key: "ctrl+alt+k", command: "fixture.fromConfigDir" }]),
+    "utf8",
+  );
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { configDir });
+    await root.config.ready;
+
+    expect(root.config.getKeybindingEntries()).toEqual([
+      { key: "ctrl+alt+k", command: "fixture.fromConfigDir" },
+    ]);
+    // buildAssemblyRoot wires onKeybindingsChange straight into
+    // keymap.setUserEntries — this proves the whole chain, not just
+    // ConfigService's own raw entry array.
+    const resolved = root.keymap.getTable().lookup("ctrl+alt+k", () => undefined);
+    expect(resolved?.command).toBe("fixture.fromConfigDir");
+    expect(resolved?.layer).toBe("user");
+  } finally {
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test("forward-referenced activateExtension is a safe no-op before the deferred phase assigns hostRef", async () => {
   const dir = await mkdtemp(join(tmpdir(), "tecode-cli-root-"));
   const savedHome = process.env["HOME"];
