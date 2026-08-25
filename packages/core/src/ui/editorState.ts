@@ -188,21 +188,34 @@ export function useLineTicks(document: CoreDocument | undefined): LineTicks {
 }
 
 /**
- * Adjoins {@link useLineTicks}: a single, whole-`EditorView` revision
- * counter that bumps whenever `highlightService` reports a change (Task
- * 2.8, `languages/highlightService.ts`'s `HighlightService.onDidChange` —
- * "a line-invalidation signal, not a diff", carrying no per-line payload,
- * unlike `useLineTicks`' `dirtyRange`-driven per-line ticks above). Coarser
- * than `useLineTicks` by necessity: the highlight service's `onDidChange`
- * does not say WHICH lines (or even which document) changed, so every
- * visible row's `buildLineRuns` call is treated as potentially stale on
- * every fire — `editorView.tsx`'s `editorLineRowPropsEqual` compares this
- * single number against every `EditorLineRow`'s `highlightRevision` prop,
- * the same way it already compares `tick` per line. `highlightService`
- * omitted (`EditorView`'s optional prop, this hook's own contract) yields a
- * constant `0` that never bumps — `buildLineRuns` then always sees `spans:
- * []` anyway (`editorView.tsx`'s row loop), so there is nothing to
- * invalidate.
+ * Adjoins {@link useLineTicks}: forces `EditorView` itself to re-render
+ * whenever `highlightService` reports a change (Task 2.8, `languages/
+ * highlightService.ts`'s `HighlightService.onDidChange` — "a
+ * line-invalidation signal, not a diff", carrying no per-line payload,
+ * unlike `useLineTicks`' `dirtyRange`-driven per-line ticks above), so that
+ * `EditorView`'s row loop re-fetches every visible line's `getSpansForLine`
+ * result on the next render. The returned number is NOT threaded into
+ * `EditorLineRow`'s per-row memo props (an earlier revision of this hook
+ * did, until Issue #65: a single whole-view counter compared per row
+ * forced every visible row to re-render on every keystroke, since every
+ * edit fires `onDidChange` regardless of which line(s) it actually
+ * recolored — measured on a 10,000-line document, one keystroke
+ * re-executed all 20 visible `EditorLineRow` render bodies.
+ * `editorView.tsx`'s `editorLineRowPropsEqual`
+ * now compares each row's OWN `spans` array by reference instead —
+ * `highlightService.ts`'s `getSpansForLine` TSDoc documents the
+ * reference-stability contract that makes that comparison both precise
+ * (an untouched line's array is the exact same object across calls) and
+ * correct (a line whose spans actually changed, including a cascading
+ * recolor reaching it via tree-sitter's `changedRanges`, always gets a
+ * fresh array). This hook's only remaining job is the force-render itself
+ * — without it, `EditorView` would never re-run its row loop after an
+ * async event with no other prop change (the initial grammar/parse
+ * settling, most notably). `highlightService` omitted (`EditorView`'s
+ * optional prop, this hook's own contract) yields a constant `0` that
+ * never bumps — `getSpansForLine` is never called in that case either
+ * (`editorView.tsx`'s row loop uses its own `EMPTY_SPANS` fallback), so
+ * there is nothing to invalidate.
  *
  * Same subscribe-then-force-render-to-close-the-race shape as `useTheme.
  * ts`'s `useLiveTheme`/`shell.tsx`'s `useSlotViews`.
