@@ -954,9 +954,14 @@ describe("EditorView — dirty-row re-render with a REAL highlightService (Req 1
 
     // Lines 2-4 (below the edit) re-rendered too — not just line 1 — and
     // their coloring actually changed to reflect the cascade.
-    expect(renderedLines).toContain(2);
-    expect(renderedLines).toContain(3);
-    expect(renderedLines).toContain(4);
+    //
+    // Asserted as an EXACT set, not with `toContain`: a regression back to
+    // re-rendering the whole viewport still re-renders lines 2-4, so
+    // `toContain` alone would pass on exactly the bug this file exists to
+    // catch. Line 0 sits above the edit and the cascade never reaches it,
+    // so it must NOT appear — and its color staying correct (asserted
+    // below) does not prove its render body was skipped.
+    expect([...new Set(renderedLines)].sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
 
     const frame = flatten(captureSpans());
     const lineAfter = (row: number) => frame.filter((s) => s.row === row);
