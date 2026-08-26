@@ -115,6 +115,16 @@ checkout are the only two ways to run it.
    (`scripts/release.ts`'s TSDoc, "Why there is no extra bundler config for
    embedding"), so nothing else needs to be on the machine.
 
+`<path>` does not need to exist yet: a file argument that isn't there on
+disk opens as a new, empty, editable buffer, and saving it (`ctrl+s`)
+creates the file — `tecode README2.md` on a fresh checkout opens an
+empty `README2.md` you can start typing into immediately (Req 5.6, Req
+12.4, Issue #88). This only applies when the path's parent directory
+already exists and the argument doesn't end in a trailing `/` or `\`
+(which always means "directory", never "file"); a typo'd deep path
+(`notes/nested/todo.md` with no `notes/nested` directory) still warns
+and starts with no file open, exactly as it always has.
+
 macOS Gatekeeper will likely quarantine an unsigned downloaded binary on
 first run (`xattr -d com.apple.quarantine tecode-darwin-<arch>` clears
 it, or use the Finder's "Open" right-click override) — this repo does not

@@ -95,13 +95,42 @@ export interface DocumentManager {
    * registers it, fires `onDidOpen`, then calls `onLanguageActivation`
    * (guarded).
    *
-   * A read failure (missing file, permission error, stat failure, ...)
-   * both rejects the returned promise AND is reported through
+   * **A path that does not exist yet opens as a new, empty, non-dirty
+   * document instead of failing** (Req 5.6, Issue #88): when the initial
+   * `stat` fails with `ENOENT` specifically, this is treated as "a file
+   * the user hasn't saved yet" rather than an error — `text` is `""` and
+   * `readonly` is `false`. `createDocument`'s `dirty` starts `false` and
+   * only flips on an actual edit (`document.ts`), so an untouched new
+   * buffer never prompts a save-changes confirmation on quit, and saving
+   * it without ever typing into it still writes nothing to disk
+   * (`saveNow` always performs its write — it does not itself gate on
+   * `dirty` — so this guarantee comes entirely from the buffer starting
+   * clean, not from `save()` skipping a no-op).
+   *
+   * Deliberately UNCONDITIONAL on `ENOENT` — unlike `cli/argv.ts`'s
+   * `resolveStartupTarget`, this does NOT also require `dirname(path)` to
+   * exist. `resolveStartupTarget` layers its own stricter "parent must
+   * exist" guard on top, because CLI startup can react to a typo'd deep
+   * path with an immediate, specific warning instead of silently opening
+   * an editor. This lower-level primitive is shared by every caller
+   * (including `tecode.workspace.openDocument`, called by extensions with
+   * arbitrary paths, not just CLI startup) and stays simple: a path whose
+   * parent genuinely doesn't exist still surfaces a clear, specific
+   * error — just deferred to `save()` time instead of `openDocument`
+   * time (the temp-file `writeFile` in `saveNow` fails with its own
+   * `ENOENT`, reported through `log`/`sink` exactly like any other save
+   * failure).
+   *
+   * Every OTHER read failure (`EACCES`, `EIO`, or a stat/read that fails
+   * for any reason besides "missing") keeps the pre-Issue-#88 contract
+   * exactly: both rejects the returned promise AND is reported through
    * `log`/`sink` — `openDocument` is an explicit, caller-awaited action
    * (unlike `applyEdits`, which the UI drives on every keystroke), so
    * the caller needs to know synchronously that it failed, while the
    * log/sink still get a durable record for the status bar and
-   * `developer.showLog`.
+   * `developer.showLog`. Silently opening a permission-denied path as an
+   * empty buffer instead would be worse than the failure it replaces: a
+   * later save would overwrite a file the user was never able to read.
    */
   openDocument(uri: Uri): Promise<CoreDocument>;
   /** All currently open documents, as a fresh array snapshot. */
@@ -244,13 +273,21 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
       readonly = stat.size >= LARGE_FILE_THRESHOLD_BYTES;
       text = await fs.readFile(path, "utf8");
     } catch (cause) {
-      const err: HostError = {
-        message: `Failed to open document: ${describeError(cause)}`,
-        path: uri,
-      };
-      logSafely("error", err);
-      notifySafely(err);
-      throw cause;
+      if (errorCode(cause) !== "ENOENT") {
+        const err: HostError = {
+          message: `Failed to open document: ${describeError(cause)}`,
+          path: uri,
+        };
+        logSafely("error", err);
+        notifySafely(err);
+        throw cause;
+      }
+      // ENOENT: a new file that doesn't exist on disk yet (Req 5.6, Issue
+      // #88) — see this function's TSDoc above for why this is
+      // unconditional and how a truly broken path still gets a clear
+      // error, just deferred to save() time.
+      text = "";
+      readonly = false;
     }
 
     const languageId = resolveLanguageId(uri);
