@@ -128,6 +128,30 @@ test("--config's value is not mistaken for the positional argument: a directory 
   expect(target).toEqual({ workspaceRoot: srcDir });
 });
 
+test("a REPEATED --config's value is not mistaken for the positional argument either", async () => {
+  // Which `--config` wins is a separate question from which tokens are
+  // values. Excluding only the FIRST occurrence's value left the second one
+  // looking like a bare positional, so `--config /a --config /b` silently
+  // opened `/b` as the WORKSPACE — a different thing entirely from what was
+  // asked (CodeRabbit finding on PR #85).
+  const dir = await mkdtemp(join(tmpdir(), "tecode-argv-repeat-"));
+  const otherDir = await mkdtemp(join(tmpdir(), "tecode-argv-repeat-other-"));
+  const log = createHostLog();
+  try {
+    const target = await resolveStartupTarget(
+      ["--config", dir, "--config", otherDir],
+      process.cwd(),
+      log,
+    );
+    expect(target).toEqual({ workspaceRoot: process.cwd() });
+    // The override itself still takes the first occurrence.
+    expect(resolveConfigDirOverride(["--config", dir, "--config", otherDir])).toBe(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(otherDir, { recursive: true, force: true });
+  }
+});
+
 test("--config with no following positional opens nothing (falls back to cwd)", async () => {
   const log = createHostLog();
   const target = await resolveStartupTarget(
