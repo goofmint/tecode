@@ -9,6 +9,14 @@
  * convention — matches `createCommandRegistry`, `createDocumentManager`,
  * `createContextService`).
  *
+ * **User-layer path overrides** (Req 9.6, Issue #81 Phase 1):
+ * {@link ConfigServiceDeps.settingsPath}/`keybindingsPath` let a caller
+ * (the CLI's `--config <dir>` flag) redirect the USER `settings.json`/
+ * `keybindings.json` layer to a different directory, without touching how
+ * the workspace layer (`<workspaceRoot>/.tecode/settings.json`) is
+ * resolved at all — same `deps.path ?? getUserXPath()` convention as
+ * `ui/themeSettingsWriter.ts`/`ui/keybindingsCommands.ts`.
+ *
  * **Initialization design choice**: `createConfigService` returns
  * synchronously (it does no I/O before returning), then kicks off the
  * initial file reads and watcher setup in the background. Callers that need
@@ -100,6 +108,19 @@ export interface ConfigServiceDeps {
    * this is provided — a single-file session with no workspace has no
    * third layer. */
   workspaceRoot?: string;
+  /** Overrides the user `settings.json` path (Req 9.6, Issue #81 Phase 1:
+   * the CLI's `--config <dir>` flag) — tests use a temp file; production
+   * defaults to {@link getUserSettingsPath}. Matches
+   * `ui/themeSettingsWriter.ts`'s `ThemeSettingsWriterDeps.path`/
+   * `ui/keybindingsCommands.ts`'s own `deps.path ?? getUserXPath()`
+   * convention. Leaves the workspace settings layer
+   * (`<workspaceRoot>/.tecode/settings.json`) completely untouched —
+   * `--config` overrides the USER layer only, never the workspace one. */
+  settingsPath?: string;
+  /** Overrides the user `keybindings.json` path (Req 9.6, Issue #81 Phase
+   * 1) — same override convention and same "user layer only" scope as
+   * {@link settingsPath}. Defaults to {@link getUserKeybindingsPath}. */
+  keybindingsPath?: string;
   /** Filesystem seam — see {@link ConfigServiceFs}. Defaults to
    * `node:fs/promises` + `node:fs.watch`. */
   fs?: ConfigServiceFs;
@@ -229,11 +250,11 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
   const { log, sink, workspaceRoot } = deps;
   const fs = deps.fs ?? createNodeConfigFs();
 
-  const userSettingsPath = getUserSettingsPath();
+  const userSettingsPath = deps.settingsPath ?? getUserSettingsPath();
   const workspaceSettingsPath = workspaceRoot
     ? getWorkspaceSettingsPath(workspaceRoot)
     : undefined;
-  const keybindingsPath = getUserKeybindingsPath();
+  const keybindingsPath = deps.keybindingsPath ?? getUserKeybindingsPath();
 
   const schemas = new Map<string, ConfigurationPropertySchema>();
   const defaultsLayer: Record<string, unknown> = {};

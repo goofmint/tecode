@@ -263,6 +263,19 @@ live with no restart (Req 9.4). A workspace's own
 `samples/settings.json` (in this repository) is a working, commented
 starting point covering every key below.
 
+Pass `--config <dir>` at startup (e.g.
+`tecode --config /path/to/cfg ./my-project`) to read the user settings
+and user keybindings layers from `<dir>/settings.json` and
+`<dir>/keybindings.json` instead (Req 9.6) — useful for an isolated
+profile or a CI sandbox. Only the user layer moves; a workspace's own
+`.tecode/settings.json` still overlays on top exactly as above. A
+missing `<dir>` (or a missing file inside it) is treated the same as a
+missing home-directory file: an empty layer, not an error. A relative
+`<dir>` resolves against the current working directory. `--config` with
+no directory argument after it is ignored (no override applied), and it
+never consumes the directory/file argument that opens a workspace —
+`tecode --config /path/to/cfg ./my-project` still opens `./my-project`.
+
 Req 9.5 names six MVP settings; the table marks which of them a real
 `contributes.configuration` schema registers today, and which do not
 exist yet:

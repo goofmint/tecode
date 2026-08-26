@@ -155,6 +155,83 @@ describe("ConfigService.get — layering (Req 9.2, 9.3)", () => {
   });
 });
 
+describe("ConfigService — settingsPath/keybindingsPath overrides (Req 9.6, Issue #81 Phase 1)", () => {
+  test("settingsPath overrides where the user settings layer is read from, leaving the workspace layer untouched", async () => {
+    const overriddenSettingsPath = "/override/settings.json";
+    const workspaceRoot = "/fake-workspace";
+    const workspacePath = getWorkspaceSettingsPath(workspaceRoot);
+    // The ordinary default location is seeded too, to prove it is genuinely
+    // NOT read once settingsPath is supplied — a service that ignored the
+    // override and fell back to the default would report tabSize 99, not 2.
+    const defaultUserPath = getUserSettingsPath();
+    const fake = createFakeFs({
+      [overriddenSettingsPath]: JSON.stringify({ "editor.tabSize": 2 }),
+      [defaultUserPath]: JSON.stringify({ "editor.tabSize": 99 }),
+      [workspacePath]: JSON.stringify({ "editor.insertSpaces": false }),
+    });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({
+      log,
+      sink,
+      workspaceRoot,
+      settingsPath: overriddenSettingsPath,
+      fs: fake.fs,
+    });
+    await service.ready;
+
+    expect(service.get<number>("editor.tabSize")).toBe(2);
+    // The workspace layer is a completely separate path, resolved from
+    // workspaceRoot exactly as always — settingsPath overrides the USER
+    // layer only (this describe block's TSDoc).
+    expect(service.get<boolean>("editor.insertSpaces")).toBe(false);
+    expect(fake.watchedPaths()).toContain(overriddenSettingsPath);
+    expect(fake.watchedPaths()).not.toContain(defaultUserPath);
+    service.dispose();
+  });
+
+  test("keybindingsPath overrides where the user keybindings layer is read from", async () => {
+    const overriddenKeybindingsPath = "/override/keybindings.json";
+    const defaultKeybindingsPath = getUserKeybindingsPath();
+    const entries = [{ key: "ctrl+k", command: "fixture.command" }];
+    const fake = createFakeFs({
+      [overriddenKeybindingsPath]: JSON.stringify(entries),
+      [defaultKeybindingsPath]: JSON.stringify([{ key: "ctrl+q", command: "should.not.load" }]),
+    });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({
+      log,
+      sink,
+      keybindingsPath: overriddenKeybindingsPath,
+      fs: fake.fs,
+    });
+    await service.ready;
+
+    expect(service.getKeybindingEntries()).toEqual(entries);
+    expect(fake.watchedPaths()).toContain(overriddenKeybindingsPath);
+    expect(fake.watchedPaths()).not.toContain(defaultKeybindingsPath);
+    service.dispose();
+  });
+
+  test("with no settingsPath/keybindingsPath given, the ordinary home-directory defaults are used", async () => {
+    const defaultUserPath = getUserSettingsPath();
+    const defaultKeybindingsPath = getUserKeybindingsPath();
+    const fake = createFakeFs({
+      [defaultUserPath]: JSON.stringify({ "editor.tabSize": 7 }),
+      [defaultKeybindingsPath]: JSON.stringify([{ key: "a", command: "b" }]),
+    });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, fs: fake.fs });
+    await service.ready;
+
+    expect(service.get<number>("editor.tabSize")).toBe(7);
+    expect(service.getKeybindingEntries()).toEqual([{ key: "a", command: "b" }]);
+    service.dispose();
+  });
+});
+
 describe("ConfigService.registerConfiguration (Req 9.3)", () => {
   test("populates defaults for properties that declare one", async () => {
     const fake = createFakeFs();

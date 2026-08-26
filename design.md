@@ -254,6 +254,8 @@ Pipeline (*Req 8*), in `core` with languages contributed by extensions:
 - **JSONC**: a small tolerant parser (strip comments + trailing commas, then `JSON.parse`) with error positions surfaced in the status bar; a broken file keeps the last good configuration.
 - **Layering**: defaults (from `contributes.configuration` schemas and core defaults) ← user `settings.json` ← workspace `.tecode/settings.json`. `tecode.config.get(key)` reads the merged view; the schema registry supplies types/defaults and (later) validation.
 - **Watch**: `fs.watch` on both settings files and `keybindings.json`; on change, re-parse, diff keys, fire `onDidChangeConfiguration({ affectsConfiguration })`, and notify dependent services (theme service on `workbench.colorTheme`, keymap service rebuilds its table) (*Req 9.4*).
+- **`--config <dir>` override** (*Req 9.6*): the CLI's `--config <dir>` flag (`cli/argv.ts`'s `resolveConfigDirOverride`) redirects the USER layer only — `<dir>/settings.json` and `<dir>/keybindings.json` replace the home-directory defaults `ConfigServiceDeps.settingsPath`/`keybindingsPath` otherwise fall back to (`host/paths.ts`'s `getUserSettingsPath`/`getUserKeybindingsPath`); the workspace layer's own resolution is untouched. A directory argument still following `--config <dir>` opens as the workspace exactly as before this flag existed; `--config` with no directory argument at all opens no workspace, same as no arguments given.
+
 
 ## 12. Public API Assembly
 

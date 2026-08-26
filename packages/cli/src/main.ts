@@ -81,7 +81,8 @@ import {
   builtinManifests,
   builtinThemeAssets,
 } from "@tecode/builtin";
-import { resolveStartupTarget, type StartupTarget } from "./argv";
+import { join as joinPath } from "node:path";
+import { resolveConfigDirOverride, resolveStartupTarget, type StartupTarget } from "./argv";
 import { buildExtensionDirMap, buildExtensionRecords } from "./extensionRecords";
 import { createKeymapState, type KeymapState } from "./keymapState";
 import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
@@ -498,6 +499,17 @@ export function buildAssemblyRoot(
      * hermeticity" shape.
      */
     loadFallbackKeybindings?: () => Promise<KeybindingContribution[]>;
+    /**
+     * `--config <dir>`'s resolved value (Req 9.6, Issue #81 Phase 1) —
+     * `runTecode` threads `RunTecodeOptions.configDir` through to here.
+     * When set, `<dir>/settings.json` and `<dir>/keybindings.json`
+     * override `createConfigService`'s USER-layer defaults
+     * (`getUserSettingsPath()`/`getUserKeybindingsPath()`) — the
+     * workspace layer (`<workspaceRoot>/.tecode/settings.json`) is
+     * entirely unaffected. `undefined` (the default) leaves both at their
+     * ordinary home-directory paths, exactly as before this flag existed.
+     */
+    configDir?: string;
   } = {},
 ): AssemblyRoot {
   const log = deps.log ?? createHostLog();
@@ -641,10 +653,25 @@ export function buildAssemblyRoot(
     if (generation !== kittyVerdictGeneration) return;
     keymap.setFallbackEntries(entries);
   }
+  // `--config <dir>` (Req 9.6, Issue #81 Phase 1): a caller-supplied
+  // directory overrides where the USER settings/keybindings layer is
+  // read from — `deps.configDir` derives both file paths from that ONE
+  // directory, matching the home-directory default's own "one directory,
+  // two well-known filenames" shape (`host/paths.ts`'s
+  // `getUserSettingsPath`/`getUserKeybindingsPath`). `undefined` when
+  // `deps.configDir` is unset, so `createConfigService` falls through to
+  // its own `getUserSettingsPath()`/`getUserKeybindingsPath()` defaults
+  // exactly as before this flag existed.
+  const settingsPath = deps.configDir ? joinPath(deps.configDir, "settings.json") : undefined;
+  const keybindingsPath = deps.configDir
+    ? joinPath(deps.configDir, "keybindings.json")
+    : undefined;
   const config = createConfigService({
     log,
     sink,
     workspaceRoot,
+    settingsPath,
+    keybindingsPath,
     onKeybindingsChange: (entries) => keymap.setUserEntries(entries),
   });
   // Core's own settings (`editor.lineNumbers`, `editor.tabSize` — Req 9.5,
@@ -1072,6 +1099,12 @@ export interface RunTecodeOptions {
   builtins?: Manifest[];
   /** Overrides `process.cwd()` — tests only. */
   cwd?: string;
+  /** `--config <dir>`'s resolved value (Req 9.6, Issue #81 Phase 1),
+   * already parsed by `main()`'s `resolveConfigDirOverride(argv)` call —
+   * threaded straight through to {@link buildAssemblyRoot}'s own
+   * `configDir` deps field (see that field's TSDoc for what it does).
+   * `undefined` (the default) is the ordinary "no override" case. */
+  configDir?: string;
 }
 
 /** Sets up graceful-shutdown handling (Phase 3's "wire process-exit
@@ -1197,7 +1230,7 @@ export async function runTecode(
   // `renderShell`'s `onCapabilitiesResolved` callback, once the render
   // seam has actually opened (or not opened, for `renderShellHeadless`) a
   // real terminal.
-  const root = buildAssemblyRoot(target.workspaceRoot, { log });
+  const root = buildAssemblyRoot(target.workspaceRoot, { log, configDir: options.configDir });
   await root.config.ready;
   emitVerboseStep(startedAt, "config-ready");
 
@@ -1348,12 +1381,22 @@ export async function runTecode(
   return { root, extensionHost: deferred.extensionHost, loadResult: deferred.loadResult, firstFrameMs };
 }
 
+/**
+ * The CLI entry point (Req 12.1, Issue #81 Phase 1's `--config <dir>`
+ * flag): handles `--version` first, exiting before any other argv
+ * handling ever runs (`argv.ts`'s top-of-file TSDoc: `resolveStartupTarget`
+ * must never see it either, for the same reason). `--config` is parsed
+ * right after, at that same early, synchronous, no-I/O position — via
+ * `resolveConfigDirOverride(argv)` — and its value is threaded through to
+ * {@link runTecode} as `RunTecodeOptions.configDir`.
+ */
 async function main(argv: string[]): Promise<void> {
   if (argv.includes("--version")) {
     console.log(pkg.version);
     process.exit(0);
   }
-  await runTecode(argv);
+  const configDir = resolveConfigDirOverride(argv);
+  await runTecode(argv, { configDir });
 }
 
 // `import.meta.main` is Bun's "am I the entry point" check (true only when
