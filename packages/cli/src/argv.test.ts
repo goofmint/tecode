@@ -91,6 +91,24 @@ test("a nonexistent DIRECTORY-shaped path (trailing slash) logs a warning and fa
   expect(log.entries().length).toBe(1);
 });
 
+test.skipIf(process.platform === "win32")(
+  "on POSIX a trailing backslash is an ordinary filename character, so such a path still opens as a new file (CodeRabbit finding on PR #89)",
+  async () => {
+    // `\\` is a separator only on Windows. On POSIX `path.resolve` leaves it
+    // inside the basename — `resolve("/tmp", "draft\\")` is `/tmp/draft\\`,
+    // whose `dirname` is `/tmp` — so `draft\\` names a perfectly valid file
+    // that does not exist yet, and rejecting it would warn-and-fall-back on
+    // a path the user could legitimately create.
+    dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+    const backslashName = join(dir, "draft") + "\\";
+
+    const log = createHostLog();
+    const target = await resolveStartupTarget([backslashName], "/fallback-cwd", log);
+    expect(target).toEqual({ workspaceRoot: dir, initialFilePath: backslashName });
+    expect(log.entries().length).toBe(0);
+  },
+);
+
 test("an EACCES (or any non-ENOENT) stat failure still logs a warning and falls back to cwd, never opens a new file", async () => {
   // Deliberately makes the PARENT directory's stat succeed (return a real
   // directory) while only the target path's own stat fails with EACCES —

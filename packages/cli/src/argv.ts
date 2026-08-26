@@ -108,7 +108,15 @@ async function tryResolveAsNewFile(
   raw: string,
   resolved: string,
 ): Promise<StartupTarget | undefined> {
-  if (raw.endsWith("/") || raw.endsWith("\\")) return undefined;
+  // `/` is a separator everywhere. `\` is one only on Windows: on POSIX it
+  // is an ordinary filename character, so `tecode 'draft\'` names a
+  // perfectly valid file that does not exist yet, and rejecting it here
+  // would warn-and-fall-back on a path the user could legitimately create
+  // (CodeRabbit finding on PR #89 — `path.resolve("/tmp", "draft\\")` gives
+  // `/tmp/draft\`, whose `dirname` is `/tmp`, not a directory named
+  // `draft`).
+  if (raw.endsWith("/")) return undefined;
+  if (process.platform === "win32" && raw.endsWith("\\")) return undefined;
   const parent = dirname(resolved);
   try {
     const parentStats = await fs.stat(parent);
