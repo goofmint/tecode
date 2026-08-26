@@ -98,6 +98,7 @@ The following points were open in the draft specification and are resolved here 
 3. THE system SHALL emit `onDidChange`, `onDidSave`, `onDidOpen`, and `onDidClose` events for documents.
 4. THE core SHALL implement undo/redo, and SHALL provide `document.transaction(fn)` so extensions can group multiple edits into a single undo step.
 5. WHEN a file larger than 10 MB is opened, THE system SHALL open it read-only.
+6. WHEN `openDocument` is given a `Uri` whose path does not exist on disk (`ENOENT`), THE system SHALL open it as a new, empty, non-dirty document (`readonly: false`) rather than failing — saving it SHALL create the file. Every other read failure (permission denied, I/O error, or any other non-`ENOENT` `stat`/read error) SHALL still reject the open and report it through the log/status sink exactly as before, and SHALL NOT be opened as an empty document (Issue #88).
 
 ### Requirement 6: UI Shell and Slots
 
@@ -194,6 +195,7 @@ The following points were open in the draft specification and are resolved here 
 1. WHEN tecode is launched, THE system SHALL proceed in this order: load configuration; discover extensions; register manifest declarations without executing extension code; activate extensions lazily per their activation events; render the UI shell; then open the initial file or directory given on the command line.
 2. THE UI shell SHALL render within 100 ms of launch, with extension loading deferred so it does not block first paint.
 3. WHEN tecode exits — whether by `SIGINT`/`SIGTERM` or by an interactive Ctrl+C while the terminal is in raw mode (which never delivers `SIGINT`, since raw mode disables signal generation) — THE system SHALL run the same shutdown sequence exactly once regardless of which of these triggers fired first: flush layout state (Requirement 6.4), dispose every core-owned service, and deactivate every extension (Requirement 2.6), all bounded by a timeout so a hung disposal cannot prevent the process from exiting.
+4. WHEN the command-line path argument does not exist on disk, THE system SHALL open it as a new document per Requirement 5.6, PROVIDED its parent directory exists and the argument does not end in a path separator (which unambiguously names a directory, never a file); OTHERWISE THE system SHALL warn and start with no initial document, exactly as an unreadable path does today (Issue #88).
 
 ### Requirement 13: Non-Functional Requirements
 

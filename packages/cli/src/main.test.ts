@@ -1,9 +1,18 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir as nodeReaddir, rm, stat as nodeStat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir as nodeReaddir,
+  readFile,
+  rm,
+  stat as nodeStat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BASE_THEME_ID,
+  createHostLog,
   EXTENSIONS_RELOAD_COMMAND_ID,
   getUserExtensionsDir,
   KEYBINDINGS_ENSURE_FILE_COMMAND_ID,
@@ -22,6 +31,7 @@ import {
   type DiscoveryFs,
 } from "@tecode/core";
 import pkg from "../package.json";
+import { resolveStartupTarget } from "./argv";
 import { buildAssemblyRoot, runDeferredPhase } from "./main";
 
 /** A {@link DiscoveryFs} backed by the real filesystem, except the real
@@ -342,6 +352,79 @@ test("runDeferredPhase loads a workspace extension, activates it on startup, wir
     await extensionHost.disposeAll();
   } finally {
     root.config.dispose();
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("Issue #88 end to end: `tecode README2.md` on a non-existent path opens an editable empty buffer, and saving it creates the real file on disk — through argv resolution, not just DocumentManager in isolation", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  const targetFile = join(workspaceDir, "README2.md");
+  // The load-bearing assumption under test: this file does NOT exist yet.
+  await expect(nodeStat(targetFile)).rejects.toBeDefined();
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    // Real argv resolution (Req 5.6, Req 12.4, Issue #88) — the whole
+    // point of this test is exercising `resolveStartupTarget` too, not
+    // just handing `documentManager` a pre-resolved path.
+    const log = createHostLog();
+    const target = await resolveStartupTarget([targetFile], workspaceDir, log);
+    expect(target).toEqual({ workspaceRoot: workspaceDir, initialFilePath: targetFile });
+    expect(log.entries()).toEqual([]);
+
+    root = buildAssemblyRoot(target.workspaceRoot);
+    try {
+      await root.config.ready;
+
+      const { extensionHost, loadResult } = await runDeferredPhase(root, {
+        initialFilePath: target.initialFilePath,
+        fs: createHermeticDiscoveryFs(),
+        builtins: [],
+      });
+      expect(loadResult.skipped).toEqual([]);
+
+      // Opened as a new, empty, non-dirty document — not "No editor open."
+      const uri = pathToUri(targetFile);
+      const doc = root.documents.documents.find((d) => d.uri === uri);
+      expect(doc).toBeDefined();
+      expect(doc!.getText()).toBe("");
+      expect(doc!.readonly).toBe(false);
+      expect(doc!.dirty).toBe(false);
+
+      // Opening alone must not have touched the real filesystem.
+      await expect(nodeStat(targetFile)).rejects.toBeDefined();
+
+      // Edit, then save through the real DocumentManager/real fs.
+      doc!.applyEdits([
+        {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+          newText: "# README2\n",
+        },
+      ]);
+      const saved = await root.documents.save(uri);
+      expect(saved).toBe(true);
+      expect(doc!.dirty).toBe(false);
+
+      // The real file now exists on disk with the expected content.
+      const onDisk = await readFile(targetFile, "utf8");
+      expect(onDisk).toBe("# README2\n");
+
+      await extensionHost.disposeAll();
+    } finally {
+      root.config.dispose();
+    }
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
     await rm(homeDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });
   }

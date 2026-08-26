@@ -142,17 +142,104 @@ describe("DocumentManager.openDocument (Req 5.5)", () => {
     expect(manager.documents).toHaveLength(1);
   });
 
-  test("opening a nonexistent file rejects the promise AND reports through log/sink", async () => {
+  test("opening a nonexistent file (ENOENT) opens a new, empty, non-dirty document instead of failing (Req 5.6, Issue #88)", async () => {
     const path = join(dir, "missing.txt");
     const { log, sink, errors } = baseDeps();
     const manager = createDocumentManager({ log, sink });
 
-    await expect(manager.openDocument(pathToUri(path))).rejects.toBeDefined();
+    const doc = await manager.openDocument(pathToUri(path));
+    expect(doc.getText()).toBe("");
+    expect(doc.readonly).toBe(false);
+    expect(doc.dirty).toBe(false);
+    expect(errors).toHaveLength(0);
+    expect(log.entries().filter((e) => e.level === "error")).toHaveLength(0);
+    expect(manager.documents).toHaveLength(1);
+  });
+
+  test("opening a nonexistent file leaves the document non-dirty, but an EXPLICIT save() still creates the (empty) file (Issue #88 design note)", async () => {
+    // `saveNow` never gates on `dirty` — it always performs the write,
+    // for every document, new-file or not (that's a pre-existing,
+    // unrelated property of `saveNow`, not something Issue #88
+    // introduces). So `dirty` staying `false` on open only guarantees
+    // "no save-changes prompt on quit for an untouched buffer" and "no
+    // autosave writes it" — it does NOT mean an explicit `save()` call
+    // is a no-op. This test pins that down: nothing on disk changes
+    // merely from opening, but calling `save()` — even on a document
+    // nobody ever typed into — still creates the empty file.
+    const path = join(dir, "untouched.txt");
+    const { log, sink } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    expect(doc.dirty).toBe(false);
+    await expect(fsStat(path)).rejects.toBeDefined(); // opening alone created nothing
+
+    const ok = await manager.save(uri);
+    expect(ok).toBe(true);
+    const written = await readFile(path, "utf8");
+    expect(written).toBe("");
+  });
+
+  test("an EACCES (non-ENOENT) open failure still rejects the promise AND reports through log/sink — never becomes an empty buffer (Issue #88)", async () => {
+    const uri = pathToUri(join(dir, "denied.txt"));
+    const { log, sink, errors } = baseDeps();
+
+    const accessDeniedFs: DocumentManagerFs = {
+      stat: async () => {
+        const err = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        throw err;
+      },
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: (p, mode) => fsChmod(p, mode),
+      rename: (a, b) => fsRename(a, b),
+      unlink: (p) => fsUnlink(p),
+    };
+    const manager = createDocumentManager({ log, sink, fs: accessDeniedFs });
+
+    await expect(manager.openDocument(uri)).rejects.toBeDefined();
     expect(errors).toHaveLength(1);
-    expect(errors[0]!.path).toBe(pathToUri(path));
+    expect(errors[0]!.path).toBe(uri);
     const errorEntries = log.entries().filter((e) => e.level === "error");
     expect(errorEntries).toHaveLength(1);
     expect(manager.documents).toHaveLength(0);
+  });
+
+  test("a nonexistent path with a MISSING PARENT DIRECTORY still opens as a new file (unconditional on ENOENT), and a later save fails with a clear error naming the path (Issue #88 design note)", async () => {
+    // Unlike `cli/argv.ts`'s `resolveStartupTarget` (which refuses to
+    // open a new file when the parent directory doesn't exist, to give
+    // CLI startup an early warning naming the exact typo'd path),
+    // `DocumentManager.openDocument` is a lower-level primitive used by
+    // every caller (including extensions via `tecode.workspace.
+    // openDocument`) and stays simple: ANY `ENOENT` opens a new, empty
+    // document, parent or no parent. A genuinely broken path just
+    // surfaces its clear error one step later, at `save()` time, instead
+    // of at `openDocument()` time.
+    const path = join(dir, "no-such-parent", "deep.txt");
+    const { log, sink, errors } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+    const uri = pathToUri(path);
+
+    const doc = await manager.openDocument(uri);
+    expect(doc.getText()).toBe("");
+    expect(doc.readonly).toBe(false);
+    expect(doc.dirty).toBe(false);
+
+    doc.applyEdits([
+      {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+        newText: "hi",
+      },
+    ]);
+
+    const ok = await manager.save(uri);
+    expect(ok).toBe(false);
+    expect(doc.dirty).toBe(true); // the failed save must not clear dirty
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => e.path === uri)).toBe(true);
+    const errorEntries = log.entries().filter((e) => e.level === "error");
+    expect(errorEntries.some((e) => e.error.message.includes("ENOENT"))).toBe(true);
   });
 
   test("a throwing onLanguageActivation callback does not break open", async () => {

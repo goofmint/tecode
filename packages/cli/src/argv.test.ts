@@ -45,9 +45,19 @@ test("a relative path argument resolves against cwd", async () => {
   expect(target).toEqual({ workspaceRoot: join(dir, "sub") });
 });
 
-test("a nonexistent path logs a warning and falls back to cwd", async () => {
+test("a nonexistent path whose parent directory exists opens as a new file (Req 5.6, Issue #88)", async () => {
   dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
-  const missing = join(dir, "does-not-exist");
+  const missing = join(dir, "does-not-exist.txt");
+
+  const log = createHostLog();
+  const target = await resolveStartupTarget([missing], "/irrelevant", log);
+  expect(target).toEqual({ workspaceRoot: dir, initialFilePath: missing });
+  expect(log.entries()).toEqual([]);
+});
+
+test("a nonexistent path whose PARENT directory is also missing logs a warning and falls back to cwd (Issue #88 design note)", async () => {
+  dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+  const missing = join(dir, "no-such-parent", "does-not-exist.txt");
 
   const log = createHostLog();
   const target = await resolveStartupTarget([missing], "/fallback-cwd", log);
@@ -57,6 +67,68 @@ test("a nonexistent path logs a warning and falls back to cwd", async () => {
   expect(entries.length).toBe(1);
   expect(entries[0]?.level).toBe("warning");
   expect(entries[0]?.error.message).toContain(missing);
+});
+
+test("a nonexistent path whose immediate parent is a FILE (not a directory) logs a warning and falls back to cwd", async () => {
+  dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+  const notADir = join(dir, "notadir.txt");
+  await writeFile(notADir, "x", "utf8");
+  const missing = join(notADir, "does-not-exist.txt");
+
+  const log = createHostLog();
+  const target = await resolveStartupTarget([missing], "/fallback-cwd", log);
+  expect(target).toEqual({ workspaceRoot: "/fallback-cwd" });
+  expect(log.entries().length).toBe(1);
+});
+
+test("a nonexistent DIRECTORY-shaped path (trailing slash) logs a warning and falls back to cwd rather than opening as a file (Issue #88 design note)", async () => {
+  dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+  const missingDirArg = join(dir, "newdir") + "/";
+
+  const log = createHostLog();
+  const target = await resolveStartupTarget([missingDirArg], "/fallback-cwd", log);
+  expect(target).toEqual({ workspaceRoot: "/fallback-cwd" });
+  expect(log.entries().length).toBe(1);
+});
+
+test.skipIf(process.platform === "win32")(
+  "on POSIX a trailing backslash is an ordinary filename character, so such a path still opens as a new file (CodeRabbit finding on PR #89)",
+  async () => {
+    // `\\` is a separator only on Windows. On POSIX `path.resolve` leaves it
+    // inside the basename — `resolve("/tmp", "draft\\")` is `/tmp/draft\\`,
+    // whose `dirname` is `/tmp` — so `draft\\` names a perfectly valid file
+    // that does not exist yet, and rejecting it would warn-and-fall-back on
+    // a path the user could legitimately create.
+    dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+    const backslashName = join(dir, "draft") + "\\";
+
+    const log = createHostLog();
+    const target = await resolveStartupTarget([backslashName], "/fallback-cwd", log);
+    expect(target).toEqual({ workspaceRoot: dir, initialFilePath: backslashName });
+    expect(log.entries().length).toBe(0);
+  },
+);
+
+test("an EACCES (or any non-ENOENT) stat failure still logs a warning and falls back to cwd, never opens a new file", async () => {
+  // Deliberately makes the PARENT directory's stat succeed (return a real
+  // directory) while only the target path's own stat fails with EACCES —
+  // if `resolveStartupTarget` ever stopped checking the error code before
+  // trying the new-file path, this would open `some/path` as a new file
+  // instead of warning, since the parent-exists guard alone would pass.
+  const log = createHostLog();
+  const fakeFs = {
+    stat: async (path: string) => {
+      if (path.endsWith("path")) {
+        const err = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        throw err;
+      }
+      return { isDirectory: () => true };
+    },
+  };
+  const target = await resolveStartupTarget(["some/path"], "/fallback-cwd", log, fakeFs);
+  expect(target).toEqual({ workspaceRoot: "/fallback-cwd" });
+  expect(log.entries().length).toBe(1);
+  expect(log.entries()[0]?.level).toBe("warning");
 });
 
 test("only the first non-flag token is treated as the positional argument", async () => {

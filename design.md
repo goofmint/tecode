@@ -197,6 +197,12 @@ class Document {
 
 Owns the `Map<UriString, Document>`, exposes `tecode.workspace.openDocument/documents` and the open/close/save events, resolves language IDs via the language registry on open, and fires `onLanguage:*` activation events. Save writes atomically (write temp + rename) and clears `dirty`.
 
+**Opening a path that doesn't exist yet** (*Req 5.6*, Issue #88): `openDocument` treats an `ENOENT` from its initial `stat` as "a new file the user hasn't saved yet", not a failure — it builds the `Document` with `text: ""`, `readonly: false` instead of rejecting. Because `dirty` starts `false` and only flips on a real edit, an untouched new buffer prompts no save-on-quit confirmation and writes nothing to disk merely from having been opened — but `save()` itself does not gate on `dirty` (a pre-existing property, not new here), so an explicit save on a still-untouched new document does create an empty file. Every other `stat`/read failure (`EACCES`, `EIO`, ...) keeps the pre-Issue-#88 contract: reject and report through `log`/`sink`, never silently degrading to an empty buffer — that would let a save quietly overwrite a file the caller was never able to read.
+
+This ENOENT branch is unconditional: it does not itself check whether the path's parent directory exists. `cli/argv.ts`'s `resolveStartupTarget` (§3) layers a stricter guard in front of it for CLI startup specifically — see below — but `DocumentManager` stays the simple, single-policy primitive every caller (CLI startup and `tecode.workspace.openDocument` alike) shares; a path with a missing parent still gets a clear, specific error, just at `save()` time (the temp-file write's own `ENOENT`) rather than at `openDocument()` time.
+
+**CLI startup's stricter guard** (`resolveStartupTarget`, Req 12.4, Issue #88): a non-existent positional argument opens as a new file only when (a) the argv token itself does not end in `/` or `\` — a trailing separator unambiguously names a directory, and `path.resolve` would otherwise silently discard that signal — and (b) `dirname(resolved)` exists and is itself a directory. Failing either check falls back to the pre-existing "warn and start with no workspace" behavior. The asymmetry with `DocumentManager` above is deliberate: a CLI entry point can react to a typo'd deep path (`a/b/c.txt` with no `a/b`) with an immediate warning naming the exact path, which is a better first signal than a silently-opened empty editor whose eventual save failure no longer even mentions the typo.
+
 ## 8. UI Shell
 
 ### 8.1 Component tree

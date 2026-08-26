@@ -54,6 +54,79 @@ function describeError(err: unknown): string {
   }
 }
 
+/** Extract an errno-style `code` (e.g. `"ENOENT"`) from a caught unknown,
+ * or `undefined` when it carries none. Duplicated per-module rather than
+ * imported (matches `@tecode/core`'s own convention of a private
+ * `errorCode` in each module that needs one — e.g.
+ * `buffer/documentManager.ts`'s, `config/service.ts`'s — instead of a
+ * shared export; this module is `cli`, which may import `@tecode/core`,
+ * but this helper is a two-line leaf with no state, so duplicating it
+ * avoids a public export whose only purpose would be this one call). */
+function errorCode(err: unknown): string | undefined {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return undefined;
+}
+
+/**
+ * Decide whether a non-existent `resolved` path (Req 5.6, Issue #88)
+ * should open as a brand-new, empty in-memory document rather than
+ * degrade to "no workspace" — called from {@link resolveStartupTarget}'s
+ * catch block only when the initial `stat` failed with `ENOENT`. Two
+ * guards gate this, both chosen over the alternative of opening
+ * unconditionally and deferring to a save-time error (which is what
+ * `buffer/documentManager.ts`'s `openDocument` does instead, for its own,
+ * different reasons — see that function's TSDoc):
+ *
+ * - **Directory-shaped positional**: `raw` (the ORIGINAL argv token, not
+ *   `resolved`) ending in `/` or `\` unambiguously means the user meant a
+ *   directory — `path.resolve` normalizes away a trailing separator, so
+ *   by the time `resolved` exists that signal is already gone, which is
+ *   why this checks `raw`. A file can never be opened at a path spelled
+ *   with a trailing separator, so `tecode newdir/` on a non-existent
+ *   `newdir` degrades to the ordinary "does not exist" warning rather
+ *   than silently opening `newdir` (no trailing slash) as a file.
+ * - **Missing parent directory** (`a/b/c.txt` where `a/b` doesn't exist):
+ *   opening this as a new file would let a typo'd deep path silently
+ *   open an empty editor with nothing on screen to say anything is
+ *   wrong — discoverable only later, when a save fails for a reason
+ *   (`ENOENT` on the temp-file write, inside a directory that was never
+ *   the one the user actually mistyped) that no longer even names the
+ *   original mistake. A startup warning that names the exact path right
+ *   away is a far better first signal for a CLI entry point, so this
+ *   only treats `resolved` as a new file when `dirname(resolved)` both
+ *   exists and is itself a directory.
+ *
+ * Returns `undefined` (caller falls through to its existing warning) when
+ * either guard fails, or the parent's own `stat` call fails for any
+ * reason.
+ */
+async function tryResolveAsNewFile(
+  fs: ArgvResolutionFs,
+  raw: string,
+  resolved: string,
+): Promise<StartupTarget | undefined> {
+  // `/` is a separator everywhere. `\` is one only on Windows: on POSIX it
+  // is an ordinary filename character, so `tecode 'draft\'` names a
+  // perfectly valid file that does not exist yet, and rejecting it here
+  // would warn-and-fall-back on a path the user could legitimately create
+  // (CodeRabbit finding on PR #89 — `path.resolve("/tmp", "draft\\")` gives
+  // `/tmp/draft\`, whose `dirname` is `/tmp`, not a directory named
+  // `draft`).
+  if (raw.endsWith("/")) return undefined;
+  if (process.platform === "win32" && raw.endsWith("\\")) return undefined;
+  const parent = dirname(resolved);
+  try {
+    const parentStats = await fs.stat(parent);
+    if (!parentStats.isDirectory()) return undefined;
+  } catch {
+    return undefined;
+  }
+  return { workspaceRoot: parent, initialFilePath: resolved };
+}
+
 /** Every index in `argv` holding a `--config` flag's value — i.e. the token
  * immediately after each `--config` occurrence (Issue #81 Phase 1). Shared
  * by {@link resolveConfigDirOverride} and {@link resolveStartupTarget} so
@@ -121,11 +194,18 @@ export function resolveConfigDirOverride(argv: readonly string[]): string | unde
  * job, called separately by `main.ts`.
  *
  * Never throws (matches `core`'s never-throwing service boundaries): a
- * path that does not exist, or can't be `stat`-ed, is reported to `log` as
- * a warning and treated as if no argument had been given (`cwd`) — a
- * typo'd path should degrade to an empty workspace rather than abort
- * startup, the same "continue starting up" spirit Req 2.4 applies to a bad
- * extension.
+ * path that can't be `stat`-ed for a reason other than "missing" is
+ * reported to `log` as a warning and treated as if no argument had been
+ * given (`cwd`) — a bad path should degrade to an empty workspace rather
+ * than abort startup, the same "continue starting up" spirit Req 2.4
+ * applies to a bad extension.
+ *
+ * **A path that does not exist (`ENOENT`) opens as a new, empty document
+ * instead** (Req 5.6, Issue #88), UNLESS {@link tryResolveAsNewFile}'s two
+ * guards say otherwise (a directory-shaped positional, or a missing
+ * parent directory) — in either of those cases this still falls through
+ * to the warning-and-`cwd` degradation above, exactly as before Issue
+ * #88. See {@link tryResolveAsNewFile}'s TSDoc for the full reasoning.
  */
 export async function resolveStartupTarget(
   argv: readonly string[],
@@ -145,6 +225,10 @@ export async function resolveStartupTarget(
     if (stats.isDirectory()) return { workspaceRoot: resolved };
     return { workspaceRoot: dirname(resolved), initialFilePath: resolved };
   } catch (cause) {
+    if (errorCode(cause) === "ENOENT") {
+      const asNewFile = await tryResolveAsNewFile(fs, positional, resolved);
+      if (asNewFile) return asNewFile;
+    }
     log.append("warning", {
       message: `Startup path "${resolved}" does not exist or could not be read (${describeError(cause)}); starting with no workspace.`,
       path: resolved,
