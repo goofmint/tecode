@@ -49,6 +49,7 @@ import {
   applyConfiguredTheme,
   ContextFocusTracker,
   getUserExtensionsDir,
+  ModalOverlay,
   Shell,
   ThemeProvider,
   type ContextService,
@@ -309,6 +310,24 @@ function findAllFocusable(node: unknown): FocusableLike[] {
  * Returns `true` once a focused node is found that actually sets the key;
  * `false` (leaving every candidate focused-then-blurred) if none does —
  * e.g. no document is open yet, so `EditorArea` has no text plane to find.
+ *
+ * **Does NOT answer "who grants focus in the first place?"** (Issue #82's
+ * post-mortem): before the fix in `ui/shell.tsx`'s `EditorArea`, NOTHING in
+ * production ever imperatively focused the text plane on mount — this
+ * helper's own real-`.focus()`-walk masked that gap for over a year of
+ * tests, because every test that types goes through this function first,
+ * never through the production mount path alone. `EditorArea` now grants
+ * initial focus itself (on mount with a document already open, on a
+ * document opening later, and on switching tabs — see that component's own
+ * TSDoc for the exact rule and its do-not-steal guard), so a test that
+ * wants to prove typing works FROM PRODUCTION STARTUP ALONE must render the
+ * Shell and type WITHOUT calling this helper at all
+ * (`shell.initialFocus.test.tsx`'s "no focus assist" tests are exactly
+ * that) — calling `focusEditorText` before typing is still correct and
+ * still the right tool for every test that has a different, unrelated
+ * thing to prove (multi-cursor, undo/redo, syntax highlighting, …), it
+ * just no longer stands in for "does startup focus the editor" the way its
+ * mere existence previously, silently did.
  */
 export function focusEditorText(rendererRoot: unknown, context: Pick<ContextService, "get">): boolean {
   for (const node of findAllFocusable(rendererRoot)) {
@@ -339,16 +358,25 @@ export type EditingShellDeps = Pick<
   | "editorSession"
   | "findService"
   | "highlightService"
+  | "modalService"
 >;
 
 /**
- * Mount `<ThemeProvider><ContextFocusTracker><Shell/></ContextFocusTracker>
- * </ThemeProvider>` (design.md §8.1's component tree) onto OpenTUI's
- * headless test renderer — the exact same tree
- * `renderShell.tsx`'s `renderShellToTerminal` mounts onto a real terminal,
- * just onto `@opentui/react/test-utils`'s `testRender` instead of a real
- * `CliRenderer` (`shell.snapshot.test.tsx`'s top-of-file TSDoc documents why this is
- * a full, real cell-grid renderer, not a fallback).
+ * Mount `<ThemeProvider><ContextFocusTracker><Shell/><ModalOverlay/>
+ * </ContextFocusTracker></ThemeProvider>` (design.md §8.1's component tree,
+ * `modalOverlay.tsx`'s "Mount point") onto OpenTUI's headless test
+ * renderer — the exact same tree `renderShell.tsx`'s `renderShellToTerminal`
+ * mounts onto a real terminal, just onto `@opentui/react/test-utils`'s
+ * `testRender` instead of a real `CliRenderer` (`shell.snapshot.test.tsx`'s
+ * top-of-file TSDoc documents why this is a full, real cell-grid renderer,
+ * not a fallback). `ModalOverlay` is mounted unconditionally (matching
+ * `renderShellToTerminal`'s own always-there `modalService` in production
+ * `main.ts`), so a test can drive `root.modalService.openQuickPick(...)`/
+ * `openInputBox(...)` and observe the SAME `quickPickFocus`/`inputBoxFocus`
+ * context transitions production reports — Issue #82's "do not steal focus
+ * from the palette" regression is a real ordering interaction between
+ * `ModalOverlay` and `Shell`'s `EditorArea` that a harness omitting
+ * `ModalOverlay` could never exercise.
  */
 export function renderEditingShell(
   deps: EditingShellDeps,
@@ -367,6 +395,7 @@ export function renderEditingShell(
           findService={deps.findService}
           highlightService={deps.highlightService}
         />
+        <ModalOverlay modalService={deps.modalService} />
       </ContextFocusTracker>
     </ThemeProvider>
   );

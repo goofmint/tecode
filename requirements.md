@@ -110,6 +110,7 @@ The following points were open in the draft specification and are resolved here 
 4. THE core SHALL persist layout state (sidebar width, visibility) across sessions.
 5. THE MVP SHALL support exactly one editor group (no split editing) with multiple tabs.
 6. THE editor view SHALL be a custom component with an editor-owned cursor/selection overlay supporting multiple cursors and a line-number gutter.
+7. WHEN a document becomes the active editor tab — on startup with a document already open, when the first document opens on an empty workspace, or when the user switches tabs — THE system SHALL give keyboard focus to that document's text plane so typing works immediately with no manual focus action, UNLESS the command palette, an input box, the find widget, or the explorer sidebar currently holds focus, in which case focus SHALL NOT be moved.
 
 ### Requirement 7: Theming
 
