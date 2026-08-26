@@ -68,23 +68,39 @@ export function ContextFocusTracker(props: ContextFocusTrackerProps): ReactNode 
 
 /**
  * Returns the {@link ContextService} the nearest {@link ContextFocusTracker}
- * provides, narrowed to `get` (Req 4.6) — for a component that needs to
- * READ another region's focus-tracked context key directly (rather than
- * only report its OWN focus transitions via {@link useFocusTracking}).
- * `undefined` outside a {@link ContextFocusTracker} — matches this module's
- * "no-op rather than throw when unwrapped" discipline for
- * {@link useFocusTracking} itself, and a caller reads it the same way: an
- * `undefined` context conservatively means "nothing is known to be holding
- * focus" (`ui/shell.tsx`'s `EditorArea` initial-focus guard, Issue #82, is
- * the first consumer — it must not steal focus from the command palette
- * (`quickPickFocus`), an input box (`inputBoxFocus`), the find widget
- * (`findWidgetFocus`), or the explorer (`explorerFocus`), none of which are
- * `EditorArea`'s own React descendants: `ModalOverlay` is `Shell`'s
- * sibling, `Sidebar` is `Shell`'s child — so the only way to see those
- * keys from inside `EditorArea` is back through this shared
- * `ContextService`, not through the component tree).
+ * provides, narrowed to `get`/`onDidChange` (Req 4.6) — for a component
+ * that needs to READ another region's focus-tracked context key directly
+ * (rather than only report its OWN focus transitions via
+ * {@link useFocusTracking}). `undefined` outside a
+ * {@link ContextFocusTracker} — matches this module's "no-op rather than
+ * throw when unwrapped" discipline for {@link useFocusTracking} itself, and
+ * a caller reads it the same way: an `undefined` context conservatively
+ * means "nothing is known to be holding focus" (`ui/shell.tsx`'s
+ * `EditorArea` initial-focus guard, Issue #82, is the first consumer — it
+ * must not steal focus from the command palette (`quickPickFocus`), an
+ * input box (`inputBoxFocus`), the find widget (`findWidgetFocus`), or the
+ * explorer (`explorerFocus`), none of which are `EditorArea`'s own React
+ * descendants: `ModalOverlay` is `Shell`'s sibling, `Sidebar` is `Shell`'s
+ * child — so the only way to see those keys from inside `EditorArea` is
+ * back through this shared `ContextService`, not through the component
+ * tree).
+ *
+ * **`onDidChange`** (CodeRabbit PR #83 follow-up on Issue #82's fix):
+ * `ContextService.onDidChange` is otherwise host-internal — "consumed by
+ * focus tracking and the keymap service, not extensions" (`api/create.ts`'s
+ * TSDoc on why `tecode.context` never exposes it). Exposing it here, to a
+ * component that already reads focus-tracked keys through this same hook,
+ * stays within that boundary (still core-internal, still nothing an
+ * extension can reach through `tecode.context`) while giving
+ * `EditorArea`'s do-not-steal guard a way to be told when a guard it
+ * deferred on has since cleared — a change to `quickPickFocus`/
+ * `inputBoxFocus`/`findWidgetFocus`/`explorerFocus` is otherwise invisible
+ * to `EditorArea`'s own re-render cycle, since none of those keys are its
+ * own props and this hook always returns the SAME `ContextService`
+ * instance (no new value, hence no dependency-array-triggered re-run, ever
+ * comes from `focusContext` itself changing).
  */
-export function useFocusContextService(): Pick<ContextService, "get"> | undefined {
+export function useFocusContextService(): Pick<ContextService, "get" | "onDidChange"> | undefined {
   return useContext(FocusContextServiceContext);
 }
 

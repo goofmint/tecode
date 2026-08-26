@@ -63,6 +63,9 @@ function printableKey(char: string) {
   return { name: char, sequence: char, ctrl: false, shift: false, option: false, meta: false };
 }
 
+/** A `HostLog` sink that discards everything (matches `shell.snapshot.
+ * test.tsx`'s own identical helper) — these tests assert on focus/context
+ * behavior, not on what gets logged. */
 function createRecordingSink() {
   return { error() {} };
 }
@@ -79,6 +82,10 @@ function createEmptyLayoutFs(): LayoutStateFs {
   };
 }
 
+/** The `slotRegistry`/`layoutState`/`context` trio every test below
+ * mounts `<Shell>` against (matches `shell.snapshot.test.tsx`'s own
+ * identical helper) — `documents`/`editorSession`/`modalService` are each
+ * test's own concern, built separately per scenario. */
 function createHarness() {
   const log = createHostLog();
   const sink = createRecordingSink();
@@ -277,6 +284,83 @@ describe("Shell — initial editor focus (Req 4.6, 6.7, design.md §8.1; Issue #
     // buffer "behind" the palette.
     expect(handled).toBe(false);
     expect(document.getLine(0)).toBe("hello");
+  });
+
+  test("closing the palette after a document opened while it was showing retries the deferred focus (CodeRabbit PR #83 follow-up)", async () => {
+    // Continues exactly where "does not steal focus..." above stops: this
+    // is quick-open's real shape (Issue #82's most common path) — empty
+    // workspace, `ctrl+g`-equivalent opens the palette, a file is picked
+    // (which in production opens the document WHILE the palette is still
+    // showing, then the palette closes) — and proves the deferred focus
+    // attempt this scenario ARMS is not silently discarded once the guard
+    // clears, only DEFERRED. `ModalOverlay` restores focus only to
+    // whatever held it before the palette opened (`modalOverlay.tsx`'s
+    // `previousFocusRef`) — nothing did, here — so it cannot be what
+    // re-focuses the text plane; only `EditorArea`'s own retry can.
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "hello" }),
+    });
+    const editorSession = createEditorSessionService({ documents });
+    const modalService = createModalService();
+
+    const { renderOnce } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell
+            slotRegistry={slotRegistry}
+            layoutState={layoutState}
+            documents={documents}
+            editorSession={editorSession}
+          />
+          <ModalOverlay modalService={modalService} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 80, height: 20 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    act(() => {
+      void modalService.openQuickPick([{ label: "Test Command" }]);
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(context.get<boolean>("quickPickFocus")).toBe(true);
+
+    // The document opens WHILE the palette is still showing — the
+    // do-not-steal guard defers the focus attempt (asserted already by the
+    // test above); this test continues past that point.
+    const document = await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(context.get<boolean>("editorTextFocus")).toBeFalsy();
+
+    // The palette closes — `quickPickFocus` flips false. Nothing about
+    // `props.activeDocument?.uri` changes on this render (the active
+    // document is still "hello.ts"), so ONLY a retry driven by the context
+    // service's own `onDidChange` (not a uri-keyed effect re-run) can pick
+    // this back up.
+    act(() => {
+      modalService.cancel();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(context.get<boolean>("quickPickFocus")).toBe(false);
+    expect(context.get<boolean>("editorTextFocus")).toBe(true);
+
+    const router = createEditorInputRouter({ context, editorSession });
+    const handled = router.routeKeyEvent(printableKey("Q"));
+    expect(handled).toBe(true);
+    expect(document.getLine(0)).toBe("Qhello");
   });
 
   test("switching tabs re-focuses the newly active tab's text plane, with no manual assist", async () => {

@@ -413,6 +413,35 @@ export interface EditorAreaProps {
  * steal focus out from under someone mid-typing in the palette the moment
  * a document happens to open or a tab happens to switch underneath it —
  * worse than the bug this effect exists to fix (this task's own framing).
+ *
+ * **A deferred attempt is retried, never discarded** (CodeRabbit PR #83
+ * follow-up — Issue #82's own most common path: an empty workspace, the
+ * command palette opens the picked file, which activates it as the new
+ * tab WHILE the palette is still showing): the FIRST version of this
+ * effect advanced `previousActiveUriRef` unconditionally before checking
+ * the guard, so a transition that arrived while guarded was marked
+ * "already handled" and then discarded — nothing re-attempted it once the
+ * palette closed, because `focusContext` never changes identity (its
+ * `quickPickFocus` value living inside the `ContextService`'s internal Map
+ * is invisible to a React dependency array) and `props.activeDocument?.uri`
+ * does not change again on its own. `ModalOverlay` cannot rescue this
+ * either — it restores focus only to whatever was focused BEFORE the modal
+ * opened (`modalOverlay.tsx`'s `previousFocusRef`), which in this flow is
+ * not the new document's text plane at all. Fixed by separating two
+ * concerns that used to live in one ref: `previousActiveUriRef` ONLY
+ * detects "is this a genuinely new active-document uri" (advanced the
+ * instant a transition is seen, guard or no guard — this part was never
+ * the bug); `pendingFocusUriRef` holds whatever uri is still OWED a focus
+ * attempt, cleared only once `attemptFocus` actually succeeds. A second
+ * `useEffect` below subscribes to the context service's own `onDidChange`
+ * (exposed for exactly this by `focus.tsx`'s `useFocusContextService`) and
+ * calls `attemptFocus` again on every firing — cheap and safe to over-call,
+ * since `attemptFocus` itself no-ops the instant nothing is pending.
+ * Subscribing to `onDidChange` unfiltered (not just for the specific key
+ * that unblocked things) is deliberate: it means a deferred attempt is
+ * retried no matter WHICH of the four guards clears first — the command
+ * palette, an input box, the find widget, or the explorer sidebar — with
+ * no separate per-key wiring needed for each.
  */
 export function EditorArea(props: EditorAreaProps): ReactNode {
   const theme = useTheme();
@@ -431,26 +460,36 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
   }, [isFindOpen]);
 
   // Initial/re-focus of the text plane (Req 4.6, 6.7; Issue #82) — see this
-  // component's own TSDoc above ("Initial/re-focus of the text plane") for
-  // the full "why" and the three cases this one edge-triggered effect
-  // covers. `focusContext` is `undefined` outside a `ContextFocusTracker`
-  // (`focus.tsx`'s `useFocusContextService` TSDoc) — every guard read below
-  // then evaluates to `undefined` (falsy), i.e. "assume nothing else holds
+  // component's own TSDoc above ("Initial/re-focus of the text plane" and
+  // "A deferred attempt is retried, never discarded") for the full "why".
+  // `focusContext` is `undefined` outside a `ContextFocusTracker` (`focus.
+  // tsx`'s `useFocusContextService` TSDoc) — every guard read below then
+  // evaluates to `undefined` (falsy), i.e. "assume nothing else holds
   // focus", matching every other optional-dependency fallback in this
   // module rather than skipping the whole effect.
   const focusContext = useFocusContextService();
+  // Detects a genuine "active document changed" transition ONLY — advanced
+  // unconditionally the instant a new uri is seen, independent of the
+  // do-not-steal guard below (this was never the bug CodeRabbit found;
+  // keep it separate from `pendingFocusUriRef` so it stays that way).
   const previousActiveUriRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    const uri = props.activeDocument?.uri;
-    const isNewActiveDocument = uri !== previousActiveUriRef.current;
-    previousActiveUriRef.current = uri;
-    if (!isNewActiveDocument || !uri) return; // No transition, or no document to focus.
+  // The uri still OWED a focus attempt, if any — set when a transition is
+  // detected, left alone (not cleared) if the guard defers it, and cleared
+  // only once `attemptFocus` actually calls `.focus()`. `undefined` means
+  // "nothing pending" — the common, unguarded case reaches that state on
+  // the very same render that detected the transition.
+  const pendingFocusUriRef = useRef<string | undefined>(undefined);
+
+  const attemptFocus = useCallback(() => {
+    if (!pendingFocusUriRef.current) return; // Nothing owed — including a prior success.
 
     // Do-not-steal guard (this component's TSDoc): the command palette, an
     // input box, the find widget, or the explorer sidebar may legitimately
     // hold focus right now — none of them are this component's own React
     // descendants, so they can only be observed through the shared context
-    // service, not through props/tree structure.
+    // service, not through props/tree structure. Left pending (not
+    // cleared) when guarded, so a later retry (this effect's own `uri`
+    // change, or the `onDidChange`-driven retry below) can pick it back up.
     if (
       focusContext?.get<boolean>(QUICK_PICK_FOCUS_CONTEXT_KEY) ||
       focusContext?.get<boolean>(INPUT_BOX_FOCUS_CONTEXT_KEY) ||
@@ -461,8 +500,38 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
       return;
     }
 
+    // Cleared BEFORE focusing (not after): `.focus()` synchronously fires
+    // `FOCUSED`, which `editorView.tsx`'s `useFocusTracking("editorTextFocus")`
+    // reports straight into `focusContext`, which in turn fires the
+    // `onDidChange` this same function is subscribed to below — clearing
+    // first guarantees that re-entrant call sees nothing pending and no-ops,
+    // rather than racing a second `.focus()` call on the same node.
+    pendingFocusUriRef.current = undefined;
     textPlaneNodeRef.current?.focus();
-  }, [props.activeDocument?.uri, isFindOpen, focusContext]);
+  }, [focusContext, isFindOpen]);
+
+  useEffect(() => {
+    const uri = props.activeDocument?.uri;
+    if (uri === previousActiveUriRef.current) return; // No transition.
+    previousActiveUriRef.current = uri;
+    pendingFocusUriRef.current = uri; // `undefined` uri: nothing to focus (case 2's precondition).
+    attemptFocus();
+  }, [props.activeDocument?.uri, attemptFocus]);
+
+  // Retries a deferred attempt once whatever guarded it clears (this
+  // component's TSDoc's "A deferred attempt is retried, never discarded").
+  // `onDidChange` fires on ANY context-service key changing, not just the
+  // four this guard reads — deliberately unfiltered, since `attemptFocus`
+  // itself is a cheap no-op whenever nothing is pending (`pendingFocusUriRef`
+  // is `undefined`) or the guard is still active, so over-calling it here
+  // costs nothing and needs no per-key wiring to stay correct as guards
+  // come and go.
+  useEffect(() => {
+    if (!focusContext) return undefined;
+    const subscription = focusContext.onDidChange(() => attemptFocus());
+    return () => subscription.dispose();
+  }, [focusContext, attemptFocus]);
+
   // Stable identity across every render (CodeRabbit finding on PR #59) — a
   // fresh inline arrow here would give `EditorView`'s own `textPlaneRef`
   // `useCallback` (`editorView.tsx`, deps include `onTextPlaneNode`) a new
