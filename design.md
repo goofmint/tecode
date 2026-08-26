@@ -215,6 +215,8 @@ Owns the `Map<UriString, Document>`, exposes `tecode.workspace.openDocument/docu
 
 Layout state `{ sidebarVisible, sidebarWidth, panelVisible, panelHeight, activeView }` persists to `~/.config/tecode/state.json` on change (debounced) and on exit (*Req 6.4*).
 
+**Initial editor focus** (*Req 6.7*): `EditorArea` gives its `EditorView`'s text plane keyboard focus the moment a document becomes the active tab — covering startup with a document already open, the first document opening on an empty workspace, and switching tabs — so typing works with no manual focus action. It skips this whenever the command palette, an input box, the find widget, or the explorer sidebar currently holds focus (read back through the shared context service, since none of those are `EditorArea`'s own descendants), so it never steals focus from something the user deliberately focused.
+
 ### 8.3 EditorView (custom component, decision #2)
 
 Layers, back to front:

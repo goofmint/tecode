@@ -67,6 +67,28 @@ export function ContextFocusTracker(props: ContextFocusTrackerProps): ReactNode 
 }
 
 /**
+ * Returns the {@link ContextService} the nearest {@link ContextFocusTracker}
+ * provides, narrowed to `get` (Req 4.6) — for a component that needs to
+ * READ another region's focus-tracked context key directly (rather than
+ * only report its OWN focus transitions via {@link useFocusTracking}).
+ * `undefined` outside a {@link ContextFocusTracker} — matches this module's
+ * "no-op rather than throw when unwrapped" discipline for
+ * {@link useFocusTracking} itself, and a caller reads it the same way: an
+ * `undefined` context conservatively means "nothing is known to be holding
+ * focus" (`ui/shell.tsx`'s `EditorArea` initial-focus guard, Issue #82, is
+ * the first consumer — it must not steal focus from the command palette
+ * (`quickPickFocus`), an input box (`inputBoxFocus`), the find widget
+ * (`findWidgetFocus`), or the explorer (`explorerFocus`), none of which are
+ * `EditorArea`'s own React descendants: `ModalOverlay` is `Shell`'s
+ * sibling, `Sidebar` is `Shell`'s child — so the only way to see those
+ * keys from inside `EditorArea` is back through this shared
+ * `ContextService`, not through the component tree).
+ */
+export function useFocusContextService(): Pick<ContextService, "get"> | undefined {
+  return useContext(FocusContextServiceContext);
+}
+
+/**
  * Returns a `ref` callback that reports `key`'s value (`true`/`false`) to
  * the {@link ContextFocusTracker}-provided context service whenever the
  * attached OpenTUI node gains or loses focus (this module's TSDoc). A
