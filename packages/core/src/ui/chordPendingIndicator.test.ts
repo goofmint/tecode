@@ -23,6 +23,7 @@ function layersOf(partial: Partial<KeymapLayers>): KeymapLayers {
     defaults: partial.defaults ?? [],
     fallback: partial.fallback ?? [],
     extension: partial.extension ?? [],
+    preset: partial.preset ?? [],
     user: partial.user ?? [],
   };
 }

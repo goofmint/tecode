@@ -57,6 +57,7 @@ function layersOf(partial: Partial<KeymapLayers>): KeymapLayers {
     defaults: partial.defaults ?? [],
     fallback: partial.fallback ?? [],
     extension: partial.extension ?? [],
+    preset: partial.preset ?? [],
     user: partial.user ?? [],
   };
 }
@@ -202,7 +203,7 @@ describe("createKeybindingsCommandsHandlers — ensureFile (Req 4.2, 11.7)", () 
 });
 
 describe("createKeybindingsCommandsHandlers — resolveTable (Req 11.7)", () => {
-  test("flattens every visible binding across all four layers, sorted by key, with source-layer attribution", async () => {
+  test("flattens every visible binding across all five layers, sorted by key, with source-layer attribution", async () => {
     const { fs } = createFakeFs();
     const table = createBindingTable(
       layersOf({
@@ -211,6 +212,7 @@ describe("createKeybindingsCommandsHandlers — resolveTable (Req 11.7)", () => 
         extension: [
           { key: "ctrl+shift+r", command: "demo.run", extensionId: "demo.ext" },
         ],
+        preset: [{ key: "ctrl+e", command: "editor.action.cursorEnd" }],
         user: [{ key: "ctrl+alt+z", command: "user.command", when: "editorFocus" }],
       }),
       { log: createHostLog() },
@@ -225,6 +227,7 @@ describe("createKeybindingsCommandsHandlers — resolveTable (Req 11.7)", () => 
 
     expect(rows).toEqual([
       { key: "ctrl+alt+z", command: "user.command", layer: "user", when: "editorFocus" },
+      { key: "ctrl+e", command: "editor.action.cursorEnd", layer: "preset" },
       { key: "ctrl+s", command: "editor.action.save", layer: "defaults" },
       {
         key: "ctrl+shift+alt+p",

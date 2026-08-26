@@ -37,6 +37,25 @@ import type { ConfigurationContribution, Disposable } from "@tecode/api";
  */
 export const DEFAULT_COLOR_THEME_ID = "tecode.dark-modern";
 
+/**
+ * `keybindings.preset`'s default value (Req 4.8, design.md §6.6, Issue
+ * #81 Phase 2) — the `keymap/presetKeybindings.ts`'s
+ * `DEFAULT_KEYBINDING_PRESET_NAME` value, DUPLICATED here as a literal
+ * string for the SAME reason {@link DEFAULT_COLOR_THEME_ID} above
+ * duplicates `themes-default`'s theme id rather than importing it: unlike
+ * that case this isn't a `core`/`builtin` layering constraint (both
+ * `config/` and `keymap/` live inside `core`), but `config/` has no
+ * EXISTING import from `keymap/` anywhere in this codebase today — only
+ * the reverse (`keymap/fallbackKeybindings.ts`'s `../config/jsonc`) — and
+ * introducing a brand-new `config -> keymap` edge for one literal string
+ * is not worth it. Kept in sync by hand;
+ * `packages/cli/src/keybindingPresets.test.ts` asserts this literal
+ * equals the real `DEFAULT_KEYBINDING_PRESET_NAME` export, so a drift
+ * between the two fails a test rather than silently resolving to the
+ * wrong default.
+ */
+export const DEFAULT_KEYBINDING_PRESET = "default";
+
 /** The narrow slice of `ConfigService` {@link registerCoreConfiguration}
  * needs — the same shape as `host/registration.ts`'s `ConfigRegistrar`,
  * duplicated locally rather than imported so `config/` never depends on
@@ -61,7 +80,17 @@ export interface CoreConfigRegistrar {
  * rather than `ThemeRegistry`'s bare `BASE_THEME_ID` fallback palette, so
  * a fresh install with no `settings.json` entry still resolves to a real,
  * always-present, VS-Code-equivalent theme (Req 11.4) from the very first
- * frame. */
+ * frame; `keybindings.preset` (Req 4.8, design.md §6.6, Issue #81
+ * Phase 2) selects a bundled keybinding scheme by name
+ * (`keymap/presetKeybindings.ts`'s `KEYBINDING_PRESET_NAMES` —
+ * `"default"`/`"emacs"`/`"windows"`), defaulting to
+ * {@link DEFAULT_KEYBINDING_PRESET} (no preset — the `preset` layer
+ * resolves to `[]`), applied and live-reloaded by `packages/cli/src/
+ * main.ts`'s `buildAssemblyRoot` exactly like `workbench.colorTheme`
+ * (`ui/themeConfigSync.ts`'s wiring pattern). An unrecognized value
+ * degrades to no preset with a logged warning
+ * (`resolveKeybindingPreset`'s own TSDoc) rather than throwing or
+ * crashing startup. */
 export const CORE_CONFIGURATION: ConfigurationContribution = {
   title: "Editor",
   properties: {
@@ -84,6 +113,12 @@ export const CORE_CONFIGURATION: ConfigurationContribution = {
       type: "string",
       default: DEFAULT_COLOR_THEME_ID,
       description: "The id of the active color theme.",
+    },
+    "keybindings.preset": {
+      type: "string",
+      default: DEFAULT_KEYBINDING_PRESET,
+      description:
+        'A bundled keybinding scheme to layer over the defaults: "default" (none), "emacs", or "windows".',
     },
   },
 };

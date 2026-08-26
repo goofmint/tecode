@@ -188,6 +188,7 @@ async function loadSamplesThroughRealPath(settingsText: string, keybindingsText:
       defaults: [...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS],
       fallback: BUNDLED_FALLBACK_KEYBINDINGS,
       extension: loadResult.extensionKeybindings,
+      preset: [],
       user: userKeybindingEntries as KeybindingContribution[],
     },
     { log: bindingTableLog },

@@ -163,3 +163,60 @@ test("a user keybindings.json entry still rebinds tab.close (a core-reserved com
   expect(resolved?.command).toBe(TAB_CLOSE_COMMAND);
   expect(resolved?.layer).toBe("user");
 });
+
+// --- Issue #81 Phase 2: the `preset` layer (Req 12.2, design.md §6.6).
+// `preset` sits ABOVE `extension`, deliberately (`@tecode/core`'s
+// `bindingTable.ts`'s `KeymapLayers` TSDoc spells out why) — the tests
+// below prove that ordering directly, not just that the layer exists.
+
+test("setPresetEntries rebuilds the table with the preset layer (Req 12.2)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setPresetEntries([{ key: "ctrl+e", command: "editor.action.cursorEnd" }]);
+
+  const resolved = state.getTable().lookup("ctrl+e", () => undefined);
+  expect(resolved?.command).toBe("editor.action.cursorEnd");
+  expect(resolved?.layer).toBe("preset");
+});
+
+test("a preset entry outranks a defaults-layer binding on the same key", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log, [{ key: "ctrl+k", command: "defaults.command" }]);
+  state.setPresetEntries([{ key: "ctrl+k", command: "editor.action.deleteLine" }]);
+
+  const resolved = state.getTable().lookup("ctrl+k", () => undefined);
+  expect(resolved?.command).toBe("editor.action.deleteLine");
+  expect(resolved?.layer).toBe("preset");
+});
+
+test("a preset entry outranks an EXTENSION entry on the same key — the whole point of a bundled preset (Req 12.2)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setExtensionEntries([{ key: "ctrl+f", command: "editor.action.find" }]);
+  state.setPresetEntries([{ key: "ctrl+f", command: "editor.action.cursorRight" }]);
+
+  const resolved = state.getTable().lookup("ctrl+f", () => undefined);
+  expect(resolved?.command).toBe("editor.action.cursorRight");
+  expect(resolved?.layer).toBe("preset");
+});
+
+test("a user entry outranks a preset entry on the same key — user bindings always win (Req 12.2)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setPresetEntries([{ key: "ctrl+f", command: "editor.action.cursorRight" }]);
+  state.setUserEntries([{ key: "ctrl+f", command: "user.command" }]);
+
+  const resolved = state.getTable().lookup("ctrl+f", () => undefined);
+  expect(resolved?.command).toBe("user.command");
+  expect(resolved?.layer).toBe("user");
+});
+
+test("later setPresetEntries calls fully replace the previous preset layer", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setPresetEntries([{ key: "ctrl+e", command: "emacs.one" }]);
+  state.setPresetEntries([{ key: "ctrl+a", command: "emacs.two" }]);
+
+  expect(state.getTable().lookup("ctrl+e", () => undefined)).toBeUndefined();
+  expect(state.getTable().lookup("ctrl+a", () => undefined)?.command).toBe("emacs.two");
+});

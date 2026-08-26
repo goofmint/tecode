@@ -32,6 +32,12 @@
   // instead of a literal "\t".
   "editor.insertSpaces": true,
 
+  // A bundled keybinding scheme layered over the defaults (Req 4.8):
+  // "default" (none, shown here), "emacs", or "windows". See README.md's
+  // "Bundled keybinding presets" section for exactly what each one binds.
+  // Takes effect immediately on save, no restart needed.
+  "keybindings.preset": "default",
+
   // --- explorer (packages/builtin/explorer/manifest.ts) ---
 
   // Show hidden (dot-prefixed) and .gitignore-ignored files in the
