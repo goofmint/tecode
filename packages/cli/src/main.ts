@@ -85,6 +85,10 @@ import {
 import { join as joinPath } from "node:path";
 import { resolveConfigDirOverride, resolveStartupTarget, type StartupTarget } from "./argv";
 import { buildExtensionDirMap, buildExtensionRecords } from "./extensionRecords";
+import {
+  applyConfiguredKeybindingPreset as applyConfiguredKeybindingPresetImpl,
+  wireKeybindingPresetConfigSync,
+} from "./keybindingPresetConfigSync";
 import { createKeymapState, type KeymapState } from "./keymapState";
 import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
 import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./renderShell";
@@ -289,6 +293,32 @@ export interface AssemblyRoot {
    * empty fallback layer.
    */
   applyKittyKeyboardVerdict(isKittyCapable: boolean): Promise<void>;
+  /**
+   * Re-resolve the `keybindings.preset` setting (Req 4.8, design.md
+   * §6.6, Issue #81 Phase 2) via `@tecode/core`'s `resolveKeybindingPreset`
+   * and feed the result into `keymap`'s `preset` layer via
+   * `keymap.setPresetEntries` — the SAME two-call-site pattern
+   * `ui/themeConfigSync.ts`'s `applyConfiguredTheme` uses for
+   * `workbench.colorTheme`: `runTecode` calls this once, explicitly, after
+   * `config.ready` settles (reading `config.get(...)` any earlier would
+   * only ever see the schema default, `"default"` — `ThemeConfigSync`'s own
+   * TSDoc explains why), and {@link keybindingPresetConfigSync} below calls
+   * it again on every live `keybindings.preset` change. A non-string or
+   * missing config value falls back to `"default"`
+   * (`config/coreDefaults.ts`'s `DEFAULT_KEYBINDING_PRESET`).
+   * Synchronous and never throws: `resolveKeybindingPreset` itself never
+   * throws (that function's own TSDoc), and any other unexpected failure
+   * is caught and logged rather than propagated, degrading to an empty
+   * preset layer — matching {@link applyKittyKeyboardVerdict}'s own
+   * defensive posture for the sibling `fallback` layer.
+   */
+  applyConfiguredKeybindingPreset(): void;
+  /** Live `keybindings.preset` config-change subscription (Req 4.8,
+   * design.md §6.6) — mirrors {@link themeConfigSync}'s
+   * `workbench.colorTheme` wiring, just for the `preset` layer instead of
+   * the active theme. Disposed alongside every other startup-owned
+   * subscription in {@link wireProcessExit}. */
+  keybindingPresetConfigSync: Disposable;
   /** The live two-stroke chord state machine (Req 4.4, design.md §6.1,
    * §6.3), built once here against a small forwarding view over `keymap`
    * (see this function's TSDoc's "Live keymap table view") so it always
@@ -683,6 +713,16 @@ export function buildAssemblyRoot(
   // just called once from the composition root instead of from manifest
   // registration (`config/coreDefaults.ts`'s TSDoc).
   registerCoreConfiguration(config);
+
+  // `AssemblyRoot.applyConfiguredKeybindingPreset`/`keybindingPresetConfigSync`
+  // — see those fields' TSDoc. `keybindingPresetConfigSync.ts`'s own TSDoc
+  // explains why this pair lives in a dedicated `cli`-local module (mirroring
+  // `ui/themeConfigSync.ts`'s `applyConfiguredTheme`/`wireThemeConfigSync`)
+  // rather than being defined inline here.
+  const applyConfiguredKeybindingPreset = () =>
+    applyConfiguredKeybindingPresetImpl({ config, keymap, log });
+  const keybindingPresetConfigSync = wireKeybindingPresetConfigSync({ config, keymap, log });
+
   const context = createContextService();
 
   const layoutState = createLayoutStateService({ log, sink });
@@ -916,6 +956,8 @@ export function buildAssemblyRoot(
     workspaceRoot,
     keymap,
     applyKittyKeyboardVerdict,
+    applyConfiguredKeybindingPreset,
+    keybindingPresetConfigSync,
     chordMachine,
     chordPendingIndicator,
     editorSession,
@@ -1154,6 +1196,7 @@ export interface ShutdownRoot {
   editorSession: Pick<Disposable, "dispose">;
   editorLangIdSync: Pick<Disposable, "dispose">;
   themeConfigSync: Pick<Disposable, "dispose">;
+  keybindingPresetConfigSync: Pick<Disposable, "dispose">;
   themeSelectCommand: Pick<Disposable, "dispose">;
   openFileCommand: Pick<Disposable, "dispose">;
   tabCommands: Pick<Disposable, "dispose">;
@@ -1242,6 +1285,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.editorSession.dispose();
       root.editorLangIdSync.dispose();
       root.themeConfigSync.dispose();
+      root.keybindingPresetConfigSync.dispose();
       root.themeSelectCommand.dispose();
       root.openFileCommand.dispose();
       root.tabCommands.dispose();
@@ -1428,6 +1472,17 @@ export async function runTecode(
   // theme — `runDeferredPhase` retries this once discovery's own
   // `loadContributions` settles).
   applyConfiguredTheme(root.config, root.themeService);
+
+  // Apply the ACTUAL configured `keybindings.preset` now that `config.ready`
+  // has settled (Req 4.8, design.md §6.6) — same "schema default only, until
+  // ready" reasoning as `workbench.colorTheme` above
+  // (`AssemblyRoot.applyConfiguredKeybindingPreset`'s TSDoc), but with no
+  // `themesReadyPromise`-equivalent second call needed: unlike a theme id, a
+  // preset name never depends on anything `loadExtensions`/discovery
+  // discovers (`keymap/presetKeybindings.ts`'s fixed, closed
+  // `KEYBINDING_PRESET_NAMES` set) — this one call is the whole of the
+  // initial application.
+  root.applyConfiguredKeybindingPreset();
 
   const { shutdown } = wireProcessExit(root);
 

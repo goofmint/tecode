@@ -100,6 +100,7 @@ function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {})
     editorSession: disposable(),
     editorLangIdSync: disposable(),
     themeConfigSync: disposable(),
+    keybindingPresetConfigSync: disposable(),
     themeSelectCommand: disposable(),
     openFileCommand: disposable(),
     tabCommands: disposable(),
@@ -232,7 +233,7 @@ test("createShutdown's returned function is idempotent: destroy-then-signal runs
   await Promise.all([destroyCall, signalCall]);
 
   expect(calls.flush).toBe(1);
-  expect(calls.dispose).toBe(18); // one per disposable field in ShutdownRoot
+  expect(calls.dispose).toBe(19); // one per disposable field in ShutdownRoot
   expect(calls.disposeAll).toBe(1);
 });
 
@@ -248,7 +249,7 @@ test("createShutdown's returned function is idempotent: signal-then-destroy runs
   await Promise.all([signalCall, destroyCall]);
 
   expect(calls.flush).toBe(1);
-  expect(calls.dispose).toBe(18);
+  expect(calls.dispose).toBe(19);
   expect(calls.disposeAll).toBe(1);
 
   // A THIRD call, after the sequence has already fully settled, is still
@@ -256,7 +257,7 @@ test("createShutdown's returned function is idempotent: signal-then-destroy runs
   // from as many quit paths as ever call it).
   await shutdown();
   expect(calls.flush).toBe(1);
-  expect(calls.dispose).toBe(18);
+  expect(calls.dispose).toBe(19);
   expect(calls.disposeAll).toBe(1);
 });
 

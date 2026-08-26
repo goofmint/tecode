@@ -138,13 +138,14 @@ currently code-sign or notarize release binaries.
 ## Keybindings reference
 
 Default keybindings, VS Code-compatible (`{ key, command, when? }`, Req
-4.1-4.2) and resolved in this precedence, lowest to highest (Req 4.1,
+4.1-4.2) and resolved in this precedence, lowest to highest (Req 4.1, 4.8,
 `packages/core/src/keymap/bindingTable.ts`): **core defaults** → the
 **terminal-capability fallback keymap** (see "Fallback keymap" below) →
-**extension-contributed** bindings → the **user's own `keybindings.json`**,
-which always wins. Every key string below is already in this codebase's
-canonical lowercase `mod+...+key` form (`keymap/normalize.ts`); `return`
-is Enter's real key name, not `enter`.
+**extension-contributed** bindings → the active **bundled keybinding
+preset** (see "Bundled keybinding presets" below) → the **user's own
+`keybindings.json`**, which always wins. Every key string below is
+already in this codebase's canonical lowercase `mod+...+key` form
+(`keymap/normalize.ts`); `return` is Enter's real key name, not `enter`.
 
 This table includes two default-binding sources beyond the four built-in
 extension manifests: `MODAL_DEFAULT_KEYBINDINGS` and
@@ -233,6 +234,54 @@ for the capability, not a specific shortcut per action).
 |---|---|
 | `ctrl+k ctrl+s` | Open Keyboard Shortcuts (JSON) — a two-stroke chord (Req 4.4) |
 
+### Bundled keybinding presets (Req 4.8)
+
+Set `keybindings.preset` in `settings.json` to layer a bundled keybinding
+scheme over the defaults above, without hand-editing `keybindings.json`
+yourself. Valid values: `"default"` (none — the schema default), `"emacs"`,
+`"windows"`. Changing the setting takes effect immediately, no restart.
+There is deliberately no `"vim"` preset: every `when` context in this
+codebase (`editorTextFocus`, `editorFocus`, `quickPickFocus`,
+`inputBoxFocus`, `findWidgetFocus`, `explorerFocus`, `editorLangId`) is
+purely focus-based, with no mode concept a non-modal `"vim"` preset could
+honestly model.
+
+**`"emacs"`** (`packages/core/src/keymap/presets/emacs.json`), while an
+editor text buffer is focused:
+
+| Key | Command | Note |
+|---|---|---|
+| `ctrl+a` / `ctrl+e` | Cursor to line start / end | |
+| `ctrl+f` / `ctrl+b` | Cursor right / left | Overrides the default `ctrl+f` (open find) |
+| `ctrl+n` / `ctrl+p` | Cursor down / up | Overrides the default `ctrl+p` (quick-open) while editor text is focused |
+| `alt+f` / `alt+b` | Cursor word right / left | |
+| `ctrl+k` | Delete line (kill-line) | |
+| `ctrl+s` | Open find (isearch-forward) | Overrides the default `ctrl+s` (save) |
+| `ctrl+x ctrl+s` | Save file | Emacs's own save-buffer chord, replacing `ctrl+s` above |
+
+Pressing plain `ctrl+k` under this preset deletes the line directly — it
+does **not** wait for a second stroke. Making that true takes one more
+entry the table above doesn't show: `keybindings-editor`'s own
+`ctrl+k ctrl+s` chord (see "Keybindings editor" above) is removed via
+`{ "key": "ctrl+k ctrl+s", "command": "-keybindings.open" }`, because a
+chord's prefix always wins over a same-key exact match
+(`packages/core/src/keymap/chords.ts`) — left in place, it would make
+every `ctrl+k` press sit in a pending state waiting for `ctrl+s` instead
+of ever reaching this preset's own kill-line binding.
+
+**`"windows"`** (`packages/core/src/keymap/presets/windows.json`) is
+intentionally small: this codebase's defaults are already
+VS-Code-on-Windows/Linux-shaped throughout, so there is little left to
+change. The one real difference is that the default line-move/duplicate
+bindings above (`alt+meta+up` / `alt+meta+down` / `shift+alt+meta+down`)
+carry a macOS-only `meta` (Cmd) modifier; this preset adds the
+Windows/Linux-native equivalents alongside them:
+
+| Key | Command |
+|---|---|
+| `alt+up` / `alt+down` | Move line up / down |
+| `shift+alt+down` | Duplicate line |
+
 ### Quick pick / input box navigation (core `MODAL_DEFAULT_KEYBINDINGS`)
 
 Active only while the command palette, quick-open, or an input box (e.g.
@@ -287,6 +336,7 @@ exist yet:
 | `editor.tabSize` | number | `4` | core | The number of spaces a tab is equal to. |
 | `editor.insertSpaces` | boolean | `true` | core | Insert spaces (up to the next tab stop) instead of a literal tab when pressing Tab. |
 | `explorer.showHidden` | boolean | `false` | `explorer` built-in extension (`builtin/explorer/manifest.ts`) | Show hidden (dot-prefixed) and `.gitignore`-ignored files in the explorer sidebar. |
+| `keybindings.preset` | string | `"default"` | core (`config/coreDefaults.ts`) | A bundled keybinding scheme layered over the defaults — `"default"` (none), `"emacs"`, or `"windows"` (Req 4.8). See "Bundled keybinding presets" above. |
 | `editor.wordWrap` | — | — | **not implemented** | Named by Req 9.5. No `contributes.configuration` schema registers this key, and nothing in `packages/` reads `config.get("editor.wordWrap")` outside of test fixtures exercising the config-merge machinery in the abstract (`packages/core/src/config/service.test.ts`, `themeSettingsWriter.test.ts`) — those tests use the string purely as a generic example key, not as evidence of a real word-wrap feature. Verified by grepping the whole `packages/` tree for both the key string and any wrap-related rendering logic in `EditorView`; there is none. |
 | `files.autoSave` | — | — | **not implemented** | Named by Req 9.5. No schema registers it, and no reader ever calls `config.get("files.autoSave")` anywhere in `packages/` (verified the same way as `editor.wordWrap` above — a plain grep for the key string found zero matches at all, not even in a test fixture). |
 

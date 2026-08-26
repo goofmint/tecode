@@ -1,0 +1,5 @@
+[
+  { "key": "alt+up", "command": "editor.action.moveLinesUp", "when": "editorTextFocus" },
+  { "key": "alt+down", "command": "editor.action.moveLinesDown", "when": "editorTextFocus" },
+  { "key": "shift+alt+down", "command": "editor.action.duplicateLine", "when": "editorTextFocus" }
+]
