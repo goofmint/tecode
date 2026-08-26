@@ -133,6 +133,41 @@ export interface ShellRenderDeps {
    * TSDoc's "First frame for a headless run").
    */
   onCapabilitiesResolved?: (capabilitiesValue: unknown) => void;
+  /**
+   * Fires once the real `CliRenderer` has been destroyed (Issue #84, Req
+   * 12.3) — wired straight through to `createCliRenderer`'s own
+   * `onDestroy` config callback ({@link renderShellToTerminal}, below).
+   * This is the ONLY reliable "the editor is quitting" signal for an
+   * interactive Ctrl+C: `createCliRenderer()` puts stdin in raw mode,
+   * which disables signal generation, so Ctrl+C never reaches Node as a
+   * real `SIGINT` — OpenTUI's own `exitOnCtrlC` key handling (default
+   * `true`) intercepts the `\x03` byte itself and calls
+   * `CliRenderer.destroy()` directly, bypassing `SIGINT` entirely.
+   *
+   * `destroy()`'s `finalizeDestroy()` never calls `process.exit` (checked
+   * against the pinned `@opentui/core@0.1.107` bundle) — the process exits
+   * naturally once the event loop drains, so `main.ts`'s `runTecode` can
+   * safely start async cleanup here (`shutdown()`) and let its own
+   * pending I/O keep the process alive until that cleanup genuinely
+   * finishes, with no `process.exit` call needed from this callback.
+   * `onDestroy` (a plain `CliRendererConfig` field) was chosen over
+   * subscribing to the `CliRenderEvents.DESTROY` event this module
+   * already uses for `CAPABILITIES` below: `finalizeDestroy()` emits
+   * `"destroy"` BEFORE it finishes tearing down the renderable tree/
+   * console/native renderer, via a plain `EventEmitter.emit` that does
+   * NOT catch a throwing listener — and by the time it emits, `destroy()`
+   * has already removed the renderer's own `uncaughtException` handler
+   * (`cleanupBeforeDestroy()` runs first), so a listener that threw would
+   * escape uncaught and abort the rest of that teardown. `onDestroy`, by
+   * contrast, runs at the very END of `finalizeDestroy()` (after the
+   * renderer has fully torn itself down) and is already wrapped in its
+   * OWN try/catch internally — a second, library-provided guard on top of
+   * this callback's own (`runTecode`'s TSDoc on why it never throws
+   * either). Optional and never required: {@link renderShellHeadless}
+   * never calls this (no real `CliRenderer` exists to destroy), matching
+   * every other optional dependency in this module.
+   */
+  onDestroy?: () => void;
 }
 
 /** The render seam's shape: resolves once "first frame" has happened (see
@@ -157,7 +192,11 @@ export type RenderShell = (deps: ShellRenderDeps) => Promise<void>;
  * so `idle()` cannot hang here.
  */
 export const renderShellToTerminal: RenderShell = async (deps) => {
-  const renderer = await createCliRenderer();
+  // `onDestroy: deps.onDestroy` (Issue #84, Req 12.3, this module's
+  // `ShellRenderDeps.onDestroy` TSDoc): `undefined` when the caller
+  // doesn't supply one, which `createCliRenderer` treats identically to
+  // the field being omitted entirely.
+  const renderer = await createCliRenderer({ onDestroy: deps.onDestroy });
   const root = createRoot(renderer);
   root.render(
     <ThemeProvider theme={deps.theme} themeService={deps.themeService}>
