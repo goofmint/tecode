@@ -128,7 +128,7 @@ The keymap service subscribes to OpenTUI's parsed key events at the shell root (
 
 ### 6.2 Resolution model
 
-At load time the service builds a single ordered binding table from three layers (*Req 4.1*): core defaults, then extension manifest bindings, then user `keybindings.json` — later entries take precedence, and a user entry `{ key, command: "-x" }` inserts a *removal* record that masks earlier bindings of `x` on that key (*Req 4.3*). Lookup normalizes key strings (`ctrl+shift+p` — order-insensitive modifiers, lowercase key) into a canonical form used as the table key.
+At load time the service builds a single ordered binding table from five layers (*Req 4.1*), lowest precedence first: core defaults, the terminal-capability `fallback` overlay (§6.5), extension manifest bindings, the selected `preset` (§6.6), and finally the user's own `keybindings.json` — later entries take precedence, and an entry `{ key, command: "-x" }` inserts a *removal* record that masks strictly-earlier bindings of `x` on that key (*Req 4.3*); because masking and override are both order-directional, a layer can only cancel or beat one BELOW it. Lookup normalizes key strings (`ctrl+shift+p` — order-insensitive modifiers, lowercase key) into a canonical form used as the table key.
 
 ### 6.3 Chords
 

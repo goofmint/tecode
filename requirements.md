@@ -78,7 +78,7 @@ The following points were open in the draft specification and are resolved here 
 
 #### Acceptance Criteria
 
-1. THE system SHALL resolve keybindings with this precedence: user `keybindings.json` first, then extension manifest keybindings, then core defaults.
+1. THE system SHALL resolve keybindings with this precedence, highest first: user `keybindings.json`, then the selected bundled preset (4.8), then extension manifest keybindings, then the terminal-capability fallback overlay (4.7), then core defaults.
 2. THE `keybindings.json` format SHALL be VS Code-compatible: an array of `{ "key", "command", "when"? }` entries.
 3. WHEN an entry's command is prefixed with `-` (e.g. `"-editor.action.foo"`), THE system SHALL remove the matching default binding.
 4. THE system SHALL support two-stroke chord sequences (e.g. `ctrl+k ctrl+s`) using the `@opentui/keymap` sequence engine.
