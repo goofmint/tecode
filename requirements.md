@@ -85,6 +85,7 @@ The following points were open in the draft specification and are resolved here 
 5. THE system SHALL evaluate `when` clauses supporting: the context keys `editorFocus`, `editorTextFocus`, `terminalFocus`, `explorerFocus`; equality tests such as `editorLangId == 'ts'`; and the operators `&&`, `||`, `!`. No other expression syntax is required in the MVP.
 6. THE system SHALL provide `tecode.context.set(key, value)` and `tecode.context.get(key)` so extensions can define context keys used in `when` clauses.
 7. WHEN tecode starts on a terminal that does not support the Kitty Keyboard Protocol, THE system SHALL detect this and overlay the fallback keymap from `keybindings.fallback.json` so that otherwise-indistinguishable combinations (e.g. `ctrl+shift+*`) remain usable.
+8. THE system SHALL provide bundled keybinding presets — `"emacs"` and `"windows"` — selectable via a `keybindings.preset` setting (default `"default"`, meaning no preset), layered above extension-contributed bindings and below the user's own `keybindings.json`, so a preset may override an extension's default binding but a user override always wins; changing the setting SHALL take effect immediately, without a restart.
 
 ### Requirement 5: Documents and Text Buffer
 
