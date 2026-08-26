@@ -31,7 +31,7 @@
  */
 
 import { expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostLog, type ChordScheduler } from "@tecode/core";
@@ -139,14 +139,42 @@ test("runTecode wires the render seam's onDestroy hook to shutdown(), which flus
     // normal interactive quit (Issue #84) — `destroy()` synchronously
     // invokes `onDestroy`, which `runTecode` wires straight to
     // `shutdown()` (`main.ts`'s TSDoc).
+    //
+    // `onDestroy` now itself calls `process.exit(0)` once `shutdown()`
+    // settles (`void shutdown().finally(() => process.exit(0))` — see the
+    // "onDestroy calls process.exit(0)..." test below for why), and that
+    // settling can happen within a couple of microtask ticks once
+    // `performShutdown()`'s last `await` resolves — far faster than any
+    // real timer this fixture could poll on. So rather than racing that
+    // exit with a `setTimeout`-based poll loop (which lost this exact
+    // race when first tried — the internal exit consistently won),
+    // this fixture registers a SYNCHRONOUS `process.on("exit", ...)`
+    // listener before firing `onDestroy`. Node/Bun always runs "exit"
+    // listeners synchronously as part of process teardown — whether
+    // triggered by our own explicit `process.exit(0)` or by the process
+    // draining naturally — so by the time it runs, `shutdown()` (real
+    // fix) or nothing at all (mutated-away wiring) has already
+    // deterministically finished happening; verified empirically that
+    // Bun reliably flushes a `console.log` made inside this handler to a
+    // piped stdout in both cases.
+    //
+    // `theme.select`'s command registration — disposed synchronously by
+    // `performShutdown`, with no OTHER path that ever removes it — is the
+    // decisive signal, not `state.json`'s content: `layoutState.update()`
+    // below arms a REAL 250ms debounced write regardless of whether
+    // `shutdown()` ever runs, so if `onDestroy` were entirely missing
+    // (this file's mutation check), the process would still eventually
+    // exit once that real timer elapses and fire this SAME "exit"
+    // listener — with `theme.select` still registered (proving the
+    // teardown never ran) even though `state.json` might, by then, have
+    // been written anyway by the unrelated debounce. `hasThemeSelect`
+    // is asserted false; `state.json`'s content is asserted only as a
+    // bonus confirmation, meaningful precisely because `hasThemeSelect`
+    // already established the real teardown ran.
     await writeFile(
       fixturePath,
       `import { runTecode } from ${JSON.stringify(mainPath)};
       import { readFileSync } from "node:fs";
-
-      function hasThemeSelect(root) {
-        return root.commands.list().some((c) => c.id === "theme.select");
-      }
 
       async function main() {
         let capturedOnDestroy;
@@ -158,36 +186,23 @@ test("runTecode wires the render seam's onDestroy hook to shutdown(), which flus
           },
         });
 
-        if (!hasThemeSelect(result.root)) {
-          console.log(JSON.stringify({ event: "fixture.badPrecondition" }));
-          process.exit(1);
-        }
-
         // Dirty the layout state (Req 6.4) so flush() has a real pending
         // write to perform — flush() is a no-op write-wise when nothing is
         // pending (layoutState.ts's own flush/update TSDoc).
         result.root.layoutState.update({ sidebarWidth: 987 });
-        capturedOnDestroy?.();
 
-        // performShutdown (main.ts) disposes theme.select's command
-        // registration STRICTLY AFTER awaiting layoutState.flush() to
-        // completion — so waiting for theme.select to disappear from the
-        // registry is a deterministic, race-free signal that flush()'s
-        // own write has already landed on disk too, without racing
-        // layoutState's own 250ms debounce timer (which would otherwise
-        // write the SAME content on its own, defeating this test's whole
-        // point of proving the DESTROY HOOK caused it).
-        const start = Date.now();
-        while (Date.now() - start < 5000) {
-          if (!hasThemeSelect(result.root)) {
-            const text = readFileSync(${JSON.stringify(statePath)}, "utf8");
-            console.log(JSON.stringify({ event: "fixture.disposedAndFlushed", text }));
-            process.exit(text.includes("987") ? 0 : 1);
-          }
-          await new Promise((r) => setTimeout(r, 5));
-        }
-        console.log(JSON.stringify({ event: "fixture.timeout" }));
-        process.exit(1);
+        process.on("exit", () => {
+          const hasThemeSelect = result.root.commands
+            .list()
+            .some((c) => c.id === "theme.select");
+          let stateContent = null;
+          try {
+            stateContent = readFileSync(${JSON.stringify(statePath)}, "utf8");
+          } catch {}
+          console.log(JSON.stringify({ event: "fixture.exit", hasThemeSelect, stateContent }));
+        });
+
+        capturedOnDestroy?.();
       }
       main();
       `,
@@ -208,10 +223,133 @@ test("runTecode wires the render seam's onDestroy hook to shutdown(), which flus
     ]);
 
     expect(exitCode, `fixture stderr:\n${stderr}\nstdout:\n${stdout}`).toBe(0);
-    expect(stdout).toContain("fixture.disposedAndFlushed");
 
-    const written = JSON.parse(await readFile(statePath, "utf8")) as { sidebarWidth: number };
-    expect(written.sidebarWidth).toBe(987);
+    const exitEvent = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as { event?: string; hasThemeSelect?: boolean; stateContent?: string | null };
+        } catch {
+          return null;
+        }
+      })
+      .find((line) => line?.event === "fixture.exit");
+
+    expect(exitEvent, `fixture stderr:\n${stderr}\nstdout:\n${stdout}`).toBeDefined();
+    // The decisive assertion (this test's own TSDoc): theme.select's
+    // command registration is gone ONLY if the real teardown sequence
+    // (shutdown()) actually ran.
+    expect(exitEvent?.hasThemeSelect).toBe(false);
+
+    const written = JSON.parse(exitEvent?.stateContent ?? "null") as { sidebarWidth?: number } | null;
+    expect(written?.sidebarWidth).toBe(987);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("onDestroy calls process.exit(0) once shutdown() settles, even when layoutState.flush() itself never resolves", async () => {
+  // This is the gap CodeRabbit found in PR #87: `SHUTDOWN_TIMEOUT_MS`
+  // bounds the `shutdown()` PROMISE, not the pending I/O it raced
+  // against. A hung `layoutState.flush()` never lets `performShutdown()`
+  // reach any of its `dispose()` calls, so whatever real handles those
+  // would have closed (`ConfigService`'s `fs.watch` when the watched
+  // files exist, the extension host, etc.) stay open — this fixture
+  // models that directly with its own live, ref'd `setInterval` (rather
+  // than depending on, say, `settings.json` happening to exist in this
+  // hermetic temp `HOME` for a real watcher to attach to) so the failure
+  // mode is reproduced deterministically. Without an explicit
+  // `process.exit(0)` once `shutdown()` settles, a still-live handle like
+  // this would keep the real process running forever — this test proves
+  // the fix (`onDestroy: () => { void shutdown().finally(() => process.exit(0)); }`)
+  // exits anyway, and bounds its own wait (killing the child rather than
+  // hanging this test) so a regression fails cleanly instead of hanging
+  // the whole suite.
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-shutdown-hang-home-"));
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-shutdown-hang-ws-"));
+
+  try {
+    const mainPath = join(import.meta.dir, "main.ts");
+    const fixturePath = join(workspaceDir, "shutdown-hang-fixture.ts");
+    await writeFile(
+      fixturePath,
+      `import { runTecode } from ${JSON.stringify(mainPath)};
+
+      async function main() {
+        let capturedOnDestroy;
+        const result = await runTecode([], {
+          headless: false,
+          builtins: [],
+          renderShell: async (deps) => {
+            capturedOnDestroy = deps.onDestroy;
+          },
+        });
+
+        // A genuinely hung flush(): a promise that never settles, exactly
+        // like a stuck real fs write, WITH a real, still-armed, ref'd
+        // timer behind it — a bare unresolved promise holds no libuv
+        // handle and costs the event loop nothing on its own, so this
+        // interval stands in for whatever real resource(s)
+        // performShutdown()'s later dispose() calls would otherwise have
+        // closed (ConfigService's fs.watch, the extension host, ...) had
+        // \`await root.layoutState.flush()\` ever gotten a chance to
+        // resolve and let them run.
+        result.root.layoutState.flush = () =>
+          new Promise(() => {
+            setInterval(() => {}, 1000);
+          });
+
+        console.log(JSON.stringify({ event: "fixture.ready" }));
+        capturedOnDestroy?.();
+      }
+      main();
+      `,
+      "utf8",
+    );
+
+    const proc = Bun.spawn({
+      cmd: ["bun", "run", fixturePath],
+      cwd: workspaceDir,
+      env: { ...process.env, HOME: homeDir, APPDATA: homeDir },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    // SHUTDOWN_TIMEOUT_MS (2s, real/un-mocked here — this is a real
+    // subprocess) is when `shutdown()` itself is expected to give up;
+    // this margin is generous headroom above that for the subprocess to
+    // then actually call `process.exit` and for Bun to report it exited.
+    const raceTimeoutMs = SHUTDOWN_TIMEOUT_MS + 6_000;
+    let timedOut = false;
+    const exitCode = await Promise.race([
+      proc.exited,
+      new Promise<number>((resolve) => {
+        setTimeout(() => {
+          timedOut = true;
+          resolve(-1);
+        }, raceTimeoutMs);
+      }),
+    ]);
+    if (timedOut) {
+      // Don't leave a hung child (with its own hung timers/watchers)
+      // running in the background just because this assertion is about
+      // to fail.
+      proc.kill();
+    }
+
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text().catch(() => "(stdout unavailable)"),
+      new Response(proc.stderr).text().catch(() => "(stderr unavailable)"),
+    ]);
+
+    expect(
+      timedOut,
+      `fixture did not exit within ${raceTimeoutMs}ms — onDestroy's shutdown() likely settled (after ${SHUTDOWN_TIMEOUT_MS}ms) without ever calling process.exit, leaving the fixture's still-live handle open. stdout:\n${stdout}\nstderr:\n${stderr}`,
+    ).toBe(false);
+    expect(exitCode, `stdout:\n${stdout}\nstderr:\n${stderr}`).toBe(0);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });

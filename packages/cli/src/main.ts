@@ -1530,17 +1530,28 @@ export async function runTecode(
     // `createCliRenderer`'s `onDestroy` config) invokes this synchronously
     // and never calls `process.exit` itself. `shutdown` is the SAME
     // shared, idempotent, timeout-bounded sequence `SIGINT`/`SIGTERM`
-    // already call (`wireProcessExit`'s TSDoc) — fire-and-forget (`void`)
-    // is correct and sufficient here: its own pending `flush()`/
-    // `dispose()` I/O keeps the event loop alive long enough to finish (or
-    // hit `SHUTDOWN_TIMEOUT_MS` and give up), and once it settles with
-    // nothing else scheduled, the process exits on its own with no
-    // `process.exit` call needed from here (`createShutdown`'s TSDoc).
-    // Never throws: `shutdown()` itself is guarded (same TSDoc), so this
-    // callback can't propagate into OpenTUI's `_onDestroy` invocation
-    // either (which wraps it in try/catch anyway — belt and suspenders).
+    // already call below via `wireProcessExit` — wired here EXACTLY the
+    // same way (`void shutdown().finally(() => process.exit(0))`), not
+    // fire-and-forget: `SHUTDOWN_TIMEOUT_MS` bounds the `shutdown()`
+    // PROMISE, not the pending `flush()`/`dispose()` I/O it raced against
+    // — a genuinely hung `layoutState.flush()` keeps that I/O outstanding
+    // even after `shutdown()` gives up and resolves, which would keep the
+    // event loop (and the process) alive forever with no explicit exit
+    // call to end it, defeating the entire point of the timeout (an
+    // unquittable editor is exactly what `onDestroy` — over
+    // `exitOnCtrlC: false` — was chosen to avoid). Calling
+    // `process.exit(0)` here costs nothing in the healthy case: `shutdown()`
+    // only resolves once `performShutdown()` has genuinely finished (the
+    // timer branch is the only way to resolve early, and that IS the
+    // give-up path), so by the time this `.finally` runs, either
+    // everything already completed or the timeout already decided not to
+    // wait any longer — either way there's nothing further worth blocking
+    // exit on. Never throws: `shutdown()` itself is guarded (same TSDoc),
+    // so this callback can't propagate into OpenTUI's `_onDestroy`
+    // invocation either (which wraps it in try/catch anyway — belt and
+    // suspenders).
     onDestroy: () => {
-      void shutdown();
+      void shutdown().finally(() => process.exit(0));
     },
   });
 

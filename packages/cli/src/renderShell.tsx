@@ -145,11 +145,19 @@ export interface ShellRenderDeps {
    * `CliRenderer.destroy()` directly, bypassing `SIGINT` entirely.
    *
    * `destroy()`'s `finalizeDestroy()` never calls `process.exit` (checked
-   * against the pinned `@opentui/core@0.1.107` bundle) — the process exits
-   * naturally once the event loop drains, so `main.ts`'s `runTecode` can
-   * safely start async cleanup here (`shutdown()`) and let its own
-   * pending I/O keep the process alive until that cleanup genuinely
-   * finishes, with no `process.exit` call needed from this callback.
+   * against the pinned `@opentui/core@0.1.107` bundle), so `main.ts`'s
+   * `runTecode` starts async cleanup here (`shutdown()`) and, once it
+   * settles, explicitly calls `process.exit(0)` itself — mirroring
+   * exactly what it already does on `SIGINT`/`SIGTERM`
+   * (`void shutdown().finally(() => process.exit(0))`), rather than
+   * relying on the process to exit "naturally" once its own pending I/O
+   * happens to drain the event loop: `shutdown()` is raced against a
+   * bounded timeout precisely so a hung `flush()`/`dispose()` cannot hang
+   * the process forever, but that timeout only bounds the `shutdown()`
+   * PROMISE — it does not cancel the pending I/O behind it — so without
+   * an explicit exit call here, a genuinely hung disposal would still
+   * leave the process (and the editor) unquittable even after `shutdown()`
+   * itself has given up (`createShutdown`'s own TSDoc in `main.ts`).
    * `onDestroy` (a plain `CliRendererConfig` field) was chosen over
    * subscribing to the `CliRenderEvents.DESTROY` event this module
    * already uses for `CAPABILITIES` below: `finalizeDestroy()` emits
