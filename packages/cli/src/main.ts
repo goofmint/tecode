@@ -51,6 +51,7 @@ import {
   wireEditorLangIdContext,
   wireThemeConfigSync,
   type BindingTable,
+  type ChordScheduler,
   type ChordStateMachine,
   type CommandRegistry,
   type ConfigService,
@@ -1149,44 +1150,219 @@ export interface RunTecodeOptions {
   configDir?: string;
 }
 
-/** Sets up graceful-shutdown handling (Phase 3's "wire process-exit
- * disposeAll"). A synchronous Node/Bun `"exit"` handler cannot await async
- * cleanup, so this listens for `SIGINT`/`SIGTERM` instead — the standard
- * pattern for a CLI that needs to flush/dispose before actually exiting —
- * and calls `process.exit(0)` itself once cleanup settles. Idempotent: a
- * second signal while shutdown is already in flight is a no-op. */
-function wireProcessExit(root: AssemblyRoot): void {
-  let shuttingDown = false;
-  const shutdown = async (): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    await root.layoutState.flush();
-    root.config.dispose();
-    root.chordPendingIndicator.dispose();
-    root.chordMachine.dispose();
-    root.findService.dispose();
-    root.editorSession.dispose();
-    root.editorLangIdSync.dispose();
-    root.themeConfigSync.dispose();
-    root.keybindingPresetConfigSync.dispose();
-    root.themeSelectCommand.dispose();
-    root.openFileCommand.dispose();
-    root.tabCommands.dispose();
-    root.extensionsReloadCommand.dispose();
-    root.keybindingsCommands.dispose();
-    root.modalCommands.dispose();
-    root.modalService.dispose();
-    root.windowMessageService.dispose();
-    root.hostErrorSink.dispose();
-    root.highlightService.dispose();
-    root.languageRegistry.dispose();
-    await root.hostRef.current?.disposeAll();
+/** The bounded wait {@link createShutdown} allows its teardown sequence
+ * before giving up on it (Req 12.3, design.md §3's shutdown point): "a
+ * couple of seconds", per this task's requirement that a hung `dispose()`/
+ * `flush()` must never prevent the process from exiting — that would
+ * reintroduce exactly the "editor cannot quit" risk `onDestroy` (over
+ * `exitOnCtrlC: false`) was chosen to avoid (this module's `runTecode`
+ * TSDoc on that seam). Exported so a test can assert against it rather
+ * than a magic number. */
+export const SHUTDOWN_TIMEOUT_MS = 2_000;
+
+/** The default {@link ChordScheduler}, backed by the global `setTimeout`/
+ * `clearTimeout` — the exact shape `keymap/chords.ts`'s own (unexported)
+ * `createDefaultScheduler` uses, duplicated here rather than imported
+ * because that one is private to `chords.ts`; the *type* is still the
+ * shared, already-proven injectable-timer seam (this module's
+ * `ShutdownDeps.scheduler` TSDoc). */
+function createDefaultShutdownScheduler(): ChordScheduler {
+  return {
+    set(fn, ms) {
+      return setTimeout(fn, ms);
+    },
+    clear(handle) {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    },
   };
+}
+
+/** Exactly what {@link createShutdown}'s teardown sequence calls on each
+ * {@link AssemblyRoot} field it touches — narrowed per house convention
+ * ("narrowing, not re-implementing", `ChordStateMachineDeps.table`'s
+ * `Pick<BindingTable, "lookup" | "hasSequencePrefix">` is the same
+ * pattern) down to the single method each field is used for, so a test
+ * can hand-roll a fake root with ~20 one-method objects instead of the
+ * full {@link AssemblyRoot} (every real `AssemblyRoot` field already
+ * structurally satisfies this — no cast needed at `wireProcessExit`'s own
+ * call site). */
+export interface ShutdownRoot {
+  log: Pick<HostLog, "append">;
+  layoutState: Pick<LayoutStateService, "flush">;
+  config: Pick<Disposable, "dispose">;
+  chordPendingIndicator: Pick<Disposable, "dispose">;
+  chordMachine: Pick<Disposable, "dispose">;
+  findService: Pick<Disposable, "dispose">;
+  editorSession: Pick<Disposable, "dispose">;
+  editorLangIdSync: Pick<Disposable, "dispose">;
+  themeConfigSync: Pick<Disposable, "dispose">;
+  keybindingPresetConfigSync: Pick<Disposable, "dispose">;
+  themeSelectCommand: Pick<Disposable, "dispose">;
+  openFileCommand: Pick<Disposable, "dispose">;
+  tabCommands: Pick<Disposable, "dispose">;
+  extensionsReloadCommand: Pick<Disposable, "dispose">;
+  keybindingsCommands: Pick<Disposable, "dispose">;
+  modalCommands: Pick<Disposable, "dispose">;
+  modalService: Pick<Disposable, "dispose">;
+  windowMessageService: Pick<Disposable, "dispose">;
+  hostErrorSink: Pick<Disposable, "dispose">;
+  highlightService: Pick<Disposable, "dispose">;
+  languageRegistry: Pick<Disposable, "dispose">;
+  hostRef: { current?: Pick<ExtensionHost, "disposeAll"> };
+}
+
+/** Dependencies {@link createShutdown} reports through rather than owning
+ * directly (design.md §5, §14's injected-collaborator pattern, applied
+ * here exactly as `keymap/chords.ts`'s `ChordStateMachineDeps.scheduler`
+ * applies it to the chord-pending timeout). */
+export interface ShutdownDeps {
+  /** Defaults to the global `setTimeout`/`clearTimeout`. Tests inject a
+   * fake so the {@link SHUTDOWN_TIMEOUT_MS} bound can be proven without an
+   * actual multi-second wait. */
+  scheduler?: ChordScheduler;
+  /** Defaults to {@link SHUTDOWN_TIMEOUT_MS}. Overridable only for tests —
+   * production always uses the real budget. */
+  timeoutMs?: number;
+}
+
+/**
+ * Build the single, shared, idempotent, bounded shutdown sequence (Req
+ * 12.3, design.md §3's shutdown point; Phase 3's original "wire
+ * process-exit disposeAll"): flush layout state (Req 6.4), dispose every
+ * startup-owned subscription/service {@link AssemblyRoot}'s own field
+ * TSDocs point back at this function for, then deactivate every extension
+ * (`hostRef.current?.disposeAll()`, Req 2.6).
+ *
+ * **Why a memoized promise, not a boolean flag**: the previous
+ * implementation (`shuttingDown` boolean, "second call is a no-op") made a
+ * SECOND caller's returned promise resolve immediately, even while the
+ * FIRST call's teardown was still genuinely in flight — safe when the
+ * only two callers were `SIGINT`/`SIGTERM` racing each other, but wrong
+ * now that a normal Ctrl+C quit calls this from OpenTUI's `onDestroy`
+ * (Req 12.3) as well: `SIGTERM` arriving a moment after `onDestroy` fires
+ * would otherwise `process.exit(0)` before layout state actually
+ * finished flushing. Returning the SAME in-flight promise to every caller
+ * — regardless of which of `onDestroy`/`SIGINT`/`SIGTERM` triggered it,
+ * or in which order — fixes that: every caller's `.finally(() =>
+ * process.exit(0))` now genuinely waits for the one real teardown to
+ * settle (or time out, below).
+ *
+ * **Why a timeout at all**: `onDestroy` is the seam this codebase picked
+ * specifically because it never risks making the editor unquittable
+ * (`runTecode`'s TSDoc) — `CliRenderer.finalizeDestroy()` never calls
+ * `process.exit` itself, so the process exits only once the event loop
+ * drains, which this function's own pending `flush()`/`dispose()` I/O is
+ * what keeps it alive long enough to run. A `flush()`/`dispose()` that
+ * hangs would therefore hang the whole process with no UI left to show
+ * for it — reintroducing exactly the "cannot quit" risk this design
+ * otherwise avoids. Racing the real work against {@link SHUTDOWN_TIMEOUT_MS}
+ * means a hang degrades to "some late writes/disposals may not have
+ * finished" (logged as a warning) instead of "the process never exits".
+ * The real work is never cancelled — only no longer awaited — so a
+ * teardown that finishes just after the timeout still finishes.
+ *
+ * Never throws: every `dispose()` above is already documented
+ * never-throwing (design.md §5, §14's guarded-boundary convention,
+ * `AssemblyRoot`'s own field TSDocs), but this wraps the whole sequence in
+ * try/catch anyway per that same convention, logging rather than
+ * propagating — this is, after all, the function OpenTUI's synchronous,
+ * un-awaited `onDestroy` callback invokes fire-and-forget, with nothing
+ * downstream to catch a rejection.
+ */
+export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () => Promise<void> {
+  const scheduler = deps.scheduler ?? createDefaultShutdownScheduler();
+  const timeoutMs = deps.timeoutMs ?? SHUTDOWN_TIMEOUT_MS;
+
+  let shutdownPromise: Promise<void> | undefined;
+
+  async function performShutdown(): Promise<void> {
+    try {
+      await root.layoutState.flush();
+      root.config.dispose();
+      root.chordPendingIndicator.dispose();
+      root.chordMachine.dispose();
+      root.findService.dispose();
+      root.editorSession.dispose();
+      root.editorLangIdSync.dispose();
+      root.themeConfigSync.dispose();
+      root.keybindingPresetConfigSync.dispose();
+      root.themeSelectCommand.dispose();
+      root.openFileCommand.dispose();
+      root.tabCommands.dispose();
+      root.extensionsReloadCommand.dispose();
+      root.keybindingsCommands.dispose();
+      root.modalCommands.dispose();
+      root.modalService.dispose();
+      root.windowMessageService.dispose();
+      root.hostErrorSink.dispose();
+      root.highlightService.dispose();
+      root.languageRegistry.dispose();
+      await root.hostRef.current?.disposeAll();
+    } catch (cause) {
+      root.log.append("error", {
+        message: `shutdown: teardown threw: ${describeError(cause)}`,
+      });
+    }
+  }
+
+  return function shutdown(): Promise<void> {
+    if (shutdownPromise) return shutdownPromise;
+    const work = performShutdown();
+    shutdownPromise = new Promise<void>((resolve) => {
+      let settled = false;
+      const timer = scheduler.set(() => {
+        if (settled) return;
+        settled = true;
+        root.log.append("warning", {
+          message: `shutdown: exceeded ${timeoutMs}ms; continuing to exit without waiting further (teardown keeps running in the background)`,
+        });
+        resolve();
+      }, timeoutMs);
+      void work.then(() => {
+        if (settled) return;
+        settled = true;
+        scheduler.clear(timer);
+        resolve();
+      });
+    });
+    return shutdownPromise;
+  };
+}
+
+/** What {@link wireProcessExit} produced. */
+export interface ProcessExitWiring {
+  /** The shared, idempotent, bounded shutdown sequence (this module's
+   * {@link createShutdown} TSDoc) — call it from any additional quit path
+   * a caller wires up (Req 12.3's `onDestroy`, below); `SIGINT`/`SIGTERM`
+   * already call it internally. */
+  shutdown: () => Promise<void>;
+}
+
+/** Sets up graceful-shutdown handling (Phase 3's "wire process-exit
+ * disposeAll", extended by Req 12.3 for the normal-quit path): builds the
+ * shared {@link createShutdown} sequence and registers it on `SIGINT`/
+ * `SIGTERM` — the only two paths that fire when stdin is NOT in raw mode
+ * (`kill`, a signal from a supervising shell, headless mode's no-TTY runs)
+ * — then calls `process.exit(0)` itself once shutdown settles. A
+ * synchronous Node/Bun `"exit"` handler cannot await async cleanup, hence
+ * signals rather than that.
+ *
+ * Returns the SAME `shutdown` this wires to `SIGINT`/`SIGTERM` (Req 12.3)
+ * so `runTecode` can *also* hand it to the render seam's `onDestroy`
+ * callback (`renderShell.tsx`'s `ShellRenderDeps.onDestroy`) — the path
+ * that actually fires on an interactive Ctrl+C quit, per this module's
+ * `runTecode` TSDoc on why `SIGINT` never does. Both paths share one
+ * `createShutdown` instance, so whichever fires first runs the real
+ * teardown and whichever fires second (or both, racing) gets the exact
+ * same settled/settling promise back (`createShutdown`'s TSDoc). */
+function wireProcessExit(root: AssemblyRoot, deps: ShutdownDeps = {}): ProcessExitWiring {
+  const shutdown = createShutdown(root, deps);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
       void shutdown().finally(() => process.exit(0));
     });
   }
+  return { shutdown };
 }
 
 /** What {@link runTecode} produced, for a non-headless (real) run — a
@@ -1298,8 +1474,8 @@ export async function runTecode(
   applyConfiguredTheme(root.config, root.themeService);
 
   // Apply the ACTUAL configured `keybindings.preset` now that `config.ready`
-  // has settled (Req 4.8, design.md §6.6) — same "schema default
-  // only, until ready" reasoning as `workbench.colorTheme` above
+  // has settled (Req 4.8, design.md §6.6) — same "schema default only, until
+  // ready" reasoning as `workbench.colorTheme` above
   // (`AssemblyRoot.applyConfiguredKeybindingPreset`'s TSDoc), but with no
   // `themesReadyPromise`-equivalent second call needed: unlike a theme id, a
   // preset name never depends on anything `loadExtensions`/discovery
@@ -1308,7 +1484,7 @@ export async function runTecode(
   // initial application.
   root.applyConfiguredKeybindingPreset();
 
-  wireProcessExit(root);
+  const { shutdown } = wireProcessExit(root);
 
   const renderShell = options.renderShell ?? (headless ? renderShellHeadless : renderShellToTerminal);
   await renderShell({
@@ -1345,6 +1521,37 @@ export async function runTecode(
         TERM_PROGRAM: process.env["TERM_PROGRAM"],
       });
       void root.applyKittyKeyboardVerdict(isKittyCapable);
+    },
+    // Issue #84 / Req 12.3: `createCliRenderer()`'s raw mode disables
+    // signal generation, so a normal interactive Ctrl+C quit never fires
+    // `SIGINT` — OpenTUI's own `exitOnCtrlC` handling calls
+    // `CliRenderer.destroy()` directly instead, which (per
+    // `renderShellToTerminal`'s wiring of this callback into
+    // `createCliRenderer`'s `onDestroy` config) invokes this synchronously
+    // and never calls `process.exit` itself. `shutdown` is the SAME
+    // shared, idempotent, timeout-bounded sequence `SIGINT`/`SIGTERM`
+    // already call below via `wireProcessExit` — wired here EXACTLY the
+    // same way (`void shutdown().finally(() => process.exit(0))`), not
+    // fire-and-forget: `SHUTDOWN_TIMEOUT_MS` bounds the `shutdown()`
+    // PROMISE, not the pending `flush()`/`dispose()` I/O it raced against
+    // — a genuinely hung `layoutState.flush()` keeps that I/O outstanding
+    // even after `shutdown()` gives up and resolves, which would keep the
+    // event loop (and the process) alive forever with no explicit exit
+    // call to end it, defeating the entire point of the timeout (an
+    // unquittable editor is exactly what `onDestroy` — over
+    // `exitOnCtrlC: false` — was chosen to avoid). Calling
+    // `process.exit(0)` here costs nothing in the healthy case: `shutdown()`
+    // only resolves once `performShutdown()` has genuinely finished (the
+    // timer branch is the only way to resolve early, and that IS the
+    // give-up path), so by the time this `.finally` runs, either
+    // everything already completed or the timeout already decided not to
+    // wait any longer — either way there's nothing further worth blocking
+    // exit on. Never throws: `shutdown()` itself is guarded (same TSDoc),
+    // so this callback can't propagate into OpenTUI's `_onDestroy`
+    // invocation either (which wraps it in try/catch anyway — belt and
+    // suspenders).
+    onDestroy: () => {
+      void shutdown().finally(() => process.exit(0));
     },
   });
 
@@ -1409,27 +1616,15 @@ export async function runTecode(
       logErrors: postDeferredLogCounts.errors - preDeferredLogCounts.errors,
       ms: performance.now() - startedAt,
     });
-    await root.layoutState.flush();
-    root.config.dispose();
-    root.chordPendingIndicator.dispose();
-    root.chordMachine.dispose();
-    root.findService.dispose();
-    root.editorSession.dispose();
-    root.editorLangIdSync.dispose();
-    root.themeConfigSync.dispose();
-    root.keybindingPresetConfigSync.dispose();
-    root.themeSelectCommand.dispose();
-    root.openFileCommand.dispose();
-    root.tabCommands.dispose();
-    root.extensionsReloadCommand.dispose();
-    root.keybindingsCommands.dispose();
-    root.modalCommands.dispose();
-    root.modalService.dispose();
-    root.windowMessageService.dispose();
-    root.hostErrorSink.dispose();
-    root.highlightService.dispose();
-    root.languageRegistry.dispose();
-    await deferred.extensionHost.disposeAll();
+    // The exact same shared, idempotent, timeout-bounded sequence
+    // `wireProcessExit` already wired to `SIGINT`/`SIGTERM` above (and, in
+    // the non-headless case, to the render seam's `onDestroy` — Req 12.3)
+    // — reused here rather than re-listing all 15+ dispose calls a second
+    // time, so this can never silently drift out of sync with `shutdown`'s
+    // own list (`createShutdown`'s TSDoc). `deferred.extensionHost` and
+    // `root.hostRef.current` are the SAME object by this point
+    // (`runDeferredPhase`'s "Fulfills every forward reference" comment).
+    await shutdown();
     process.exit(0);
   }
 

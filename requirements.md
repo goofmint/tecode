@@ -193,6 +193,7 @@ The following points were open in the draft specification and are resolved here 
 
 1. WHEN tecode is launched, THE system SHALL proceed in this order: load configuration; discover extensions; register manifest declarations without executing extension code; activate extensions lazily per their activation events; render the UI shell; then open the initial file or directory given on the command line.
 2. THE UI shell SHALL render within 100 ms of launch, with extension loading deferred so it does not block first paint.
+3. WHEN tecode exits — whether by `SIGINT`/`SIGTERM` or by an interactive Ctrl+C while the terminal is in raw mode (which never delivers `SIGINT`, since raw mode disables signal generation) — THE system SHALL run the same shutdown sequence exactly once regardless of which of these triggers fired first: flush layout state (Requirement 6.4), dispose every core-owned service, and deactivate every extension (Requirement 2.6), all bounded by a timeout so a hung disposal cannot prevent the process from exiting.
 
 ### Requirement 13: Non-Functional Requirements
 
