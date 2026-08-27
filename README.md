@@ -49,15 +49,68 @@ this repo's own CI/dev environment doesn't have — see
 [`docs/manual-release-verification.md`](docs/manual-release-verification.md)
 for the exact procedure.
 
-Pushing a `v*` tag runs the CircleCI pipeline in `.circleci/config.yml`,
-which builds all four `RELEASE_TARGETS` in parallel — one runner per
-target, two of them CircleCI-hosted and two self-hosted on the project
-owner's own machines (see that config's own top-of-file comment for the
-full explanation and the exact target→runner table), each invoking
-`bun run release <its-own-target>` so it only ever builds the one target
-its own `@opentui/core` native optional dependency can actually link for.
-Every target persists its binary and checksum to a shared workspace for
-the `publish` job.
+**Cutting an actual release is one command, run on the project owner's own
+Apple Silicon Mac: `bun run tag <version>`** (e.g. `bun run tag v1.2.3` or
+`bun run tag 1.2.3` — either is normalized to a leading `v`). The owner
+declined to install a CircleCI machine runner on their own Mac, so instead
+of every target being built by CircleCI, `scripts/release.ts`'s
+`RELEASE_TARGETS` now splits by `builtBy`:
+
+| Target | Built by |
+|---|---|
+| `bun-darwin-arm64` | `"local"` — `bun run tag`, on the owner's Mac |
+| `bun-linux-x64` | `"circleci"` — CircleCI-hosted executor |
+| `bun-linux-arm64` | `"circleci"` — CircleCI-hosted executor |
+| `bun-windows-x64` | `"circleci"` — self-hosted runner, the owner's Windows box |
+
+`bun run tag <version>` (`scripts/tagRelease.ts`) does, in this exact
+order — see that script's own TSDoc for the full reasoning behind the
+order:
+
+1. **Preflight** — every check runs and must pass before anything below
+   mutates anything: host is `darwin`/`arm64`; `TECODE_RELEASE_TOKEN` is
+   set (see "Release token" below — **not** `GITHUB_TOKEN`); the git
+   working tree is clean; the current branch is `main` and matches
+   `origin/main` exactly (fetched first); the version argument is
+   well-formed; the tag doesn't already exist locally or on origin; and no
+   GitHub release (draft or published) already carries that `tag_name`.
+   Any failure prints exactly what's wrong and what to do — nothing runs
+   until all of them pass.
+2. **Build** `bun-darwin-arm64` (reusing `scripts/release.ts`'s
+   `buildTarget`/`writeChecksumFile` — the size budget and `.sha256`
+   sibling are enforced the same way `bun run release` enforces them).
+   This runs first because it's the step most likely to fail, and a failed
+   build leaves nothing else behind to clean up.
+3. **Create a DRAFT GitHub Release** for the version and upload the two
+   macOS assets, then verify both actually landed.
+4. **Create and push the annotated git tag** — last, because it's the one
+   irreversible step: pushing it fires the CircleCI pipeline below
+   immediately, and a push cannot be un-fired the way a draft release can
+   simply be deleted. If step 3 already succeeded and this step fails, the
+   script prints exactly how to recover (the draft release to delete, or
+   the exact `git tag`/`git push` command to finish by hand).
+
+Once the tag is pushed, `.circleci/config.yml`'s `release` workflow builds
+the three `builtBy: "circleci"` targets in parallel — one runner per
+target, one of them self-hosted on the project owner's own Windows box
+(see that config's own top-of-file comment for the full explanation) —
+each invoking `bun run release <its-own-target>`. Every target persists
+its binary and checksum to a shared workspace for the `publish` job, which
+finds the draft release `bun run tag` already created (by listing releases
+and matching `tag_name` + `draft: true` — `GET /releases/tags/{tag}` does
+NOT reliably return draft releases, so `publish` never uses it), uploads
+its own three targets' assets on top of the one already there, verifies
+the release holds all four binaries and four checksums, and only then
+`PATCH`es it to `draft: false`.
+
+**Pushing a `v*` tag by hand, without running `bun run tag`, does NOT
+produce a release — it produces a stuck pipeline.** `publish` looks for a
+draft release matching the tag, finds none (only `bun run tag` ever
+creates one), and fails loudly rather than creating a release itself — a
+release `publish` created on its own would permanently be missing the
+macOS binary, since nothing else in this pipeline builds
+`bun-darwin-arm64`. If this happens, delete the tag and run `bun run tag
+<version>` from the owner's Mac instead.
 
 Only four of the six theoretically possible `darwin`/`linux`/`windows` ×
 `x64`/`arm64` combinations are published: `bun-darwin-x64` (Intel macOS)
@@ -72,27 +125,46 @@ cannot produce even the four remaining binaries"). If you're on one of
 the two dropped platforms, see "From source" below — running from source
 works today, no release required.
 
-Issue #38 "5.2 User documentation and release" adds a SHA-256 checksum
-next to every binary (`scripts/release.ts`'s `writeChecksumFile`, run as
-part of the same `bun run release <target>` invocation — see that
-script's TSDoc) and a `publish` job that runs only once all four build
-jobs succeed: it refuses to proceed unless exactly four binaries and four
-checksums are present (`PUBLISH_EXPECTED_BINARIES`, kept equal to
-`RELEASE_TARGETS.length` by `scripts/release.test.ts`), then creates the
-GitHub Release directly against the GitHub API using a `GITHUB_TOKEN`
-configured in CircleCI project settings (CircleCI has no ambient
-equivalent of GitHub Actions' `github.token`).
+### Release token (`TECODE_RELEASE_TOKEN`)
+
+Both `bun run tag` (on the owner's Mac) and CircleCI's `publish` job need
+their own GitHub credential to talk to the GitHub REST API — create the
+draft release, upload assets, and flip it to published. Both read it from
+an environment variable named **`TECODE_RELEASE_TOKEN`**, deliberately
+**not** `GITHUB_TOKEN`: that name is common enough ambient convention (the
+`gh` CLI, GitHub Actions runners, and other tools all read it) that it may
+already be set on a given machine to a token with far broader scope than
+this task needs, and there is no fallback to it — if `TECODE_RELEASE_TOKEN`
+is unset, both `bun run tag` and CircleCI's `publish` job fail preflight
+outright rather than silently using something else.
+
+**Minimum required scope, for both copies of this token**: a
+**fine-grained** personal access token, "Repository access" limited to
+**only `goofmint/tecode`**, with exactly one repository permission granted
+— **Contents: Read and write** (GitHub files releases under Contents; this
+is what lets the token create a draft release, upload assets to it, and
+publish it). **A classic PAT is the wrong choice here** — its `repo` scope
+reaches every repository the token's owner can access, plus issues, with
+no way to narrow it down to just this one repository's releases.
+
+This token is used **only** for the GitHub REST API calls described above.
+**Pushing the git tag itself uses the machine's ordinary `git`
+credentials, not this token** — `TECODE_RELEASE_TOKEN` needs no git
+push/write access at all. The two copies (the owner's Mac, and CircleCI's
+project settings) are separate credentials in separate places — rotate or
+revoke either independently of the other.
 
 ## Install
 
 tecode ships as four self-contained, single-file compiled binaries — one
 per published target in `scripts/release.ts`'s `RELEASE_TARGETS` (Req
-13.2) — built and published as GitHub Release assets by the CircleCI
-pipeline's tag-triggered `publish` job (see "Release" above). No separate
-runtime install is required to RUN a downloaded binary; all packages in
-this monorepo are `"private": true`, so there is no `npm install -g
-tecode` — a compiled binary or a source checkout are the only two ways to
-run it.
+13.2) — published as GitHub Release assets by `bun run tag` (the one
+`builtBy: "local"` macOS binary) together with the CircleCI pipeline's
+tag-triggered `publish` job (the three `builtBy: "circleci"` binaries) —
+see "Release" above for the full split. No separate runtime install is
+required to RUN a downloaded binary; all packages in this monorepo are
+`"private": true`, so there is no `npm install -g tecode` — a compiled
+binary or a source checkout are the only two ways to run it.
 
 ### From a published release (once one exists)
 

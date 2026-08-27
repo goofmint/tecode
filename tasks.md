@@ -200,7 +200,7 @@ Conventions for every task:
   - _Req 2.3, 2.7, 10; Design §4, §12_
 
 - [ ] **5.2 User documentation and release**
-  - README (install, keybindings table, settings reference, terminal support matrix, fallback-keymap notes), sample `settings.json`/`keybindings.json`, versioned release publishing of the 4 binaries via the tag-triggered CircleCI pipeline (`.circleci/config.yml`).
+  - README (install, keybindings table, settings reference, terminal support matrix, fallback-keymap notes), sample `settings.json`/`keybindings.json`, versioned release publishing of the 4 binaries: `bun-darwin-arm64` built locally by `bun run tag <version>` (`scripts/tagRelease.ts`, run on the project owner's own Apple Silicon Mac), the other three via the tag-triggered CircleCI pipeline (`.circleci/config.yml`), which `publish`es by finding the draft release `bun run tag` already created rather than creating one itself. Pushing a `v*` tag by hand instead of running `bun run tag` produces a stuck pipeline, not a release.
   - _Req 9.5, 13.2, 13.3_
 
 ---

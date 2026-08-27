@@ -57,8 +57,12 @@ just left off this machine"). This section's procedure therefore covers
 the three remaining non-host targets only.
 
 **Procedure** (run once per platform, on a real machine or CI runner of
-that platform — this is exactly what the tag-triggered CircleCI release
-pipeline, `.circleci/config.yml`, automates):
+that platform — this is exactly what happens automatically for
+`bun-linux-arm64`/`bun-windows-x64` in the tag-triggered CircleCI release
+pipeline (`.circleci/config.yml`), and for `bun-darwin-arm64` in `bun run
+tag` (`scripts/tagRelease.ts`, run by hand on the project owner's own
+Apple Silicon Mac — see the README's "Release" section for why that one
+target is built locally instead of by CircleCI)):
 
 1. On a `darwin`/`arm64`, `linux`/`arm64`, or `windows`/`x64` machine with
    Bun installed, clone the repo and run `bun install` — this links that

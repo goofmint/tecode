@@ -11,12 +11,15 @@
  * WHICH targets to build, WHAT to name their output, and HOW to classify a
  * failure, all of which is cheap and deterministic to test directly.
  *
- * Also covers the one cross-file invariant between this script and
+ * Also covers the two cross-file invariants between this script and
  * `.circleci/config.yml`: that config's `publish` job hard-codes
- * `PUBLISH_EXPECTED_BINARIES` rather than reading {@link RELEASE_TARGETS}
- * (a shell script has no import statement), so nothing stops the two from
- * drifting except this test — see the `PUBLISH_EXPECTED_BINARIES` describe
- * block below.
+ * `PUBLISH_EXPECTED_CI_BINARIES` (how many of {@link RELEASE_TARGETS}
+ * CircleCI's own build jobs produce — 3, since `bun-darwin-arm64` moved to
+ * `builtBy: "local"`) and `PUBLISH_EXPECTED_RELEASE_BINARIES` (how many
+ * the finished release must hold — {@link RELEASE_TARGETS}`.length`, 4)
+ * rather than reading {@link RELEASE_TARGETS} itself (a shell script has
+ * no import statement), so nothing stops either from drifting except this
+ * test — see the describe block below.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -45,11 +48,16 @@ describe("RELEASE_TARGETS (Req 13.2's published 4-target matrix)", () => {
     // `bun-linux-arm64`, say. Pinning the exact set (and, since arrays are
     // ordered, the exact order) catches that a plain count cannot.
     expect(RELEASE_TARGETS).toEqual([
-      { bunTarget: "bun-darwin-arm64", platform: "darwin", arch: "arm64" },
-      { bunTarget: "bun-linux-x64", platform: "linux", arch: "x64" },
-      { bunTarget: "bun-linux-arm64", platform: "linux", arch: "arm64" },
-      { bunTarget: "bun-windows-x64", platform: "windows", arch: "x64" },
+      { bunTarget: "bun-darwin-arm64", platform: "darwin", arch: "arm64", builtBy: "local" },
+      { bunTarget: "bun-linux-x64", platform: "linux", arch: "x64", builtBy: "circleci" },
+      { bunTarget: "bun-linux-arm64", platform: "linux", arch: "arm64", builtBy: "circleci" },
+      { bunTarget: "bun-windows-x64", platform: "windows", arch: "x64", builtBy: "circleci" },
     ]);
+  });
+
+  test("exactly one target is built locally (bun-darwin-arm64, by `bun run tag`)", () => {
+    const local = RELEASE_TARGETS.filter((t) => t.builtBy === "local");
+    expect(local.map((t) => t.bunTarget)).toEqual(["bun-darwin-arm64"]);
   });
 
   test("does NOT include the two dropped targets — no runner of either architecture exists", () => {
@@ -65,7 +73,7 @@ describe("RELEASE_TARGETS (Req 13.2's published 4-target matrix)", () => {
   });
 });
 
-describe("PUBLISH_EXPECTED_BINARIES (.circleci/config.yml <-> RELEASE_TARGETS invariant)", () => {
+describe("publish job env <-> RELEASE_TARGETS invariants (.circleci/config.yml <-> scripts/release.ts)", () => {
   /** A CircleCI step is either the bare string `"checkout"` or a
    * single-key mapping like `{ run: { name, environment, command } }` —
    * this pulls out just the `run` steps that carry an `environment` map,
@@ -75,7 +83,14 @@ describe("PUBLISH_EXPECTED_BINARIES (.circleci/config.yml <-> RELEASE_TARGETS in
     run?: { environment?: Record<string, string> };
   }
 
-  test("the publish job's expected binary count equals RELEASE_TARGETS.length", async () => {
+  /** Parses `.circleci/config.yml` with `Bun.YAML.parse` (never a regex —
+   * a regex over YAML has already proven fragile once in this repo's
+   * history, per this file's own precedent) and returns the numeric value
+   * of the first `publish` job `run` step whose `environment` carries
+   * `key`. YAML has no distinct "quoted string that looks like a number"
+   * type marker once parsed — `"4"` and `4` both come back needing this
+   * same coercion, so `Number(...)` covers either spelling. */
+  async function readPublishEnv(key: string): Promise<string> {
     const configPath = resolve(import.meta.dir, "..", ".circleci", "config.yml");
     const configText = await readFile(configPath, "utf8");
     const config = Bun.YAML.parse(configText) as {
@@ -84,16 +99,58 @@ describe("PUBLISH_EXPECTED_BINARIES (.circleci/config.yml <-> RELEASE_TARGETS in
 
     const publishSteps = config.jobs.publish.steps;
     const stepWithEnv = publishSteps.find(
-      (step): step is CircleCiRunStep =>
-        typeof step === "object" && step.run?.environment?.PUBLISH_EXPECTED_BINARIES !== undefined,
+      (step): step is CircleCiRunStep => typeof step === "object" && step.run?.environment?.[key] !== undefined,
     );
     expect(stepWithEnv).toBeDefined();
+    return stepWithEnv!.run!.environment![key];
+  }
 
-    // YAML has no distinct "quoted string that looks like a number" type
-    // marker once parsed — `"4"` and `4` both come back needing this same
-    // coercion, so Number(...) covers either spelling.
-    const expected = Number(stepWithEnv!.run!.environment!.PUBLISH_EXPECTED_BINARIES);
-    expect(expected).toBe(RELEASE_TARGETS.length);
+  /** Both env vars are YAML folded scalars (`>-`), so they reach the shell
+   * as one whitespace-separated string — exactly how the `publish` job's
+   * `printf '%s\n' $VAR` consumes them (deliberately unquoted, so the
+   * shell word-splits). Split the same way here, rather than on `" "`
+   * specifically, so a reflow of the YAML block cannot change what this
+   * test compares. */
+  function splitAssetList(raw: string): readonly string[] {
+    return raw.trim().split(/\s+/);
+  }
+
+  /** The binary and checksum file names `targets` produce, derived from
+   * {@link binaryFileName} rather than restated — a rename there has to
+   * reach `.circleci/config.yml` or these tests fail, which is the whole
+   * point of pinning names instead of a count. */
+  function expectedAssetNames(targets: readonly ReleaseTarget[]): readonly string[] {
+    return targets.flatMap((t) => [binaryFileName(t), `${binaryFileName(t)}.sha256`]);
+  }
+
+  test("PUBLISH_EXPECTED_CI_ASSETS is exactly what the builtBy:\"circleci\" targets produce", async () => {
+    // Since bun-darwin-arm64 moved to `builtBy: "local"` (built by `bun run
+    // tag` on the owner's Mac, never by a CircleCI job), the workspace
+    // `publish` collects from ITS OWN build jobs holds only the
+    // `builtBy: "circleci"` targets — 3 of the 4. This is what `publish`'s
+    // first guard checks BEFORE it ever talks to the GitHub API.
+    const declared = splitAssetList(await readPublishEnv("PUBLISH_EXPECTED_CI_ASSETS"));
+    const derived = expectedAssetNames(RELEASE_TARGETS.filter((t) => t.builtBy === "circleci"));
+    expect([...declared].sort()).toEqual([...derived].sort());
+  });
+
+  test("PUBLISH_EXPECTED_RELEASE_ASSETS is exactly what ALL of RELEASE_TARGETS produces", async () => {
+    // The SEPARATE list `publish` checks against the finished GitHub
+    // Release, after uploading its own 6 assets on top of the 2 `bun run
+    // tag` already put there. Names, not a count: the macOS pair arrives
+    // from a different machine at a different time, so only matching names
+    // establishes that it actually arrived.
+    const declared = splitAssetList(await readPublishEnv("PUBLISH_EXPECTED_RELEASE_ASSETS"));
+    const derived = expectedAssetNames(RELEASE_TARGETS);
+    expect([...declared].sort()).toEqual([...derived].sort());
+  });
+
+  test("the two lists differ by exactly the locally-built target's assets", () => {
+    // Guards the split itself: if every target were marked `"circleci"`,
+    // or the macOS one silently rejoined the CI matrix, both lists above
+    // would still each be self-consistent while this relationship broke.
+    const local = RELEASE_TARGETS.filter((t) => t.builtBy === "local");
+    expect(expectedAssetNames(local)).toEqual(["tecode-darwin-arm64", "tecode-darwin-arm64.sha256"]);
   });
 });
 
@@ -109,15 +166,15 @@ describe("SIZE_LIMIT_BYTES (Req 13.2's 120 MB budget)", () => {
 
 describe("binaryFileName", () => {
   test("appends .exe only for windows targets", () => {
-    expect(binaryFileName({ bunTarget: "bun-linux-x64", platform: "linux", arch: "x64" })).toBe(
+    expect(binaryFileName({ bunTarget: "bun-linux-x64", platform: "linux", arch: "x64", builtBy: "circleci" })).toBe(
       "tecode-linux-x64",
     );
-    expect(binaryFileName({ bunTarget: "bun-darwin-arm64", platform: "darwin", arch: "arm64" })).toBe(
-      "tecode-darwin-arm64",
-    );
-    expect(binaryFileName({ bunTarget: "bun-windows-x64", platform: "windows", arch: "x64" })).toBe(
-      "tecode-windows-x64.exe",
-    );
+    expect(
+      binaryFileName({ bunTarget: "bun-darwin-arm64", platform: "darwin", arch: "arm64", builtBy: "local" }),
+    ).toBe("tecode-darwin-arm64");
+    expect(
+      binaryFileName({ bunTarget: "bun-windows-x64", platform: "windows", arch: "x64", builtBy: "circleci" }),
+    ).toBe("tecode-windows-x64.exe");
   });
 });
 

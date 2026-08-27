@@ -1,11 +1,25 @@
 # CircleCI release pipeline for tecode (Issue: tag-triggered binary release).
 #
-# Pushing a `v*` tag builds one compiled binary per target on a runner of
-# that target's OWN platform, then publishes them as a GitHub Release with
-# per-binary SHA-256 checksums. This is the ONLY release pipeline for this
-# repo — `.github/workflows/release.yml` has been deleted; keeping both
-# would let a single tag push race two pipelines to create the same GitHub
-# Release.
+# Pushing a `v*` tag builds one compiled binary per CircleCI-built target on
+# a runner of that target's OWN platform, then attaches them to the GitHub
+# Release `bun run tag` (`scripts/tagRelease.ts`) already created as a draft
+# and publishes it. This is the ONLY release pipeline for this repo —
+# `.github/workflows/release.yml` has been deleted; keeping both would let a
+# single tag push race two pipelines to create the same GitHub Release.
+#
+# ## THIS PIPELINE NEVER CREATES A RELEASE — IT ONLY FINISHES ONE
+#
+# Pushing a `v*` tag by hand (`git tag v1.2.3 && git push origin v1.2.3`)
+# instead of running `bun run tag v1.2.3` on the owner's Mac does NOT
+# produce a release. It produces a STUCK pipeline: `publish` (below) looks
+# for a draft release matching the tag, finds none (`bun run tag` is the
+# only thing that ever creates one), and fails loudly rather than creating
+# one itself — a release this pipeline created on its own would permanently
+# be missing the macOS binary, since nothing else here builds
+# `bun-darwin-arm64`. The only supported way to cut a release is `bun run
+# tag <version>` from the project owner's Apple Silicon Mac; see that
+# script's own TSDoc (`scripts/tagRelease.ts`) for its full preflight/build/
+# release/tag sequence.
 #
 # ## Why one job per target, and not a build matrix on one machine
 #
@@ -20,15 +34,27 @@
 #
 # ## Only four targets are published — two are gone for good, not deferred
 #
-# `RELEASE_TARGETS` in `scripts/release.ts` ships exactly these four:
+# `RELEASE_TARGETS` in `scripts/release.ts` ships exactly these four, split
+# by who builds each one (`ReleaseTarget.builtBy`):
 #
-#   bun-darwin-arm64   self-hosted runner, the owner's own Apple silicon Mac
-#   bun-linux-x64      CircleCI-hosted machine executor
-#   bun-linux-arm64    CircleCI-hosted machine executor, arm.medium
-#   bun-windows-x64    self-hosted runner, the owner's own Windows x64 box
+#   bun-darwin-arm64   builtBy "local"     — the owner's own Apple Silicon
+#                                             Mac, via `bun run tag`; NO
+#                                             CircleCI job builds this target
+#   bun-linux-x64      builtBy "circleci"  — CircleCI-hosted machine executor
+#   bun-linux-arm64    builtBy "circleci"  — CircleCI-hosted machine executor, arm.medium
+#   bun-windows-x64    builtBy "circleci"  — self-hosted runner, the owner's own Windows x64 box
+#
+# The owner did not want to install a CircleCI machine runner on their own
+# Mac, so `bun-darwin-arm64` is built locally instead of by a
+# `build-darwin-arm64` job — there is no such job, and no
+# `macos-arm64-self-hosted` executor, in this file. Its binary and checksum
+# reach the release by a different path than the other three: `bun run tag`
+# uploads them to a draft release BEFORE the tag is pushed, and `publish`
+# below finds that draft and adds its own three assets on top of them,
+# rather than building all four itself.
 #
 # `bun-darwin-x64` (Intel macOS) and `bun-windows-arm64` (Windows on Arm) are
-# NOT built by anything, anywhere, in this pipeline:
+# NOT built by anything, anywhere, in this pipeline or by `bun run tag`:
 #
 #   - CircleCI removed every Intel-macOS resource class in June 2024 — its
 #     hosted `macos` executor is Apple silicon only, and the owner has no
@@ -42,49 +68,81 @@
 # to download and is pointed at the README's "From source" instructions
 # (`bun run packages/cli/src/main.ts`) instead.
 #
-# `PUBLISH_EXPECTED_BINARIES` below is 4 for exactly this reason — it MUST
-# always equal `RELEASE_TARGETS.length` (`scripts/release.test.ts` pins this
-# invariant and fails the build if the two drift apart), so if a target is
-# ever added back (new CircleCI resource class, or new owned hardware), both
-# this file and `scripts/release.ts` need updating together.
+# `PUBLISH_EXPECTED_CI_ASSETS` and `PUBLISH_EXPECTED_RELEASE_ASSETS` below
+# list exact file names — the artifacts this workflow's own build jobs must
+# produce, and the ones the finished release must carry. They MUST always
+# equal, respectively, the `builtBy: "circleci"` subset of `RELEASE_TARGETS`
+# and all of it (`scripts/release.test.ts` derives both lists from
+# `RELEASE_TARGETS` and fails the build if either drifts from `scripts/
+# release.ts`), so if a target is added, dropped, renamed, or moves between
+# `"local"`/`"circleci"`, this file and `scripts/release.ts` need updating
+# together.
 #
-# ## Self-hosted runners: register these before the first tag push
+# ## Self-hosted runner: register this before the first tag push
 #
-# `build-darwin-arm64` and `build-windows-x64` target the resource classes
-# `goofmint/macos-arm64` and `goofmint/windows-x64`. Those names are written
-# out in full rather than left as `<namespace>/<name>`-style placeholders
-# because `<` and `>` are not legal in a resource class name: CircleCI's
-# config compiler rejects the whole file ("Invalid format in resource class")
-# before any job runs, so a bracketed placeholder does not merely fail to
-# match a runner — it breaks the pipeline outright.
+# `build-windows-x64` targets the resource class `goofmint/windows-x64`.
+# That name is written out in full rather than left as a
+# `<namespace>/<name>`-style placeholder because `<` and `>` are not legal
+# in a resource class name: CircleCI's config compiler rejects the whole
+# file ("Invalid format in resource class") before any job runs, so a
+# bracketed placeholder does not merely fail to match a runner — it breaks
+# the pipeline outright.
 #
-# They are still names that DO NOT EXIST until created. `goofmint` is the
+# It is still a name that DOES NOT EXIST until created. `goofmint` is the
 # expected CircleCI namespace (it defaults to the VCS org name); confirm it
-# with `circleci namespace` and change both here if yours differs. For EACH
-# of the two machines (the Apple Silicon Mac and the in-house Windows x64
-# box):
+# with `circleci namespace` and change it here if yours differs. On the
+# in-house Windows x64 box:
 #
-#   1. `circleci runner resource-class create goofmint/macos-arm64 "<description>" --generate-token`
-#      (and likewise for `goofmint/windows-x64`) — run once per machine,
-#      from anywhere with the CircleCI CLI installed and authenticated.
-#      This prints a runner AUTH TOKEN — copy it, it is shown only once.
+#   1. `circleci runner resource-class create goofmint/windows-x64 "<description>" --generate-token`
+#      — run once, from anywhere with the CircleCI CLI installed and
+#      authenticated. This prints a runner AUTH TOKEN — copy it, it is
+#      shown only once.
 #   2. Install "machine runner 3" on that physical machine (CircleCI's
-#      installer for macOS/Windows), configuring it with the resource class
-#      name and auth token from step 1. The runner then polls CircleCI for
-#      jobs targeting that resource class and executes them locally.
+#      installer for Windows), configuring it with the resource class name
+#      and auth token from step 1. The runner then polls CircleCI for jobs
+#      targeting that resource class and executes them locally.
 #
-# Until step 1 runs for a given machine, its build job stays queued with no
-# runner to claim it, and `publish` — which `requires` all four builds —
-# never starts. Nothing is published from a half-registered setup.
+# Until step 1 runs, `build-windows-x64` stays queued with no runner to
+# claim it, and `publish` — which `requires` all three CircleCI build jobs
+# — never starts. Nothing is published from a half-registered setup. There
+# is no equivalent step for macOS: `bun run tag` runs directly on the
+# owner's Mac, outside CircleCI entirely, so no runner is ever registered
+# for it.
 #
 # ## Required project configuration
 #
-# - `GITHUB_TOKEN` — an environment variable in CircleCI project settings,
-#   holding a token with `contents: write` on this repository. Unlike GitHub
-#   Actions there is no ambient `github.token`; nothing here can publish
-#   without it.
-# - The self-hosted runner auth tokens from step 1 above, configured on each
-#   physical machine's runner install — not stored in this repo.
+# - `TECODE_RELEASE_TOKEN` — an environment variable in CircleCI project
+#   settings, holding a GitHub token this `publish` job uses for its own
+#   REST API calls (list releases, upload assets, PATCH draft:false).
+#   Deliberately NOT named `GITHUB_TOKEN`: that name is common enough
+#   ambient tooling convention that something else could already be
+#   supplying it with broader scope than this job needs, and this name
+#   guarantees the value present is only ever here because someone set it
+#   FOR this job. Unlike GitHub Actions there is no ambient `github.token`
+#   on CircleCI; nothing here can publish without this variable set.
+#
+#   Minimum scope: a FINE-GRAINED personal access token, "Repository
+#   access" limited to only `goofmint/tecode`, with exactly one repository
+#   permission — Contents: Read and write (GitHub files releases under
+#   Contents; this is what lets `publish` upload assets and flip
+#   draft:false). Do NOT use a classic PAT here — its `repo` scope reaches
+#   every repository the token's owner can access, plus issues, with no way
+#   to narrow it to just this one repository's releases. This token is used
+#   ONLY for the GitHub REST API calls in this job; CircleCI's own
+#   `checkout` step uses its own separate credentials for `git`, unrelated
+#   to this token.
+#
+#   `bun run tag` needs its OWN `TECODE_RELEASE_TOKEN` set in the
+#   environment it runs in (the owner's Mac) — see `scripts/tagRelease.ts`'s
+#   `checkReleaseTokenSet` for that copy's own scope requirement (identical:
+#   fine-grained, `goofmint/tecode` only, Contents: Read and write). The two
+#   are separate credentials in separate places, never shared — rotate or
+#   revoke either independently of the other. Neither copy of this token
+#   needs any git push access: pushing the release tag itself goes through
+#   ordinary `git` credentials on whichever machine runs `bun run tag`, not
+#   through this token.
+# - The self-hosted Windows runner's auth token from step 1 above,
+#   configured on that machine's runner install — not stored in this repo.
 
 version: 2.1
 
@@ -97,26 +155,11 @@ executors:
     machine:
       image: ubuntu-2404:current
     resource_class: arm.medium
-  # SELF-HOSTED — the owner's own Apple Silicon Mac, not a CircleCI-hosted
-  # image. `goofmint/macos-arm64` does not exist until it is registered;
-  # create it once, from anywhere with the CircleCI CLI authenticated
-  # against this project:
-  #
-  #   circleci runner resource-class create goofmint/macos-arm64 \
-  #     "tecode release: owner's Apple Silicon Mac" --generate-token
-  #
-  # then install "machine runner 3" on that Mac using the resource class name
-  # and the auth token the command above prints (shown once — save it). A
-  # self-hosted machine executor is declared with `machine: true` (no
-  # `image:` — there is nothing to select an image FROM, it's a specific
-  # physical machine) plus `resource_class:` naming the runner registered
-  # above; it is NOT the hosted `macos:` executor type.
-  macos-arm64-self-hosted:
-    machine: true
-    resource_class: goofmint/macos-arm64
-  # SELF-HOSTED — the owner's own in-house Windows x64 machine. Same
-  # register-before-first-use rule as above; create `goofmint/windows-x64`
-  # with
+  # SELF-HOSTED — the owner's own in-house Windows x64 machine, not a
+  # CircleCI-hosted image. `goofmint/windows-x64` does not exist until it is
+  # registered (this file's top-of-file comment, "Self-hosted runner:
+  # register this before the first tag push"); create it once, from
+  # anywhere with the CircleCI CLI authenticated against this project:
   #
   #   circleci runner resource-class create goofmint/windows-x64 \
   #     "tecode release: owner's Windows x64 box" --generate-token
@@ -191,14 +234,6 @@ jobs:
       - build-and-persist:
           target: bun-linux-arm64
 
-  build-darwin-arm64:
-    executor: macos-arm64-self-hosted
-    steps:
-      - checkout
-      - install-bun-posix
-      - build-and-persist:
-          target: bun-darwin-arm64
-
   build-windows-x64:
     executor: windows-x64-self-hosted
     steps:
@@ -232,88 +267,155 @@ jobs:
       - attach_workspace:
           at: .
       - run:
-          name: Refuse to publish unless every expected artifact is present
-          # A partial matrix must never produce a release that silently omits
-          # a platform — someone downloading it would find their build missing
-          # with nothing to say anything went wrong.
+          name: Refuse to publish unless every CircleCI-built artifact is present
+          # This checks only THIS WORKFLOW's own three build jobs' output in
+          # the shared workspace — bun-darwin-arm64 (builtBy "local" in
+          # scripts/release.ts's RELEASE_TARGETS) is never in here, because
+          # no CircleCI job builds it; it already reached the draft release
+          # directly, via `bun run tag`, before this workflow even started.
           #
-          # MUST always equal `RELEASE_TARGETS.length` in `scripts/
-          # release.ts` (currently 4) — `scripts/release.test.ts` parses
-          # this exact YAML value and asserts that equality, precisely so
-          # the two numbers cannot silently drift apart. Change this the
-          # same commit you change `RELEASE_TARGETS`, or that test fails.
+          # MUST always equal the number of `builtBy: "circleci"` entries in
+          # `RELEASE_TARGETS` (`scripts/release.ts`, currently 3) —
+          # `scripts/release.test.ts` parses this exact YAML value and
+          # asserts that equality, precisely so the two numbers cannot
+          # silently drift apart. Change this the same commit you change
+          # RELEASE_TARGETS or its builtBy split, or that test fails.
           environment:
-            PUBLISH_EXPECTED_BINARIES: "4"
+            # The exact file names build-linux-x64, build-linux-arm64 and
+            # build-windows-x64 must have left in the shared workspace —
+            # NOT a count. A count of 3 is satisfied by three files with
+            # the wrong names, which is precisely the shape a rename or a
+            # half-migrated target set produces, so match the set instead.
+            PUBLISH_EXPECTED_CI_ASSETS: >-
+              tecode-linux-x64
+              tecode-linux-x64.sha256
+              tecode-linux-arm64
+              tecode-linux-arm64.sha256
+              tecode-windows-x64.exe
+              tecode-windows-x64.exe.sha256
           command: |
             set -euo pipefail
             ls -la dist/
-            BIN_COUNT=$(find dist -maxdepth 1 -type f -name 'tecode-*' ! -name '*.sha256' | wc -l | tr -d ' ')
-            SHA_COUNT=$(find dist -maxdepth 1 -type f -name '*.sha256' | wc -l | tr -d ' ')
-            echo "release: found $BIN_COUNT binaries and $SHA_COUNT checksums"
-            if [ "$BIN_COUNT" -ne "$PUBLISH_EXPECTED_BINARIES" ] || [ "$SHA_COUNT" -ne "$PUBLISH_EXPECTED_BINARIES" ]; then
-              echo "release: refusing to publish — expected $PUBLISH_EXPECTED_BINARIES of each, got $BIN_COUNT and $SHA_COUNT" >&2
+            found=$(find dist -maxdepth 1 -type f -name 'tecode-*' -exec basename {} \; | sort)
+            expected=$(printf '%s\n' $PUBLISH_EXPECTED_CI_ASSETS | sort)
+            missing=$(comm -13 <(printf '%s\n' "$found") <(printf '%s\n' "$expected") | tr '\n' ' ')
+            unexpected=$(comm -23 <(printf '%s\n' "$found") <(printf '%s\n' "$expected") | tr '\n' ' ')
+            if [ -n "${missing// /}" ] || [ -n "${unexpected// /}" ]; then
+              echo "release: refusing to publish — this workflow's own build jobs did not produce exactly the expected artifacts" >&2
+              [ -n "${missing// /}" ] && echo "release:   missing:    $missing" >&2
+              [ -n "${unexpected// /}" ] && echo "release:   unexpected: $unexpected" >&2
               exit 1
             fi
+            echo "release: all 6 expected CircleCI-built artifacts present"
       - run:
-          name: Create the GitHub Release and upload every asset
+          name: Find the bun run tag draft release, attach this workflow's assets, and publish
           # CIRCLE_TAG is passed through the environment rather than
           # interpolated into the script: it is attacker-influenceable by
           # anyone who can push a tag, and `v$(id)` is a valid Git ref name,
           # so a directly-substituted tag would be executed by the shell under
           # a token that can write repository contents.
+          #
+          # Every asset the FINISHED release must carry: one binary and
+          # one checksum per RELEASE_TARGETS entry, the `bun run tag`
+          # macOS pair included. Distinct from PUBLISH_EXPECTED_CI_ASSETS
+          # above, which is only what THIS workflow's build jobs produce.
+          #
+          # Names, not a count, for the reason above and one more specific
+          # to this check: the release already holds assets uploaded by a
+          # different machine at a different time (`bun run tag`), so "4
+          # binaries are present" does not establish that the macOS one is
+          # among them — a stray or misnamed asset makes the arithmetic
+          # work out while the platform a user came for is still missing.
+          # scripts/release.test.ts pins this list against RELEASE_TARGETS.
+          environment:
+            PUBLISH_EXPECTED_RELEASE_ASSETS: >-
+              tecode-darwin-arm64
+              tecode-darwin-arm64.sha256
+              tecode-linux-x64
+              tecode-linux-x64.sha256
+              tecode-linux-arm64
+              tecode-linux-arm64.sha256
+              tecode-windows-x64.exe
+              tecode-windows-x64.exe.sha256
           command: |
             set -euo pipefail
 
-            : "${GITHUB_TOKEN:?set GITHUB_TOKEN in CircleCI project settings (needs contents: write)}"
+            : "${TECODE_RELEASE_TOKEN:?set TECODE_RELEASE_TOKEN in CircleCI project settings (a fine-grained PAT scoped to only goofmint/tecode, Contents: Read and write)}"
             : "${CIRCLE_TAG:?this job only runs for tag pushes}"
 
             api="https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
 
-            notes=$(cat docs/release-notes-template.md)
+            # GET /releases/tags/{tag} does NOT reliably return draft
+            # releases (confirmed against the GitHub REST API) — list and
+            # match on tag_name + draft ourselves instead. This mirrors
+            # scripts/tagRelease.ts's own findDraftReleaseByTag, the same
+            # selection algorithm, unit-tested there; bash has no import
+            # statement, so this shell implementation is verified instead by
+            # actually executing it against a stubbed curl (see this
+            # change's own validation notes).
+            # One page suffices: the API lists releases newest-first and
+            # `bun run tag` creates this draft seconds before pushing the
+            # tag that started this job, so it is effectively always the
+            # newest release. 100 leaves room for a pathological backlog
+            # without paginating.
+            releases=$(curl -fsSL "$api/releases?per_page=100" \
+              -H "Authorization: Bearer $TECODE_RELEASE_TOKEN" \
+              -H "Accept: application/vnd.github+json")
 
-            # Created as a DRAFT, flipped to published only after the last
-            # asset uploads. The API's own default is draft:false, which
-            # would make the release page reachable the instant it is
-            # created — someone landing there mid-upload would see a real
-            # release missing however many binaries had not arrived yet,
-            # with nothing to distinguish it from a finished one. A draft
-            # is invisible to everyone but repo writers, so a failed upload
-            # leaves an unpublished draft to clean up rather than a public
-            # release that silently omits a platform.
-            payload=$(
-              TAG="$CIRCLE_TAG" NOTES="$notes" python3 -c '
-            import json, os
-            print(json.dumps({
-                "tag_name": os.environ["TAG"],
-                "name": "tecode " + os.environ["TAG"],
-                "body": os.environ["NOTES"],
-                "draft": True,
-            }))'
-            )
+            release_id=$(printf '%s' "$releases" | TAG="$CIRCLE_TAG" python3 -c '
+            import json, os, sys
+            releases = json.loads(sys.stdin.read())
+            tag = os.environ["TAG"]
+            for r in releases:
+                if r.get("tag_name") == tag and r.get("draft") is True:
+                    print(r["id"])
+                    sys.exit(0)
+            sys.exit(1)
+            ') || {
+              echo "release: no draft release found for tag $CIRCLE_TAG" >&2
+              echo "release: this tag was pushed WITHOUT running 'bun run tag' on the owner's Apple Silicon Mac first — that command builds bun-darwin-arm64 and creates the draft release BEFORE pushing the tag, and this pipeline never creates one itself (it would permanently omit the macOS binary). The macOS binary will never arrive this way. Delete this tag on GitHub, then run 'bun run tag ${CIRCLE_TAG#v}' (or 'bun run tag $CIRCLE_TAG') from that Mac — it will push the tag itself once it succeeds." >&2
+              exit 1
+            }
+            echo "release: found draft release id $release_id for tag $CIRCLE_TAG"
 
-            created=$(
-              curl -fsSL -X POST "$api/releases" \
-                -H "Authorization: Bearer $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github+json" \
-                -d "$payload"
-            )
-            release_id=$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-            upload_url=$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')
+            release=$(curl -fsSL "$api/releases/$release_id" \
+              -H "Authorization: Bearer $TECODE_RELEASE_TOKEN" \
+              -H "Accept: application/vnd.github+json")
+            upload_url=$(printf '%s' "$release" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')
 
             for asset in dist/tecode-*; do
               name=$(basename "$asset")
               echo "release: uploading $name"
               # `set -e` plus curl's `-f` means a failed upload aborts the
-              # step here, before the publish below — the draft stays a
-              # draft, which is the intended failure mode.
+              # step here, before the completeness check and PATCH below —
+              # the draft stays a draft, which is the intended failure mode.
               curl -fsSL -X POST "$upload_url?name=$name" \
-                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "Authorization: Bearer $TECODE_RELEASE_TOKEN" \
                 -H "Content-Type: application/octet-stream" \
                 --data-binary "@$asset" > /dev/null
             done
 
+            # Re-fetch to see the assets bun run tag AND this job both
+            # uploaded, and confirm the release now holds all four binaries
+            # and all four checksums before flipping it public — a partial
+            # release must never go live silently missing a platform.
+            release=$(curl -fsSL "$api/releases/$release_id" \
+              -H "Authorization: Bearer $TECODE_RELEASE_TOKEN" \
+              -H "Accept: application/vnd.github+json")
+            attached=$(printf '%s' "$release" | python3 -c 'import json,sys; print("\n".join(a["name"] for a in json.load(sys.stdin)["assets"]))' | sort)
+            expected=$(printf '%s\n' $PUBLISH_EXPECTED_RELEASE_ASSETS | sort)
+            echo "release: release holds: $(printf '%s' "$attached" | tr '\n' ' ')"
+            missing=$(comm -13 <(printf '%s\n' "$attached") <(printf '%s\n' "$expected") | tr '\n' ' ')
+            unexpected=$(comm -23 <(printf '%s\n' "$attached") <(printf '%s\n' "$expected") | tr '\n' ' ')
+            if [ -n "${missing// /}" ] || [ -n "${unexpected// /}" ]; then
+              echo "release: refusing to publish — the release does not hold exactly the expected assets" >&2
+              [ -n "${missing// /}" ] && echo "release:   missing:    $missing" >&2
+              [ -n "${unexpected// /}" ] && echo "release:   unexpected: $unexpected" >&2
+              exit 1
+            fi
+
             curl -fsSL -X PATCH "$api/releases/$release_id" \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Authorization: Bearer $TECODE_RELEASE_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               -d '{"draft":false}' > /dev/null
 
@@ -335,8 +437,6 @@ workflows:
               ignore: /.*/
       - build-linux-arm64:
           filters: *release-tags
-      - build-darwin-arm64:
-          filters: *release-tags
       - build-windows-x64:
           filters: *release-tags
       - publish:
@@ -344,5 +444,4 @@ workflows:
           requires:
             - build-linux-x64
             - build-linux-arm64
-            - build-darwin-arm64
             - build-windows-x64
