@@ -68,12 +68,13 @@
 # to download and is pointed at the README's "From source" instructions
 # (`bun run packages/cli/src/main.ts`) instead.
 #
-# `PUBLISH_EXPECTED_CI_BINARIES` (3) and `PUBLISH_EXPECTED_RELEASE_
-# BINARIES` (4) below MUST always equal, respectively, the number of
-# `builtBy: "circleci"` entries in `RELEASE_TARGETS` and
-# `RELEASE_TARGETS.length` itself (`scripts/release.test.ts` pins both
-# invariants and fails the build if either drifts from `scripts/
-# release.ts`), so if a target is ever added, dropped, or moves between
+# `PUBLISH_EXPECTED_CI_ASSETS` and `PUBLISH_EXPECTED_RELEASE_ASSETS` below
+# list exact file names — the artifacts this workflow's own build jobs must
+# produce, and the ones the finished release must carry. They MUST always
+# equal, respectively, the `builtBy: "circleci"` subset of `RELEASE_TARGETS`
+# and all of it (`scripts/release.test.ts` derives both lists from
+# `RELEASE_TARGETS` and fails the build if either drifts from `scripts/
+# release.ts`), so if a target is added, dropped, renamed, or moves between
 # `"local"`/`"circleci"`, this file and `scripts/release.ts` need updating
 # together.
 #
@@ -280,17 +281,32 @@ jobs:
           # silently drift apart. Change this the same commit you change
           # RELEASE_TARGETS or its builtBy split, or that test fails.
           environment:
-            PUBLISH_EXPECTED_CI_BINARIES: "3"
+            # The exact file names build-linux-x64, build-linux-arm64 and
+            # build-windows-x64 must have left in the shared workspace —
+            # NOT a count. A count of 3 is satisfied by three files with
+            # the wrong names, which is precisely the shape a rename or a
+            # half-migrated target set produces, so match the set instead.
+            PUBLISH_EXPECTED_CI_ASSETS: >-
+              tecode-linux-x64
+              tecode-linux-x64.sha256
+              tecode-linux-arm64
+              tecode-linux-arm64.sha256
+              tecode-windows-x64.exe
+              tecode-windows-x64.exe.sha256
           command: |
             set -euo pipefail
             ls -la dist/
-            BIN_COUNT=$(find dist -maxdepth 1 -type f -name 'tecode-*' ! -name '*.sha256' | wc -l | tr -d ' ')
-            SHA_COUNT=$(find dist -maxdepth 1 -type f -name '*.sha256' | wc -l | tr -d ' ')
-            echo "release: found $BIN_COUNT binaries and $SHA_COUNT checksums from this workflow's own build jobs"
-            if [ "$BIN_COUNT" -ne "$PUBLISH_EXPECTED_CI_BINARIES" ] || [ "$SHA_COUNT" -ne "$PUBLISH_EXPECTED_CI_BINARIES" ]; then
-              echo "release: refusing to publish — expected $PUBLISH_EXPECTED_CI_BINARIES of each from build-linux-x64/build-linux-arm64/build-windows-x64, got $BIN_COUNT and $SHA_COUNT" >&2
+            found=$(find dist -maxdepth 1 -type f -name 'tecode-*' -exec basename {} \; | sort)
+            expected=$(printf '%s\n' $PUBLISH_EXPECTED_CI_ASSETS | sort)
+            missing=$(comm -13 <(printf '%s\n' "$found") <(printf '%s\n' "$expected") | tr '\n' ' ')
+            unexpected=$(comm -23 <(printf '%s\n' "$found") <(printf '%s\n' "$expected") | tr '\n' ' ')
+            if [ -n "${missing// /}" ] || [ -n "${unexpected// /}" ]; then
+              echo "release: refusing to publish — this workflow's own build jobs did not produce exactly the expected artifacts" >&2
+              [ -n "${missing// /}" ] && echo "release:   missing:    $missing" >&2
+              [ -n "${unexpected// /}" ] && echo "release:   unexpected: $unexpected" >&2
               exit 1
             fi
+            echo "release: all 6 expected CircleCI-built artifacts present"
       - run:
           name: Find the bun run tag draft release, attach this workflow's assets, and publish
           # CIRCLE_TAG is passed through the environment rather than
@@ -299,13 +315,28 @@ jobs:
           # so a directly-substituted tag would be executed by the shell under
           # a token that can write repository contents.
           #
-          # MUST always equal RELEASE_TARGETS.length (scripts/release.ts,
-          # currently 4) — scripts/release.test.ts pins this invariant too,
-          # separately from PUBLISH_EXPECTED_CI_BINARIES above (that one
-          # is "how many CircleCI itself built this run"; this one is "how
-          # many the finished release must hold in total").
+          # Every asset the FINISHED release must carry: one binary and
+          # one checksum per RELEASE_TARGETS entry, the `bun run tag`
+          # macOS pair included. Distinct from PUBLISH_EXPECTED_CI_ASSETS
+          # above, which is only what THIS workflow's build jobs produce.
+          #
+          # Names, not a count, for the reason above and one more specific
+          # to this check: the release already holds assets uploaded by a
+          # different machine at a different time (`bun run tag`), so "4
+          # binaries are present" does not establish that the macOS one is
+          # among them — a stray or misnamed asset makes the arithmetic
+          # work out while the platform a user came for is still missing.
+          # scripts/release.test.ts pins this list against RELEASE_TARGETS.
           environment:
-            PUBLISH_EXPECTED_RELEASE_BINARIES: "4"
+            PUBLISH_EXPECTED_RELEASE_ASSETS: >-
+              tecode-darwin-arm64
+              tecode-darwin-arm64.sha256
+              tecode-linux-x64
+              tecode-linux-x64.sha256
+              tecode-linux-arm64
+              tecode-linux-arm64.sha256
+              tecode-windows-x64.exe
+              tecode-windows-x64.exe.sha256
           command: |
             set -euo pipefail
 
@@ -371,11 +402,15 @@ jobs:
             release=$(curl -fsSL "$api/releases/$release_id" \
               -H "Authorization: Bearer $TECODE_RELEASE_TOKEN" \
               -H "Accept: application/vnd.github+json")
-            ASSET_BIN_COUNT=$(printf '%s' "$release" | python3 -c 'import json,sys; a=json.load(sys.stdin)["assets"]; print(sum(1 for x in a if x["name"].startswith("tecode-") and not x["name"].endswith(".sha256")))')
-            ASSET_SHA_COUNT=$(printf '%s' "$release" | python3 -c 'import json,sys; a=json.load(sys.stdin)["assets"]; print(sum(1 for x in a if x["name"].endswith(".sha256")))')
-            echo "release: release now holds $ASSET_BIN_COUNT binaries and $ASSET_SHA_COUNT checksums"
-            if [ "$ASSET_BIN_COUNT" -ne "$PUBLISH_EXPECTED_RELEASE_BINARIES" ] || [ "$ASSET_SHA_COUNT" -ne "$PUBLISH_EXPECTED_RELEASE_BINARIES" ]; then
-              echo "release: refusing to publish — expected $PUBLISH_EXPECTED_RELEASE_BINARIES of each on the finished release, got $ASSET_BIN_COUNT and $ASSET_SHA_COUNT" >&2
+            attached=$(printf '%s' "$release" | python3 -c 'import json,sys; print("\n".join(a["name"] for a in json.load(sys.stdin)["assets"]))' | sort)
+            expected=$(printf '%s\n' $PUBLISH_EXPECTED_RELEASE_ASSETS | sort)
+            echo "release: release holds: $(printf '%s' "$attached" | tr '\n' ' ')"
+            missing=$(comm -13 <(printf '%s\n' "$attached") <(printf '%s\n' "$expected") | tr '\n' ' ')
+            unexpected=$(comm -23 <(printf '%s\n' "$attached") <(printf '%s\n' "$expected") | tr '\n' ' ')
+            if [ -n "${missing// /}" ] || [ -n "${unexpected// /}" ]; then
+              echo "release: refusing to publish — the release does not hold exactly the expected assets" >&2
+              [ -n "${missing// /}" ] && echo "release:   missing:    $missing" >&2
+              [ -n "${unexpected// /}" ] && echo "release:   unexpected: $unexpected" >&2
               exit 1
             fi
 

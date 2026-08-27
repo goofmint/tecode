@@ -90,7 +90,7 @@ describe("publish job env <-> RELEASE_TARGETS invariants (.circleci/config.yml <
    * `key`. YAML has no distinct "quoted string that looks like a number"
    * type marker once parsed — `"4"` and `4` both come back needing this
    * same coercion, so `Number(...)` covers either spelling. */
-  async function readPublishEnvNumber(key: string): Promise<number> {
+  async function readPublishEnv(key: string): Promise<string> {
     const configPath = resolve(import.meta.dir, "..", ".circleci", "config.yml");
     const configText = await readFile(configPath, "utf8");
     const config = Bun.YAML.parse(configText) as {
@@ -102,29 +102,55 @@ describe("publish job env <-> RELEASE_TARGETS invariants (.circleci/config.yml <
       (step): step is CircleCiRunStep => typeof step === "object" && step.run?.environment?.[key] !== undefined,
     );
     expect(stepWithEnv).toBeDefined();
-    return Number(stepWithEnv!.run!.environment![key]);
+    return stepWithEnv!.run!.environment![key];
   }
 
-  test("PUBLISH_EXPECTED_CI_BINARIES equals the number of RELEASE_TARGETS CircleCI itself builds", async () => {
+  /** Both env vars are YAML folded scalars (`>-`), so they reach the shell
+   * as one whitespace-separated string — exactly how the `publish` job's
+   * `printf '%s\n' $VAR` consumes them (deliberately unquoted, so the
+   * shell word-splits). Split the same way here, rather than on `" "`
+   * specifically, so a reflow of the YAML block cannot change what this
+   * test compares. */
+  function splitAssetList(raw: string): readonly string[] {
+    return raw.trim().split(/\s+/);
+  }
+
+  /** The binary and checksum file names `targets` produce, derived from
+   * {@link binaryFileName} rather than restated — a rename there has to
+   * reach `.circleci/config.yml` or these tests fail, which is the whole
+   * point of pinning names instead of a count. */
+  function expectedAssetNames(targets: readonly ReleaseTarget[]): readonly string[] {
+    return targets.flatMap((t) => [binaryFileName(t), `${binaryFileName(t)}.sha256`]);
+  }
+
+  test("PUBLISH_EXPECTED_CI_ASSETS is exactly what the builtBy:\"circleci\" targets produce", async () => {
     // Since bun-darwin-arm64 moved to `builtBy: "local"` (built by `bun run
     // tag` on the owner's Mac, never by a CircleCI job), the workspace
-    // `publish` downloads from ITS OWN build jobs holds only the
-    // `builtBy: "circleci"` targets — 3, not RELEASE_TARGETS.length (4).
-    // This is the number `publish`'s first artifact-count guard checks
-    // BEFORE it ever talks to the GitHub API.
-    const expected = await readPublishEnvNumber("PUBLISH_EXPECTED_CI_BINARIES");
-    const circleciBuilt = RELEASE_TARGETS.filter((t) => t.builtBy === "circleci").length;
-    expect(expected).toBe(circleciBuilt);
+    // `publish` collects from ITS OWN build jobs holds only the
+    // `builtBy: "circleci"` targets — 3 of the 4. This is what `publish`'s
+    // first guard checks BEFORE it ever talks to the GitHub API.
+    const declared = splitAssetList(await readPublishEnv("PUBLISH_EXPECTED_CI_ASSETS"));
+    const derived = expectedAssetNames(RELEASE_TARGETS.filter((t) => t.builtBy === "circleci"));
+    expect([...declared].sort()).toEqual([...derived].sort());
   });
 
-  test("PUBLISH_EXPECTED_RELEASE_BINARIES equals RELEASE_TARGETS.length", async () => {
-    // This is the SEPARATE number `publish` checks against the finished
-    // GitHub Release itself, after uploading its own 3 assets on top of
-    // the 1 `bun run tag` already put there — the release must end up with
-    // one of each binary/checksum per RELEASE_TARGETS entry, local or
-    // CircleCI-built alike, before `publish` PATCHes draft:false.
-    const expected = await readPublishEnvNumber("PUBLISH_EXPECTED_RELEASE_BINARIES");
-    expect(expected).toBe(RELEASE_TARGETS.length);
+  test("PUBLISH_EXPECTED_RELEASE_ASSETS is exactly what ALL of RELEASE_TARGETS produces", async () => {
+    // The SEPARATE list `publish` checks against the finished GitHub
+    // Release, after uploading its own 6 assets on top of the 2 `bun run
+    // tag` already put there. Names, not a count: the macOS pair arrives
+    // from a different machine at a different time, so only matching names
+    // establishes that it actually arrived.
+    const declared = splitAssetList(await readPublishEnv("PUBLISH_EXPECTED_RELEASE_ASSETS"));
+    const derived = expectedAssetNames(RELEASE_TARGETS);
+    expect([...declared].sort()).toEqual([...derived].sort());
+  });
+
+  test("the two lists differ by exactly the locally-built target's assets", () => {
+    // Guards the split itself: if every target were marked `"circleci"`,
+    // or the macOS one silently rejoined the CI matrix, both lists above
+    // would still each be self-consistent while this relationship broke.
+    const local = RELEASE_TARGETS.filter((t) => t.builtBy === "local");
+    expect(expectedAssetNames(local)).toEqual(["tecode-darwin-arm64", "tecode-darwin-arm64.sha256"]);
   });
 });
 
