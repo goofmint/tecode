@@ -48,24 +48,34 @@
 # ever added back (new CircleCI resource class, or new owned hardware), both
 # this file and `scripts/release.ts` need updating together.
 #
-# ## Self-hosted runners: what to substitute, and how to register one
+# ## Self-hosted runners: register these before the first tag push
 #
-# The `macos-arm64-self-hosted` and `windows-x64-self-hosted` executors below
-# are PLACEHOLDERS naming a `<namespace>/<resource-class>` pair that does not
-# exist until you create it. For EACH of the owner's two machines (the Apple
-# Silicon Mac and the in-house Windows x64 box):
+# `build-darwin-arm64` and `build-windows-x64` target the resource classes
+# `goofmint/macos-arm64` and `goofmint/windows-x64`. Those names are written
+# out in full rather than left as `<namespace>/<name>`-style placeholders
+# because `<` and `>` are not legal in a resource class name: CircleCI's
+# config compiler rejects the whole file ("Invalid format in resource class")
+# before any job runs, so a bracketed placeholder does not merely fail to
+# match a runner — it breaks the pipeline outright.
 #
-#   1. `circleci runner resource-class create <namespace>/<name> "<description>" --generate-token`
-#      (run once per machine, from a machine with the CircleCI CLI installed
-#      and authenticated — this is a CircleCI *project/org* namespace you
-#      choose, not a hostname). This prints a runner AUTH TOKEN — copy it,
-#      it is shown only once.
+# They are still names that DO NOT EXIST until created. `goofmint` is the
+# expected CircleCI namespace (it defaults to the VCS org name); confirm it
+# with `circleci namespace` and change both here if yours differs. For EACH
+# of the two machines (the Apple Silicon Mac and the in-house Windows x64
+# box):
+#
+#   1. `circleci runner resource-class create goofmint/macos-arm64 "<description>" --generate-token`
+#      (and likewise for `goofmint/windows-x64`) — run once per machine,
+#      from anywhere with the CircleCI CLI installed and authenticated.
+#      This prints a runner AUTH TOKEN — copy it, it is shown only once.
 #   2. Install "machine runner 3" on that physical machine (CircleCI's
 #      installer for macOS/Windows), configuring it with the resource class
 #      name and auth token from step 1. The runner then polls CircleCI for
 #      jobs targeting that resource class and executes them locally.
-#   3. Replace `<namespace>/macos-arm64` and `<namespace>/windows-x64` below
-#      with the REAL `<namespace>/<name>` pairs step 1 created.
+#
+# Until step 1 runs for a given machine, its build job stays queued with no
+# runner to claim it, and `publish` — which `requires` all four builds —
+# never starts. Nothing is published from a half-registered setup.
 #
 # ## Required project configuration
 #
@@ -88,11 +98,11 @@ executors:
       image: ubuntu-2404:current
     resource_class: arm.medium
   # SELF-HOSTED — the owner's own Apple Silicon Mac, not a CircleCI-hosted
-  # image. `<namespace>/macos-arm64` is a PLACEHOLDER: replace it with the
-  # real `<namespace>/<name>` pair created by running (once, from a machine
-  # with the CircleCI CLI authenticated against this project):
+  # image. `goofmint/macos-arm64` does not exist until it is registered;
+  # create it once, from anywhere with the CircleCI CLI authenticated
+  # against this project:
   #
-  #   circleci runner resource-class create <namespace>/macos-arm64 \
+  #   circleci runner resource-class create goofmint/macos-arm64 \
   #     "tecode release: owner's Apple Silicon Mac" --generate-token
   #
   # then install "machine runner 3" on that Mac using the resource class name
@@ -103,12 +113,12 @@ executors:
   # above; it is NOT the hosted `macos:` executor type.
   macos-arm64-self-hosted:
     machine: true
-    resource_class: "<namespace>/macos-arm64"
+    resource_class: goofmint/macos-arm64
   # SELF-HOSTED — the owner's own in-house Windows x64 machine. Same
-  # placeholder convention as above: replace `<namespace>/windows-x64` with
-  # the real pair from
+  # register-before-first-use rule as above; create `goofmint/windows-x64`
+  # with
   #
-  #   circleci runner resource-class create <namespace>/windows-x64 \
+  #   circleci runner resource-class create goofmint/windows-x64 \
   #     "tecode release: owner's Windows x64 box" --generate-token
   #
   # then install machine runner 3 on that Windows machine with the resulting
@@ -120,7 +130,7 @@ executors:
   # default to resolve.
   windows-x64-self-hosted:
     machine: true
-    resource_class: "<namespace>/windows-x64"
+    resource_class: goofmint/windows-x64
     shell: bash.exe
 
 commands:
@@ -197,6 +207,7 @@ jobs:
           name: Install Bun
           shell: powershell.exe
           command: |
+            $ErrorActionPreference = "Stop"
             irm bun.sh/install.ps1 | iex
       - run:
           name: Build bun-windows-x64
@@ -204,7 +215,7 @@ jobs:
           # is not on PATH in this shell yet.
           command: |
             set -euo pipefail
-            export PATH="$USERPROFILE/.bun/bin:$PATH"
+            export PATH="$(cygpath -u "$USERPROFILE")/.bun/bin:$PATH"
             bun --version
             bun install --frozen-lockfile
             bun run release bun-windows-x64
@@ -259,6 +270,16 @@ jobs:
             api="https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
 
             notes=$(cat docs/release-notes-template.md)
+
+            # Created as a DRAFT, flipped to published only after the last
+            # asset uploads. The API's own default is draft:false, which
+            # would make the release page reachable the instant it is
+            # created — someone landing there mid-upload would see a real
+            # release missing however many binaries had not arrived yet,
+            # with nothing to distinguish it from a finished one. A draft
+            # is invisible to everyone but repo writers, so a failed upload
+            # leaves an unpublished draft to clean up rather than a public
+            # release that silently omits a platform.
             payload=$(
               TAG="$CIRCLE_TAG" NOTES="$notes" python3 -c '
             import json, os
@@ -266,25 +287,35 @@ jobs:
                 "tag_name": os.environ["TAG"],
                 "name": "tecode " + os.environ["TAG"],
                 "body": os.environ["NOTES"],
+                "draft": True,
             }))'
             )
 
-            upload_url=$(
+            created=$(
               curl -fsSL -X POST "$api/releases" \
                 -H "Authorization: Bearer $GITHUB_TOKEN" \
                 -H "Accept: application/vnd.github+json" \
-                -d "$payload" |
-              python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])'
+                -d "$payload"
             )
+            release_id=$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+            upload_url=$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])')
 
             for asset in dist/tecode-*; do
               name=$(basename "$asset")
               echo "release: uploading $name"
+              # `set -e` plus curl's `-f` means a failed upload aborts the
+              # step here, before the publish below — the draft stays a
+              # draft, which is the intended failure mode.
               curl -fsSL -X POST "$upload_url?name=$name" \
                 -H "Authorization: Bearer $GITHUB_TOKEN" \
                 -H "Content-Type: application/octet-stream" \
                 --data-binary "@$asset" > /dev/null
             done
+
+            curl -fsSL -X PATCH "$api/releases/$release_id" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -d '{"draft":false}' > /dev/null
 
             echo "release: published $CIRCLE_TAG"
 
