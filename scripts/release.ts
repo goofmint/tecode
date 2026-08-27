@@ -18,6 +18,12 @@
  * four {@link RELEASE_TARGETS}; with one or more `bun build --target=...`
  * names (e.g. `bun run release bun-linux-x64`), builds only those. This is
  * what lets a single-platform CI runner build just its own target (below).
+ * `bun-darwin-arm64` (the one {@link ReleaseTarget.builtBy} `"local"`
+ * target) can still be built directly this way for a local smoke-test, but
+ * the actual release flow builds it as one step of `bun run tag`
+ * (`scripts/tagRelease.ts`), never as a standalone `bun run release
+ * bun-darwin-arm64` invocation — this script has no knowledge of releases,
+ * tags, or the GitHub API at all, only of building and checksumming.
  *
  * ## Why there is no extra bundler config for embedding
  *
@@ -106,12 +112,19 @@
  *
  * **The fix is the matrix, not this script**: each target must be built on
  * a runner of that platform, so its OWN `@opentui/core-<platform>-<arch>`
- * links natively and the dynamic import above resolves normally. That is
- * exactly the tag-triggered CircleCI release pipeline (`.circleci/
- * config.yml`) — this script's target filter (`bun run release <target>`)
- * is the seam that pipeline uses: each platform's runner (two of them
- * self-hosted — see that config's own comments) invokes this script with
- * just its own target name.
+ * links natively and the dynamic import above resolves normally. For the
+ * three {@link ReleaseTarget.builtBy} `"circleci"` targets that is exactly
+ * the tag-triggered CircleCI release pipeline (`.circleci/config.yml`) —
+ * this script's target filter (`bun run release <target>`) is the seam
+ * that pipeline uses: each platform's runner (one of the three
+ * self-hosted, the owner's Windows box — see that config's own comments)
+ * invokes this script with just its own target name. The fourth,
+ * `builtBy: "local"` target (`bun-darwin-arm64`) is instead built by
+ * `bun run tag` (`scripts/tagRelease.ts`) on the owner's own Apple Silicon
+ * Mac — the owner declined to install a CircleCI machine runner there, so
+ * this one target's build, its release upload, AND the tag push that fires
+ * CircleCI for the other three all happen locally in one command. See
+ * `scripts/tagRelease.ts`'s own TSDoc for the full flow.
  *
  * ## Two targets were dropped, not just left off this machine
  *
@@ -126,12 +139,13 @@
  * - **`bun-darwin-x64` (Intel macOS)**: CircleCI removed every Intel macOS
  *   resource class in June 2024 — its hosted `macos` executor is Apple
  *   silicon only. The project owner's own Mac is Apple silicon
- *   (`bun-darwin-arm64`, self-hosted below); they have no Intel Mac to
- *   build or verify an Intel binary on.
+ *   (`bun-darwin-arm64`, built locally by `bun run tag` — see
+ *   {@link ReleaseTarget.builtBy}); they have no Intel Mac to build or
+ *   verify an Intel binary on.
  * - **`bun-windows-arm64` (Windows on Arm)**: CircleCI offers no Windows
  *   arm64 resource class, hosted or self-hosted. The owner's in-house
- *   Windows machine is x64 (`bun-windows-x64`, self-hosted below); they
- *   have no Windows-on-Arm device either.
+ *   Windows machine is x64 (`bun-windows-x64`, self-hosted on CircleCI);
+ *   they have no Windows-on-Arm device either.
  *
  * These two were considered and explicitly ruled out — not forgotten. If a
  * future CircleCI release adds an Intel-macOS or Windows-arm64 resource
@@ -178,6 +192,32 @@ export interface ReleaseTarget {
   readonly bunTarget: string;
   readonly platform: "darwin" | "linux" | "windows";
   readonly arch: "x64" | "arm64";
+  /**
+   * WHO builds this target and pushes it into the release, not just which
+   * machine's architecture it needs (every target still needs a runner of
+   * its own platform — see this module's "Why this machine cannot produce
+   * even the four remaining binaries" — this field is about which
+   * *pipeline* invokes that build):
+   *
+   * - `"local"` — built on the project owner's own Apple Silicon Mac by
+   *   `bun run tag` (`scripts/tagRelease.ts`), which also creates the draft
+   *   GitHub Release and uploads this target's two assets, all BEFORE the
+   *   tag that fires CircleCI is pushed. The owner declined to install a
+   *   CircleCI machine runner on their Mac, so this is the one target
+   *   CircleCI's `release` workflow never builds at all — no
+   *   `build-darwin-arm64` job exists.
+   * - `"circleci"` — built by a job in `.circleci/config.yml`'s `release`
+   *   workflow, on either a CircleCI-hosted executor (`bun-linux-x64`,
+   *   `bun-linux-arm64`) or the owner's self-hosted Windows runner
+   *   (`bun-windows-x64`).
+   *
+   * `publish` (CircleCI) finds the draft `bun run tag` already created,
+   * uploads only the `"circleci"` targets' assets to it, verifies the
+   * release holds all {@link RELEASE_TARGETS}`.length` binaries (its own
+   * three plus the local one already there), and only then publishes —
+   * see `.circleci/config.yml`'s `publish` job and `scripts/tagRelease.ts`.
+   */
+  readonly builtBy: "local" | "circleci";
 }
 
 /** The real, published 4-target release matrix (Req 13.2, design.md §17) —
@@ -190,12 +230,16 @@ export interface ReleaseTarget {
  * just left off this machine", for the full reasoning. Order is
  * deterministic (platform, then arch) purely for stable, readable output —
  * it has no bearing on correctness since every target builds
- * independently. */
+ * independently. Each entry's {@link ReleaseTarget.builtBy} records WHO
+ * builds it — `bun-darwin-arm64` is `"local"` (the owner's Mac, via
+ * `bun run tag`), the other three are `"circleci"` (see that field's own
+ * TSDoc for why this split exists and how the two pipelines meet at one
+ * GitHub Release). */
 export const RELEASE_TARGETS: readonly ReleaseTarget[] = [
-  { bunTarget: "bun-darwin-arm64", platform: "darwin", arch: "arm64" },
-  { bunTarget: "bun-linux-x64", platform: "linux", arch: "x64" },
-  { bunTarget: "bun-linux-arm64", platform: "linux", arch: "arm64" },
-  { bunTarget: "bun-windows-x64", platform: "windows", arch: "x64" },
+  { bunTarget: "bun-darwin-arm64", platform: "darwin", arch: "arm64", builtBy: "local" },
+  { bunTarget: "bun-linux-x64", platform: "linux", arch: "x64", builtBy: "circleci" },
+  { bunTarget: "bun-linux-arm64", platform: "linux", arch: "arm64", builtBy: "circleci" },
+  { bunTarget: "bun-windows-x64", platform: "windows", arch: "x64", builtBy: "circleci" },
 ];
 
 /**

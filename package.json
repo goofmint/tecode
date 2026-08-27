@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "cli": "bun packages/cli/src/main.ts",
     "bench": "bun test packages/cli/src/typingBenchmark.test.ts",
-    "release": "bun scripts/release.ts"
+    "release": "bun scripts/release.ts",
+    "tag": "bun scripts/tagRelease.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
