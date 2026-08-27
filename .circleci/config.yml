@@ -78,15 +78,6 @@
 
 version: 2.1
 
-# How many binaries (and therefore how many .sha256 files) the publish job
-# requires before it will create a release. Four, because that is what the
-# workflow below actually builds — raise it if you add the two missing
-# targets back via self-hosted runners.
-#
-# This gate exists so a partial matrix can never publish a release that
-# silently omits a platform: a user downloading it would find their build
-# missing with no indication anything went wrong.
-
 executors:
   linux-x64:
     machine:
