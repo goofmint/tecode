@@ -4,9 +4,9 @@
 
 Issue #36 "4.5 CI pipeline" (Req 13.1, 13.2, 13.4; design.md §15, §16).
 `.github/workflows/ci.yml` runs five independent jobs on every push to
-`main` and every pull request; `.github/workflows/release.yml` runs a
-sixth, tag-triggered job (see the "Release" section below). Each CI job
-is reproducible locally with one `bun run` script:
+`main` and every pull request; a separate, tag-triggered CircleCI pipeline
+(`.circleci/config.yml`) handles releases (see the "Release" section
+below). Each CI job is reproducible locally with one `bun run` script:
 
 | CI job        | Local command         | What it checks |
 |---------------|------------------------|-----------------|
@@ -49,42 +49,50 @@ this repo's own CI/dev environment doesn't have — see
 [`docs/manual-release-verification.md`](docs/manual-release-verification.md)
 for the exact procedure.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds all
-six `RELEASE_TARGETS` in parallel — one matched-architecture runner per
-target (see that workflow's own top-of-file comment for the full "why six
-runners, not three" explanation and the exact target→runner table), each
-invoking `bun run release <its-own-target>` so it only ever builds the one
-target its own `@opentui/core` native optional dependency can actually
-link for. Every target uploads its binary as its own artifact
-(`tecode-<target>`) and a small size-report JSON; a final `summary` job
-(`if: always()`, so it still runs and reports even if one leg failed)
-collects those into a target × size Markdown table written to the run's
-job summary, checked against `scripts/release.ts`'s own
-`SIZE_LIMIT_BYTES` (120,000,000 bytes, the decimal — stricter — reading of
-"≤ 120 MB").
+Pushing a `v*` tag runs the CircleCI pipeline in `.circleci/config.yml`,
+which builds all four `RELEASE_TARGETS` in parallel — one runner per
+target, two of them CircleCI-hosted and two self-hosted on the project
+owner's own machines (see that config's own top-of-file comment for the
+full explanation and the exact target→runner table), each invoking
+`bun run release <its-own-target>` so it only ever builds the one target
+its own `@opentui/core` native optional dependency can actually link for.
+Every target persists its binary and checksum to a shared workspace for
+the `publish` job.
+
+Only four of the six theoretically possible `darwin`/`linux`/`windows` ×
+`x64`/`arm64` combinations are published: `bun-darwin-x64` (Intel macOS)
+and `bun-windows-arm64` (Windows on Arm) are dropped, not deferred — no CI
+runner of either architecture exists (the release provider removed its
+Intel-macOS resource class in June 2024 and offers no Windows-arm64 one at
+all), and the project owner has neither an Intel Mac nor a Windows-on-Arm
+machine to self-host either on. Cross-compiling either from another
+platform is impossible for the same `@opentui/core` reason no target can
+be cross-compiled at all (`scripts/release.ts`'s TSDoc, "Why this machine
+cannot produce even the four remaining binaries"). If you're on one of
+the two dropped platforms, see "From source" below — running from source
+works today, no release required.
 
 Issue #38 "5.2 User documentation and release" adds a SHA-256 checksum
 next to every binary (`scripts/release.ts`'s `writeChecksumFile`, run as
 part of the same `bun run release <target>` invocation — see that
-script's TSDoc) and a `publish` job that runs only once all six matrix
-legs succeed: it downloads every binary and checksum, refuses to proceed
-unless exactly six of each are present, and runs `gh release create`
-against the pushed tag with `docs/release-notes-template.md` as the
-release body. `publish` is the only job in this workflow with
-`contents: write`, scoped to itself in its own `permissions:` block —
-`build` and `summary` stay read-only (`.github/workflows/release.yml`'s
-top-of-file comment).
+script's TSDoc) and a `publish` job that runs only once all four build
+jobs succeed: it refuses to proceed unless exactly four binaries and four
+checksums are present (`PUBLISH_EXPECTED_BINARIES`, kept equal to
+`RELEASE_TARGETS.length` by `scripts/release.test.ts`), then creates the
+GitHub Release directly against the GitHub API using a `GITHUB_TOKEN`
+configured in CircleCI project settings (CircleCI has no ambient
+equivalent of GitHub Actions' `github.token`).
 
 ## Install
 
-tecode ships as six self-contained, single-file compiled binaries — one
-per `darwin`/`linux`/`windows` × `x64`/`arm64` combination (Req 13.2) —
-built by `scripts/release.ts` and published as GitHub Release assets by
-`.github/workflows/release.yml`'s tag-triggered `publish` job (see
-"Release" above). No separate runtime install is required to RUN a
-downloaded binary; all packages in this monorepo are `"private": true`, so
-there is no `npm install -g tecode` — a compiled binary or a source
-checkout are the only two ways to run it.
+tecode ships as four self-contained, single-file compiled binaries — one
+per published target in `scripts/release.ts`'s `RELEASE_TARGETS` (Req
+13.2) — built and published as GitHub Release assets by the CircleCI
+pipeline's tag-triggered `publish` job (see "Release" above). No separate
+runtime install is required to RUN a downloaded binary; all packages in
+this monorepo are `"private": true`, so there is no `npm install -g
+tecode` — a compiled binary or a source checkout are the only two ways to
+run it.
 
 ### From a published release (once one exists)
 
@@ -93,11 +101,14 @@ checkout are the only two ways to run it.
    | Platform | Architecture | Asset |
    |---|---|---|
    | macOS | Apple Silicon | `tecode-darwin-arm64` |
-   | macOS | Intel | `tecode-darwin-x64` |
    | Linux | x64 | `tecode-linux-x64` |
    | Linux | arm64 | `tecode-linux-arm64` |
    | Windows | x64 | `tecode-windows-x64.exe` |
-   | Windows | arm64 | `tecode-windows-arm64.exe` |
+
+   **No binary is published for Intel macOS or Windows on Arm** — see
+   "Release" above for why. If you're on either platform, use "From
+   source" below (`bun packages/cli/src/main.ts`): it works on any
+   platform Bun itself supports, release or no release.
 
 2. Verify the checksum (each binary ships with a `<binary>.sha256`
    sibling asset — `scripts/release.ts`'s `writeChecksumFile`):
@@ -143,7 +154,13 @@ currently code-sign or notarize release binaries.
 4. To produce your own compiled binary for your own machine's platform:
    `bun run release <target>` (e.g. `bun run release bun-linux-x64`) —
    see the "Release" section above for why this machine can only ever
-   build ITS OWN host target, not the other five.
+   build ITS OWN host target, not the other three. This does NOT cover
+   Intel macOS or Windows on Arm: `RELEASE_TARGETS` no longer names
+   `bun-darwin-x64`/`bun-windows-arm64` at all (the "Release" section's
+   dropped-platforms note), so `bun run release` on those two rejects the
+   target name outright rather than attempting a build — running from
+   source (step 3 above) is genuinely the only option there, not just the
+   convenient one.
 
 ## Keybindings reference
 

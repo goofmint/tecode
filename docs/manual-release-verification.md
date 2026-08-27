@@ -24,7 +24,7 @@ specifically-named document a reader can find and update independently of
 any one source file. `scripts/release.ts`'s own TSDoc points here, and so
 does `README.md`, so either entry point reaches it.
 
-## 1. The five non-Linux targets
+## 1. The three non-Linux-x64 targets
 
 **Why this can't run here**: `@opentui/core` ships six platform-specific
 optional dependencies (`@opentui/core-{darwin,linux,win32}-{x64,arm64}`),
@@ -42,15 +42,28 @@ that script recognizes this exact signature and labels it as a known
 limitation rather than a generic build failure, but it does not — and
 cannot — work around it.
 
-**Procedure** (run once per platform, on a real machine or CI runner of
-that platform — this is exactly what Issue #36's tag-triggered release
-matrix automates):
+**Only four targets are published at all**: `scripts/release.ts`'s
+`RELEASE_TARGETS` is `bun-darwin-arm64`, `bun-linux-x64`,
+`bun-linux-arm64`, and `bun-windows-x64` — NOT the full six-way
+`darwin`/`linux`/`windows` × `x64`/`arm64` cross-product. `bun-darwin-x64`
+(Intel macOS) and `bun-windows-arm64` (Windows on Arm) are gone from the
+matrix entirely: the release pipeline's CI provider has no runner of
+either architecture (no Intel-macOS resource class since June 2024, no
+Windows-arm64 resource class at all), and the project has no such hardware
+to self-host either one. There is nothing to manually verify for those two
+— they are not built anywhere, by anyone, as a deliberate decision, not an
+oversight (`scripts/release.ts`'s TSDoc, "Two targets were dropped, not
+just left off this machine"). This section's procedure therefore covers
+the three remaining non-host targets only.
 
-1. On a `darwin`/`x64`, `darwin`/`arm64`, `linux`/`arm64`, `windows`/`x64`,
-   or `windows`/`arm64` machine with Bun installed, clone the repo and run
-   `bun install` — this links that host's OWN
-   `@opentui/core-<platform>-<arch>` package, which is what makes the
-   build possible at all.
+**Procedure** (run once per platform, on a real machine or CI runner of
+that platform — this is exactly what the tag-triggered CircleCI release
+pipeline, `.circleci/config.yml`, automates):
+
+1. On a `darwin`/`arm64`, `linux`/`arm64`, or `windows`/`x64` machine with
+   Bun installed, clone the repo and run `bun install` — this links that
+   host's OWN `@opentui/core-<platform>-<arch>` package, which is what
+   makes the build possible at all.
 2. Run `bun run release bun-<platform>-<arch>` (the exact target name from
    `scripts/release.ts`'s `RELEASE_TARGETS`, e.g. `bun run release
    bun-darwin-arm64`).
@@ -61,16 +74,14 @@ matrix automates):
    the script prints) in the PR — the exact command depends on the
    platform, since `scripts/release.ts`'s `binaryFileName` produces a
    `.exe` suffix on Windows and nothing else does:
-   - **macOS/Linux** (`bun-darwin-x64`, `bun-darwin-arm64`, `bun-linux-x64`,
-     `bun-linux-arm64`): `ls -la dist/tecode-<platform>-<arch>`, e.g. `ls
-     -la dist/tecode-darwin-arm64`.
-   - **Windows** (`bun-windows-x64`, `bun-windows-arm64`) — `ls -la` is not
-     a PowerShell command; use PowerShell's own `Get-Item` instead, and
-     don't forget the `.exe` suffix `binaryFileName` actually generates for
-     these two targets:
-     - x64: `(Get-Item .\dist\tecode-windows-x64.exe).Length`
-     - arm64: `(Get-Item .\dist\tecode-windows-arm64.exe).Length`
-4. Repeat for each of the remaining four targets.
+   - **macOS/Linux** (`bun-darwin-arm64`, `bun-linux-arm64`):
+     `ls -la dist/tecode-<platform>-<arch>`, e.g. `ls -la
+     dist/tecode-darwin-arm64`.
+   - **Windows** (`bun-windows-x64`) — `ls -la` is not a PowerShell
+     command; use PowerShell's own `Get-Item` instead, and don't forget
+     the `.exe` suffix `binaryFileName` actually generates for this
+     target: `(Get-Item .\dist\tecode-windows-x64.exe).Length`
+4. Repeat for each of the remaining two targets.
 
 ## 2. Windows `%APPDATA%\tecode\` resolution on real Windows
 

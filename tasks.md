@@ -182,7 +182,7 @@ Conventions for every task:
   - _Req 11.7; Design §13_
 
 - [ ] **4.4 Compiled binary builds**
-  - `bun build --compile` from `cli` with embedded assets (theme JSON, grammar WASMs, `.scm` queries, fallback keymap); asset-URI indirection verified in compiled mode; `scripts/release.ts` for the darwin/linux/windows × x64/arm64 matrix; Windows `%APPDATA%\tecode\` path handling behind the `paths` module.
+  - `bun build --compile` from `cli` with embedded assets (theme JSON, grammar WASMs, `.scm` queries, fallback keymap); asset-URI indirection verified in compiled mode; `scripts/release.ts` for the published 4-target matrix (`bun-darwin-arm64`, `bun-linux-x64`, `bun-linux-arm64`, `bun-windows-x64` — `bun-darwin-x64`/`bun-windows-arm64` dropped for lack of a CI runner of either architecture); Windows `%APPDATA%\tecode\` path handling behind the `paths` module.
   - _Req 8.5, 13.2; Design §17_
 
 - [ ] **4.5 CI pipeline**
@@ -200,7 +200,7 @@ Conventions for every task:
   - _Req 2.3, 2.7, 10; Design §4, §12_
 
 - [ ] **5.2 User documentation and release**
-  - README (install, keybindings table, settings reference, terminal support matrix, fallback-keymap notes), sample `settings.json`/`keybindings.json`, versioned release publishing of the 6 binaries.
+  - README (install, keybindings table, settings reference, terminal support matrix, fallback-keymap notes), sample `settings.json`/`keybindings.json`, versioned release publishing of the 4 binaries via the tag-triggered CircleCI pipeline (`.circleci/config.yml`).
   - _Req 9.5, 13.2, 13.3_
 
 ---

@@ -2,7 +2,7 @@
  * Unit tests for {@link release.ts}'s pure helpers (Req 8.5, 13.2,
  * design.md §17). Deliberately does NOT invoke a real `bun build --compile`
  * — that takes real wall-clock time, produces a real ~110 MB file, and (per
- * this module's own TSDoc, Finding 2) fails outright for 5 of 6 targets on
+ * this module's own TSDoc, Finding 2) fails outright for 3 of 4 targets on
  * any single-platform machine, none of which belongs in the always-on `bun
  * test` suite. {@link buildTarget} itself is exercised for real instead by
  * this task's manual validation step (`bun run release bun-linux-x64`,
@@ -10,6 +10,13 @@
  * consuming its output — this suite covers only the logic that decides
  * WHICH targets to build, WHAT to name their output, and HOW to classify a
  * failure, all of which is cheap and deterministic to test directly.
+ *
+ * Also covers the one cross-file invariant between this script and
+ * `.circleci/config.yml`: that config's `publish` job hard-codes
+ * `PUBLISH_EXPECTED_BINARIES` rather than reading {@link RELEASE_TARGETS}
+ * (a shell script has no import statement), so nothing stops the two from
+ * drifting except this test — see the `PUBLISH_EXPECTED_BINARIES` describe
+ * block below.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -31,25 +38,62 @@ import {
   type ReleaseTarget,
 } from "./release";
 
-describe("RELEASE_TARGETS (Req 13.2's darwin/linux/windows × x64/arm64)", () => {
-  test("has exactly the 6 required platform/arch combinations", () => {
-    expect(RELEASE_TARGETS).toHaveLength(6);
-    const platforms = new Set(RELEASE_TARGETS.map((t) => t.platform));
-    const archs = new Set(RELEASE_TARGETS.map((t) => t.arch));
-    expect([...platforms].sort()).toEqual(["darwin", "linux", "windows"]);
-    expect([...archs].sort()).toEqual(["arm64", "x64"]);
-    // Every platform × arch pairing is present exactly once.
-    for (const platform of platforms) {
-      for (const arch of archs) {
-        expect(RELEASE_TARGETS.filter((t) => t.platform === platform && t.arch === arch)).toHaveLength(1);
-      }
-    }
+describe("RELEASE_TARGETS (Req 13.2's published 4-target matrix)", () => {
+  test("is exactly the 4 targets a CircleCI runner actually exists for", () => {
+    // Asserting the real list, not a magic length: `toHaveLength(4)` alone
+    // would happily pass if `bun-darwin-x64` silently replaced
+    // `bun-linux-arm64`, say. Pinning the exact set (and, since arrays are
+    // ordered, the exact order) catches that a plain count cannot.
+    expect(RELEASE_TARGETS).toEqual([
+      { bunTarget: "bun-darwin-arm64", platform: "darwin", arch: "arm64" },
+      { bunTarget: "bun-linux-x64", platform: "linux", arch: "x64" },
+      { bunTarget: "bun-linux-arm64", platform: "linux", arch: "arm64" },
+      { bunTarget: "bun-windows-x64", platform: "windows", arch: "x64" },
+    ]);
+  });
+
+  test("does NOT include the two dropped targets — no runner of either architecture exists", () => {
+    const bunTargets = RELEASE_TARGETS.map((t) => t.bunTarget);
+    expect(bunTargets).not.toContain("bun-darwin-x64");
+    expect(bunTargets).not.toContain("bun-windows-arm64");
   });
 
   test("bunTarget strings match Bun's own bun-<platform>-<arch> naming", () => {
     for (const target of RELEASE_TARGETS) {
       expect(target.bunTarget).toBe(`bun-${target.platform}-${target.arch}`);
     }
+  });
+});
+
+describe("PUBLISH_EXPECTED_BINARIES (.circleci/config.yml <-> RELEASE_TARGETS invariant)", () => {
+  /** A CircleCI step is either the bare string `"checkout"` or a
+   * single-key mapping like `{ run: { name, environment, command } }` —
+   * this pulls out just the `run` steps that carry an `environment` map,
+   * regardless of which other step shapes (`checkout`, `attach_workspace`,
+   * `persist_to_workspace`) sit alongside them. */
+  interface CircleCiRunStep {
+    run?: { environment?: Record<string, string> };
+  }
+
+  test("the publish job's expected binary count equals RELEASE_TARGETS.length", async () => {
+    const configPath = resolve(import.meta.dir, "..", ".circleci", "config.yml");
+    const configText = await readFile(configPath, "utf8");
+    const config = Bun.YAML.parse(configText) as {
+      jobs: { publish: { steps: Array<string | CircleCiRunStep> } };
+    };
+
+    const publishSteps = config.jobs.publish.steps;
+    const stepWithEnv = publishSteps.find(
+      (step): step is CircleCiRunStep =>
+        typeof step === "object" && step.run?.environment?.PUBLISH_EXPECTED_BINARIES !== undefined,
+    );
+    expect(stepWithEnv).toBeDefined();
+
+    // YAML has no distinct "quoted string that looks like a number" type
+    // marker once parsed — `"4"` and `4` both come back needing this same
+    // coercion, so Number(...) covers either spelling.
+    const expected = Number(stepWithEnv!.run!.environment!.PUBLISH_EXPECTED_BINARIES);
+    expect(expected).toBe(RELEASE_TARGETS.length);
   });
 });
 
@@ -109,7 +153,7 @@ describe("classifyBuildFailure (Finding 2's cross-compile limitation)", () => {
 });
 
 describe("parseTargetFilter", () => {
-  test("with no arguments, defaults to all 6 targets", () => {
+  test("with no arguments, defaults to all 4 targets", () => {
     const { targets, unknown } = parseTargetFilter([]);
     expect(targets).toEqual([...RELEASE_TARGETS]);
     expect(unknown).toEqual([]);
@@ -122,8 +166,14 @@ describe("parseTargetFilter", () => {
   });
 
   test("with multiple target names, builds exactly those, in RELEASE_TARGETS order matching input order", () => {
-    const { targets } = parseTargetFilter(["bun-windows-x64", "bun-darwin-x64"]);
-    expect(targets.map((t: ReleaseTarget) => t.bunTarget)).toEqual(["bun-windows-x64", "bun-darwin-x64"]);
+    const { targets } = parseTargetFilter(["bun-windows-x64", "bun-darwin-arm64"]);
+    expect(targets.map((t: ReleaseTarget) => t.bunTarget)).toEqual(["bun-windows-x64", "bun-darwin-arm64"]);
+  });
+
+  test("a dropped target name (bun-darwin-x64, bun-windows-arm64) is reported as unknown, not built", () => {
+    const { targets, unknown } = parseTargetFilter(["bun-darwin-x64", "bun-windows-arm64"]);
+    expect(targets).toEqual([]);
+    expect(unknown).toEqual(["bun-darwin-x64", "bun-windows-arm64"]);
   });
 
   test("an unrecognized target name is reported in unknown, not silently dropped", () => {
@@ -216,9 +266,9 @@ describe("formatChecksumLine (sha256sum/shasum -a 256 compatible output)", () =>
   });
 
   test("uses only binaryFileName's bare output, never a path", () => {
-    const target = RELEASE_TARGETS.find((t) => t.bunTarget === "bun-windows-arm64")!;
+    const target = RELEASE_TARGETS.find((t) => t.bunTarget === "bun-windows-x64")!;
     const line = formatChecksumLine("cafebabe", binaryFileName(target));
-    expect(line).toBe("cafebabe  tecode-windows-arm64.exe\n");
+    expect(line).toBe("cafebabe  tecode-windows-x64.exe\n");
   });
 });
 

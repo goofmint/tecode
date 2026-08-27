@@ -325,7 +325,7 @@ A core `HostLog` collects structured errors; a `developer.showLog` command dumps
 ## 17. Build and Distribution
 
 - Dev: `bun run packages/cli/src/main.ts <path>`.
-- Release: `bun build --compile` per target (darwin/linux/windows × x64/arm64) from `cli`, embedding built-in extension assets (theme JSON, grammar WASM, highlight queries, fallback keymap). A `scripts/release.ts` drives the 6-target matrix and size assertions.
+- Release: `bun build --compile` per target from `cli`, embedding built-in extension assets (theme JSON, grammar WASM, highlight queries, fallback keymap). `bun build --compile` can in principle target any darwin/linux/windows × x64/arm64 combination, but `@opentui/core`'s platform-native optional dependencies make cross-compiling a non-host target impossible, so each target is built on a runner of its own platform. A `scripts/release.ts` drives the matrix and size assertions — published on CircleCI, it covers 4 of the 6 combinations (`bun-darwin-arm64`, `bun-linux-x64`, `bun-linux-arm64`, `bun-windows-x64`); `bun-darwin-x64` and `bun-windows-arm64` are dropped for lack of any runner of that architecture (Req 13.2, `scripts/release.ts`'s TSDoc).
 - Windows note: config path resolution uses `%APPDATA%\tecode\` when `~/.config` is not conventional, exposed uniformly through a `paths` module so the rest of the code never branches on platform.
 
 ## 18. Deferred Design Concerns
