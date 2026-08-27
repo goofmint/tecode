@@ -1,8 +1,11 @@
 # CircleCI release pipeline for tecode (Issue: tag-triggered binary release).
 #
-# Mirrors `.github/workflows/release.yml`: pushing a `v*` tag builds one
-# compiled binary per target on a runner of that target's OWN platform, then
-# publishes them as a GitHub Release with per-binary SHA-256 checksums.
+# Pushing a `v*` tag builds one compiled binary per target on a runner of
+# that target's OWN platform, then publishes them as a GitHub Release with
+# per-binary SHA-256 checksums. This is the ONLY release pipeline for this
+# repo — `.github/workflows/release.yml` has been deleted; keeping both
+# would let a single tag push race two pipelines to create the same GitHub
+# Release.
 #
 # ## Why one job per target, and not a build matrix on one machine
 #
@@ -12,29 +15,57 @@
 # `@opentui/core` resolves its native half through a template-string dynamic
 # import that Bun's bundler cannot statically resolve for a foreign platform.
 # Cross-compilation therefore fails outright — see `scripts/release.ts`'s
-# "Why this machine cannot produce all six binaries". Each target must be
-# built on its own architecture.
+# "Why this machine cannot produce even the four remaining binaries". Each
+# target must be built on its own architecture.
 #
-# ## What CircleCI can and cannot build
+# ## Only four targets are published — two are gone for good, not deferred
 #
-# CircleCI covers four of the project's six targets:
+# `RELEASE_TARGETS` in `scripts/release.ts` ships exactly these four:
 #
-#   bun-darwin-arm64   macos executor (Apple silicon)
-#   bun-linux-x64      machine executor, x86 resource class
-#   bun-linux-arm64    machine executor, arm resource class
-#   bun-windows-x64    windows executor
+#   bun-darwin-arm64   self-hosted runner, the owner's own Apple silicon Mac
+#   bun-linux-x64      CircleCI-hosted machine executor
+#   bun-linux-arm64    CircleCI-hosted machine executor, arm.medium
+#   bun-windows-x64    self-hosted runner, the owner's own Windows x64 box
 #
-# The other two have no CircleCI-hosted runner of the right architecture:
+# `bun-darwin-x64` (Intel macOS) and `bun-windows-arm64` (Windows on Arm) are
+# NOT built by anything, anywhere, in this pipeline:
 #
-#   bun-darwin-x64     CircleCI removed ALL Intel macOS resources in June 2024;
-#                      only Apple silicon remains. See the opt-in
-#                      `build-darwin-x64-rosetta` job below for an UNVERIFIED
-#                      workaround.
-#   bun-windows-arm64  CircleCI offers no Windows arm64 resource class.
+#   - CircleCI removed every Intel-macOS resource class in June 2024 — its
+#     hosted `macos` executor is Apple silicon only, and the owner has no
+#     Intel Mac to self-host one on either.
+#   - CircleCI offers no Windows-arm64 resource class at all, hosted or
+#     self-hosted, and the owner has no Windows-on-Arm device.
 #
-# Keep `.github/workflows/release.yml` for those two, or drop the platforms —
-# whichever you decide, `PUBLISH_EXPECTED_BINARIES` below must match, or the
-# publish job will refuse to release.
+# Both were considered and ruled out, not overlooked — see `scripts/
+# release.ts`'s TSDoc, "Two targets were dropped, not just left off this
+# machine", for the full reasoning. A user on either platform has no binary
+# to download and is pointed at the README's "From source" instructions
+# (`bun run packages/cli/src/main.ts`) instead.
+#
+# `PUBLISH_EXPECTED_BINARIES` below is 4 for exactly this reason — it MUST
+# always equal `RELEASE_TARGETS.length` (`scripts/release.test.ts` pins this
+# invariant and fails the build if the two drift apart), so if a target is
+# ever added back (new CircleCI resource class, or new owned hardware), both
+# this file and `scripts/release.ts` need updating together.
+#
+# ## Self-hosted runners: what to substitute, and how to register one
+#
+# The `macos-arm64-self-hosted` and `windows-x64-self-hosted` executors below
+# are PLACEHOLDERS naming a `<namespace>/<resource-class>` pair that does not
+# exist until you create it. For EACH of the owner's two machines (the Apple
+# Silicon Mac and the in-house Windows x64 box):
+#
+#   1. `circleci runner resource-class create <namespace>/<name> "<description>" --generate-token`
+#      (run once per machine, from a machine with the CircleCI CLI installed
+#      and authenticated — this is a CircleCI *project/org* namespace you
+#      choose, not a hostname). This prints a runner AUTH TOKEN — copy it,
+#      it is shown only once.
+#   2. Install "machine runner 3" on that physical machine (CircleCI's
+#      installer for macOS/Windows), configuring it with the resource class
+#      name and auth token from step 1. The runner then polls CircleCI for
+#      jobs targeting that resource class and executes them locally.
+#   3. Replace `<namespace>/macos-arm64` and `<namespace>/windows-x64` below
+#      with the REAL `<namespace>/<name>` pairs step 1 created.
 #
 # ## Required project configuration
 #
@@ -42,7 +73,8 @@
 #   holding a token with `contents: write` on this repository. Unlike GitHub
 #   Actions there is no ambient `github.token`; nothing here can publish
 #   without it.
-# - macOS and Windows executors require a paid CircleCI plan.
+# - The self-hosted runner auth tokens from step 1 above, configured on each
+#   physical machine's runner install — not stored in this repo.
 
 version: 2.1
 
@@ -64,15 +96,41 @@ executors:
     machine:
       image: ubuntu-2404:current
     resource_class: arm.medium
-  macos-arm64:
-    macos:
-      xcode: "16.4.0"
-    resource_class: m4pro.medium
-  windows-x64:
-    machine:
-      image: windows-server-2022-gui:current
-      shell: bash.exe
-    resource_class: windows.medium
+  # SELF-HOSTED — the owner's own Apple Silicon Mac, not a CircleCI-hosted
+  # image. `<namespace>/macos-arm64` is a PLACEHOLDER: replace it with the
+  # real `<namespace>/<name>` pair created by running (once, from a machine
+  # with the CircleCI CLI authenticated against this project):
+  #
+  #   circleci runner resource-class create <namespace>/macos-arm64 \
+  #     "tecode release: owner's Apple Silicon Mac" --generate-token
+  #
+  # then install "machine runner 3" on that Mac using the resource class name
+  # and the auth token the command above prints (shown once — save it). A
+  # self-hosted machine executor is declared with `machine: true` (no
+  # `image:` — there is nothing to select an image FROM, it's a specific
+  # physical machine) plus `resource_class:` naming the runner registered
+  # above; it is NOT the hosted `macos:` executor type.
+  macos-arm64-self-hosted:
+    machine: true
+    resource_class: "<namespace>/macos-arm64"
+  # SELF-HOSTED — the owner's own in-house Windows x64 machine. Same
+  # placeholder convention as above: replace `<namespace>/windows-x64` with
+  # the real pair from
+  #
+  #   circleci runner resource-class create <namespace>/windows-x64 \
+  #     "tecode release: owner's Windows x64 box" --generate-token
+  #
+  # then install machine runner 3 on that Windows machine with the resulting
+  # resource class name and auth token. `shell: bash.exe` matches this
+  # config's own `build-windows-x64` job, which writes POSIX-shell `run`
+  # steps (`set -euo pipefail`, `export PATH=...`) throughout except where a
+  # step explicitly opts into `shell: powershell.exe` — a self-hosted runner
+  # needs Git for Windows (or another `bash.exe` provider) on PATH for this
+  # default to resolve.
+  windows-x64-self-hosted:
+    machine: true
+    resource_class: "<namespace>/windows-x64"
+    shell: bash.exe
 
 commands:
   install-bun-posix:
@@ -133,7 +191,7 @@ jobs:
           target: bun-linux-arm64
 
   build-darwin-arm64:
-    executor: macos-arm64
+    executor: macos-arm64-self-hosted
     steps:
       - checkout
       - install-bun-posix
@@ -141,7 +199,7 @@ jobs:
           target: bun-darwin-arm64
 
   build-windows-x64:
-    executor: windows-x64
+    executor: windows-x64-self-hosted
     steps:
       - checkout
       - run:
@@ -164,46 +222,6 @@ jobs:
           paths:
             - dist
 
-  # OPT-IN AND UNVERIFIED — not part of the workflow below.
-  #
-  # CircleCI has no Intel macOS runner, but an Apple silicon runner can run
-  # x86_64 processes under Rosetta 2. Running the Bun installer inside
-  # `arch -x86_64` should fetch the x64 build of Bun, whose `process.arch`
-  # then reports "x64", which should in turn make `bun install` link
-  # `@opentui/core-darwin-x64` and let `--target=bun-darwin-x64` resolve.
-  #
-  # That chain is plausible but has NOT been tested — it depends on Rosetta 2
-  # being present on the image and on Bun's installer selecting by `uname -m`.
-  # Add this job to the workflow (with the same tag filters) to try it, and
-  # verify the resulting binary actually runs on an Intel Mac before trusting
-  # it. Do not assume it works because it is written here.
-  build-darwin-x64-rosetta:
-    executor: macos-arm64
-    steps:
-      - checkout
-      - run:
-          name: Install the x86_64 Bun under Rosetta 2
-          command: |
-            set -euo pipefail
-            arch -x86_64 /bin/bash -c 'curl -fsSL https://bun.sh/install | bash'
-            echo 'export PATH="$HOME/.bun/bin:$PATH"' >> "$BASH_ENV"
-      - run:
-          name: Build bun-darwin-x64 under Rosetta 2
-          command: |
-            set -euo pipefail
-            arch -x86_64 /bin/bash -lc '
-              set -euo pipefail
-              uname -m                       # expect x86_64, not arm64
-              bun --version
-              node -e "console.log(process.arch)" 2>/dev/null || true
-              bun install --frozen-lockfile
-              bun run release bun-darwin-x64
-            '
-      - persist_to_workspace:
-          root: .
-          paths:
-            - dist
-
   publish:
     docker:
       - image: cimg/base:current
@@ -216,6 +234,12 @@ jobs:
           # A partial matrix must never produce a release that silently omits
           # a platform — someone downloading it would find their build missing
           # with nothing to say anything went wrong.
+          #
+          # MUST always equal `RELEASE_TARGETS.length` in `scripts/
+          # release.ts` (currently 4) — `scripts/release.test.ts` parses
+          # this exact YAML value and asserts that equality, precisely so
+          # the two numbers cannot silently drift apart. Change this the
+          # same commit you change `RELEASE_TARGETS`, or that test fails.
           environment:
             PUBLISH_EXPECTED_BINARIES: "4"
           command: |

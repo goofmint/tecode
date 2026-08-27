@@ -204,7 +204,7 @@ The following points were open in the draft specification and are resolved here 
 #### Acceptance Criteria
 
 1. WHILE editing a 10,000-line file, THE system SHALL keep key-input-to-render latency within 16 ms.
-2. THE distributable SHALL be a single self-contained binary produced by `bun build --compile` for darwin/linux/windows × x64/arm64, and each binary SHALL be no larger than 120 MB.
+2. THE distributable SHALL be a single self-contained binary produced by `bun build --compile`, no larger than 120 MB; released binaries SHALL cover `bun-darwin-arm64`, `bun-linux-x64`, `bun-linux-arm64`, and `bun-windows-x64`. `bun-darwin-x64` and `bun-windows-arm64` SHALL NOT be published: no CI runner of either architecture exists (the release pipeline's hosted provider offers no Intel-macOS resource class since June 2024 and no Windows-arm64 resource class at all, and the project has no such hardware to self-host), and `@opentui/core`'s platform-native optional dependencies make cross-compiling either from another platform impossible. A user on either dropped platform SHALL be directed to run from source instead.
 3. THE system SHALL support these terminals: Ghostty, Kitty, WezTerm, iTerm2, Windows Terminal, and running inside tmux, using the fallback keymap where the Kitty Keyboard Protocol is unavailable (per Requirement 4.7).
 4. Each core module SHALL have `bun test` unit tests; the extension API SHALL be covered by contract tests; UI components SHALL be covered by snapshot tests using OpenTUI's headless renderer.
 

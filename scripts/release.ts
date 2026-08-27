@@ -1,16 +1,21 @@
 /**
  * Drives the compiled-binary release matrix (Issue #35 "4.4 Compiled binary
  * builds"; Req 8.5, 13.2; design.md §17: "Release: `bun build --compile` per
- * target (darwin/linux/windows × x64/arm64) from `cli`... A `scripts/
- * release.ts` drives the 6-target matrix and size assertions."), plus
- * (Issue #38 "5.2 User documentation and release") a SHA-256 checksum
+ * target (darwin/linux/windows × x64/arm64 in principle) from `cli`... A
+ * `scripts/release.ts` drives the 4-target matrix and size assertions."),
+ * plus (Issue #38 "5.2 User documentation and release") a SHA-256 checksum
  * written alongside each successfully built binary — {@link sha256Hex},
  * {@link formatChecksumLine}, {@link computeChecksumLine}, and
  * {@link writeChecksumFile} below — for the release workflow's publish job
  * to attach to the GitHub Release next to the binary it describes.
  *
+ * **Only four of the six theoretically-possible targets are actually
+ * published** — see "Two targets were dropped, not just left off this
+ * machine" below for why `bun-darwin-x64` and `bun-windows-arm64` are gone
+ * from {@link RELEASE_TARGETS} entirely, not merely unbuilt here.
+ *
  * Usage: `bun run release [target ...]` — with no arguments, attempts all
- * six {@link RELEASE_TARGETS}; with one or more `bun build --target=...`
+ * four {@link RELEASE_TARGETS}; with one or more `bun build --target=...`
  * names (e.g. `bun run release bun-linux-x64`), builds only those. This is
  * what lets a single-platform CI runner build just its own target (below).
  *
@@ -72,7 +77,7 @@
  * needed fixing for this task; {@link RELEASE_TARGETS}/{@link buildTarget}
  * below exist purely to drive the matrix and assert the size budget.
  *
- * ## Why this machine cannot produce all six binaries
+ * ## Why this machine cannot produce even the four remaining binaries
  *
  * `@opentui/core` ships six platform-specific optional dependencies
  * (`@opentui/core-{darwin,linux,win32}-{x64,arm64}`), each carrying `os`/
@@ -97,14 +102,46 @@
  * break, so a CI matrix runner building its own native target (where this
  * limitation never triggers — see below) is never confused with a real
  * regression, and a human reading this script's output on a single machine
- * understands immediately why 5 of 6 targets "failed" here.
+ * understands immediately why 3 of 4 targets "failed" here.
  *
  * **The fix is the matrix, not this script**: each target must be built on
  * a runner of that platform, so its OWN `@opentui/core-<platform>-<arch>`
  * links natively and the dynamic import above resolves normally. That is
- * exactly Issue #36's tag-triggered release matrix — this script's target
- * filter (`bun run release <target>`) is the seam that matrix uses: each
- * platform's runner invokes this script with just its own target name.
+ * exactly the tag-triggered CircleCI release pipeline (`.circleci/
+ * config.yml`) — this script's target filter (`bun run release <target>`)
+ * is the seam that pipeline uses: each platform's runner (two of them
+ * self-hosted — see that config's own comments) invokes this script with
+ * just its own target name.
+ *
+ * ## Two targets were dropped, not just left off this machine
+ *
+ * The matrix above is deliberately four targets, not six: `bun-darwin-x64`
+ * and `bun-windows-arm64` are not merely "not built on this machine" the
+ * way the other three non-host targets are — they are not in
+ * {@link RELEASE_TARGETS} at all, because no machine anywhere in this
+ * project's CI can build them, and cross-compiling them from another
+ * platform is exactly as impossible as the paragraph above describes for
+ * any other foreign target:
+ *
+ * - **`bun-darwin-x64` (Intel macOS)**: CircleCI removed every Intel macOS
+ *   resource class in June 2024 — its hosted `macos` executor is Apple
+ *   silicon only. The project owner's own Mac is Apple silicon
+ *   (`bun-darwin-arm64`, self-hosted below); they have no Intel Mac to
+ *   build or verify an Intel binary on.
+ * - **`bun-windows-arm64` (Windows on Arm)**: CircleCI offers no Windows
+ *   arm64 resource class, hosted or self-hosted. The owner's in-house
+ *   Windows machine is x64 (`bun-windows-x64`, self-hosted below); they
+ *   have no Windows-on-Arm device either.
+ *
+ * These two were considered and explicitly ruled out — not forgotten. If a
+ * future CircleCI release adds an Intel-macOS or Windows-arm64 resource
+ * class, or the project gains access to that hardware, re-adding the
+ * corresponding entry to {@link RELEASE_TARGETS} (and a matching job to
+ * `.circleci/config.yml`, and bumping that config's
+ * `PUBLISH_EXPECTED_BINARIES`) is the only work needed — nothing else in
+ * this script is target-count-specific. Until then, a user on either
+ * platform has no binary to download; the README's "From source" section
+ * (`bun run packages/cli/src/main.ts`) is what to point them at.
  *
  * ## The `TECODE_BIN` smoke-test convention
  *
@@ -122,7 +159,7 @@
  *
  * ## What this script cannot verify by itself
  *
- * The five non-host targets' real builds, Windows `%APPDATA%\tecode\`
+ * The three non-host targets' real builds, Windows `%APPDATA%\tecode\`
  * resolution on an actual Windows machine, and an interactive clean-machine
  * check (open a directory, highlight a file, switch themes, on a real
  * terminal) all need a platform or a TTY this script's own environment does
@@ -143,17 +180,22 @@ export interface ReleaseTarget {
   readonly arch: "x64" | "arm64";
 }
 
-/** The full 6-target release matrix (Req 13.2, design.md §17). Order is
+/** The real, published 4-target release matrix (Req 13.2, design.md §17) —
+ * NOT the full darwin/linux/windows × x64/arm64 cross-product design.md §17
+ * describes "in principle". `bun-darwin-x64` and `bun-windows-arm64` are
+ * deliberately absent: CircleCI has no Intel-macOS resource class (removed
+ * June 2024) and no Windows-arm64 resource class at all, and the project
+ * owner has neither an Intel Mac nor a Windows-on-Arm machine to self-host
+ * either one — see this module's TSDoc, "Two targets were dropped, not
+ * just left off this machine", for the full reasoning. Order is
  * deterministic (platform, then arch) purely for stable, readable output —
  * it has no bearing on correctness since every target builds
  * independently. */
 export const RELEASE_TARGETS: readonly ReleaseTarget[] = [
-  { bunTarget: "bun-darwin-x64", platform: "darwin", arch: "x64" },
   { bunTarget: "bun-darwin-arm64", platform: "darwin", arch: "arm64" },
   { bunTarget: "bun-linux-x64", platform: "linux", arch: "x64" },
   { bunTarget: "bun-linux-arm64", platform: "linux", arch: "arm64" },
   { bunTarget: "bun-windows-x64", platform: "windows", arch: "x64" },
-  { bunTarget: "bun-windows-arm64", platform: "windows", arch: "arm64" },
 ];
 
 /**
@@ -311,7 +353,7 @@ export function classifyBuildFailure(stderr: string): string | undefined {
       "known limitation: @opentui/core's platform-native optional dependency " +
       "cannot be cross-compiled from this host — this target must be built " +
       "on a runner of its own platform (see this script's TSDoc, \"Why this " +
-      "machine cannot produce all six binaries\")"
+      "machine cannot produce even the four remaining binaries\")"
     );
   }
   return undefined;
@@ -414,8 +456,9 @@ export async function buildTarget(
 }
 
 /** Parse `bun run release [target ...]` arguments into the targets to
- * build (see this module's TSDoc "Usage"). No arguments means "all six" —
- * matches this task's own "default to all six" requirement. Any argument
+ * build (see this module's TSDoc "Usage"). No arguments means "all four
+ * {@link RELEASE_TARGETS}" — matches this task's own "default to all
+ * targets" requirement. Any argument
  * that doesn't name a real {@link RELEASE_TARGETS} entry is reported back
  * in `unknown` rather than silently ignored — a typo'd target name should
  * be loud, not a quiet no-op. */
@@ -450,7 +493,7 @@ async function main(argv: string[]): Promise<void> {
   // Every target NOT requested this run is logged as not-built, never
   // silently dropped — this task's own "whatever you don't build, log as
   // not built" requirement, most relevant when a CI runner passes a single
-  // target filter and the other five are expected to be built elsewhere.
+  // target filter and the other three are expected to be built elsewhere.
   const requested = new Set(targets.map((t) => t.bunTarget));
   for (const target of RELEASE_TARGETS) {
     if (!requested.has(target.bunTarget)) {
