@@ -104,6 +104,27 @@ describe("checkAssetsComplete", () => {
 });
 
 describe("parseGitHubRemote", () => {
+  // Regression: `ssh://git@github.com/owner/repo.git` is a form `git remote
+  // add` accepts and `git-clone(1)` documents, but it matched neither the
+  // https:// nor the scp-like pattern, so `bun run tag` exited before
+  // preflight for anyone whose origin was spelled this way.
+  test.each([
+    ["ssh://git@github.com/goofmint/tecode.git", "goofmint", "tecode"],
+    ["ssh://git@github.com/goofmint/tecode", "goofmint", "tecode"],
+    ["ssh://github.com/goofmint/tecode.git", "goofmint", "tecode"],
+    ["ssh://git@github.com:22/goofmint/tecode.git", "goofmint", "tecode"],
+    ["ssh://git@github.com/goofmint/tecode.git/", "goofmint", "tecode"],
+  ])("parses the ssh:// URL form %s", (url, owner, repo) => {
+    expect(parseGitHubRemote(url)).toEqual({ owner, repo });
+  });
+
+  test("still rejects an ssh:// URL pointing somewhere other than github.com", () => {
+    expect(parseGitHubRemote("ssh://git@gitlab.com/goofmint/tecode.git")).toBeUndefined();
+    // Guards against a pattern loose enough to treat github.com as a mere
+    // substring of the host.
+    expect(parseGitHubRemote("ssh://git@github.com.evil.example/goofmint/tecode.git")).toBeUndefined();
+  });
+
   test("parses an HTTPS remote URL with .git suffix", () => {
     expect(parseGitHubRemote("https://github.com/goofmint/tecode.git")).toEqual({
       owner: "goofmint",

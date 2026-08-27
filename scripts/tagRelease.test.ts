@@ -39,6 +39,26 @@ import type { GitHubReleaseSummary } from "./githubRelease";
 /* -------------------------------------------------------------------- */
 
 describe("normalizeVersionArg", () => {
+  // Regression: these are built entirely from characters the allowed class
+  // permits, so a charset-only check waved them through — and `git tag`
+  // then rejected them in step 4, after a real compile and a draft release
+  // full of uploaded assets already existed.
+  test.each(["1..2", "v1..2", "1.2.", "v1.2.", "1.2.lock", "v1.2.lock"])(
+    "rejects %s — git itself will not accept that ref name",
+    (raw) => {
+      const result = normalizeVersionArg(raw);
+      expect(result.ok).toBe(false);
+      expect(result.ok === false && result.error).toContain("not a valid git tag name");
+    },
+  );
+
+  test("does not over-reject: a dot-leading body is a valid ref once prefixed with v", () => {
+    // `check-ref-format` forbids a ref COMPONENT beginning with ".", and the
+    // component here is always `v<body>` — so `.1` is fine, unlike the cases
+    // above. Pinned so a future tightening cannot quietly forbid it.
+    expect(normalizeVersionArg("v.1")).toEqual({ ok: true, tag: "v.1" });
+  });
+
   test("accepts a bare version and prefixes it with v", () => {
     expect(normalizeVersionArg("1.2.3")).toEqual({ ok: true, tag: "v1.2.3" });
   });
@@ -313,6 +333,39 @@ describe("gatherPreflightInputs", () => {
   function fakeGithub(overrides: Partial<Pick<GitHubPort, "listReleases">> = {}): Pick<GitHubPort, "listReleases"> {
     return { listReleases: async () => [], ...overrides };
   }
+
+  // Regression: `git fetch` used to be best-effort, its failure discarded
+  // on the theory that a bad fetch would surface as a stale-or-missing
+  // origin/main. It does not: `git rev-parse origin/main` resolves the
+  // STALE remote-tracking ref perfectly well, and a stale ref is the one
+  // most likely to equal local `main` — so the "is main up to date?" check
+  // passed exactly when it mattered least, and a release could be tagged
+  // at a commit behind the real origin/main.
+  test("a failed fetch fails remoteMainSha instead of trusting the stale ref", async () => {
+    const inputs = await gatherPreflightInputs(
+      {
+        platform: "darwin",
+        arch: "arm64",
+        env: { TECODE_RELEASE_TOKEN: "t" },
+        git: fakeGit({
+          fetchOrigin: async () => {
+            throw new Error("network unreachable");
+          },
+          // The stale ref still resolves, and still matches local main —
+          // precisely the situation the old code called "up to date".
+          revParse: async () => "sha-identical",
+        }),
+        github: fakeGithub(),
+      },
+      "v1.0.0",
+    );
+    expect(inputs.localMainSha).toEqual({ ok: true, value: "sha-identical" });
+    expect(inputs.remoteMainSha.ok).toBe(false);
+    expect(inputs.remoteMainSha.ok === false && inputs.remoteMainSha.error).toContain("network unreachable");
+
+    // And the check built on it must actually fail, not just carry an error.
+    expect(checkMainUpToDateWithOrigin(inputs.localMainSha, inputs.remoteMainSha).ok).toBe(false);
+  });
 
   test("wires every field through on the happy path", async () => {
     const inputs = await gatherPreflightInputs(
@@ -656,6 +709,34 @@ describe("createTagReleaseRunner — upload / completeness failures never reach 
     if (outcome.stage === "completeness-check-failed") {
       expect(outcome.missing).toEqual(["tecode-darwin-arm64.sha256"]);
     }
+    expect(log.calls).not.toContain("git.createAnnotatedTag(v1.2.3)");
+    expect(log.calls).not.toContain("git.pushTag(v1.2.3)");
+  });
+
+  // The three failures in this area are genuinely different situations and
+  // want different recoveries, so they must not collapse onto one `stage`:
+  // an upload failed / the verifying read failed (uploads were fine, the
+  // draft may well be complete) / the read succeeded and said the draft is
+  // incomplete. This one used to report itself as "upload-failed", which
+  // told a caller the opposite of what happened.
+  test("a failure of the VERIFYING read is not reported as an upload failure", async () => {
+    const log = makeCallLog();
+    const runner = createTagReleaseRunner(
+      baseDeps(log, {
+        github: goodGithub(log, {
+          getReleaseAssetNames: async () => {
+            throw new Error("502 from the assets endpoint");
+          },
+        }),
+      }),
+    );
+    const outcome = await runner.run("v1.2.3");
+
+    expect(outcome.stage).toBe("completeness-verify-failed");
+    // Every upload did happen and did succeed — the distinction the old
+    // "upload-failed" stage erased.
+    expect(log.calls).toContain("github.uploadAsset(tecode-darwin-arm64)");
+    expect(log.calls).toContain("github.uploadAsset(tecode-darwin-arm64.sha256)");
     expect(log.calls).not.toContain("git.createAnnotatedTag(v1.2.3)");
     expect(log.calls).not.toContain("git.pushTag(v1.2.3)");
   });

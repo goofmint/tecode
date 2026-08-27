@@ -108,6 +108,21 @@ export type VersionValidation = { readonly ok: true; readonly tag: string } | { 
  * elaborate than that (no full semver grammar enforcement): the goal is to
  * reject a version that would produce a malformed or unsafe git ref /
  * GitHub `tag_name`, not to police version-numbering conventions.
+ *
+ * The character class alone is not sufficient for that goal. `git
+ * check-ref-format` rejects three shapes built entirely from characters it
+ * allows — a `..` anywhere, a trailing `.`, and a trailing `.lock` — so
+ * `v1..2`, `v1.2.` and `v1.2.lock` all pass a charset test and then fail
+ * at `git tag`. That failure would land in step 4, AFTER a real compile has
+ * run and a draft release full of uploaded assets exists, turning a typo
+ * into a wasted build plus a draft someone has to delete by hand. Rejecting
+ * them here costs nothing.
+ *
+ * Only those three are checked, because they are the only ones reachable:
+ * every other `check-ref-format` rule concerns characters (control codes,
+ * space, `~^:?*[\`, a trailing `/`) the class already excludes, or a
+ * component-leading `.`, which cannot occur since the component always
+ * begins with the normalized `v`.
  */
 export function normalizeVersionArg(raw: string): VersionValidation {
   const trimmed = raw?.trim() ?? "";
@@ -119,6 +134,16 @@ export function normalizeVersionArg(raw: string): VersionValidation {
     return {
       ok: false,
       error: `invalid version "${raw}" — expected something like v1.2.3 or 1.2.3 (after an optional leading "v", only 0-9, A-Z, a-z, ".", "+", "-" are allowed)`,
+    };
+  }
+  // Shapes `git check-ref-format` rejects despite using allowed characters
+  // — see this function's TSDoc for why they are caught here and not left
+  // to fail at `git tag` in step 4.
+  const refUnsafe = body.includes("..") || body.endsWith(".") || body.endsWith(".lock");
+  if (refUnsafe) {
+    return {
+      ok: false,
+      error: `invalid version "${raw}" — "v${body}" is not a valid git tag name (git rejects a ref containing "..", or ending in "." or ".lock")`,
     };
   }
   return { ok: true, tag: `v${body}` };
@@ -591,15 +616,22 @@ export async function gatherPreflightInputs(
     safe(() => deps.git.currentBranch()),
   ]);
 
-  // "fetch first" (task requirement) — best-effort; a failed fetch surfaces
-  // through remoteMainSha below (a stale/missing origin/main ref), not as
-  // its own separate check.
-  await safe(() => deps.git.fetchOrigin());
+  // "fetch first" (task requirement). A failed fetch must FAIL the
+  // origin/main comparison, not be discarded: `git rev-parse origin/main`
+  // happily resolves the stale local remote-tracking ref, and a stale ref
+  // is exactly the one most likely to equal local `main` — so swallowing
+  // the error turns check 5 into a check that passes precisely when it
+  // matters least, and lets a release be tagged at a commit behind the
+  // real origin/main.
+  const fetched = await safe(() => deps.git.fetchOrigin());
 
-  const [localMainSha, remoteMainSha] = await Promise.all([
+  const [localMainSha, remoteMainShaRaw] = await Promise.all([
     safe(() => deps.git.revParse("main")),
     safe(() => deps.git.revParse("origin/main")),
   ]);
+  const remoteMainSha: Fetched<string> = fetched.ok
+    ? remoteMainShaRaw
+    : { ok: false, error: `could not fetch origin (${fetched.error}) — origin/main may be stale, so it was not trusted` };
 
   const version = normalizeVersionArg(rawVersion);
   let tagExistsLocally: Fetched<boolean> = { ok: true, value: false };
@@ -643,6 +675,18 @@ export type TagReleaseOutcome =
       readonly releaseId: number;
       readonly releaseUrl: string;
       readonly missing: readonly string[];
+    }
+  /** The uploads all succeeded; the follow-up call that RE-READS the draft
+   * to confirm they landed is what failed. Distinct from `upload-failed`
+   * (an upload itself failed) and from `completeness-check-failed` (the
+   * re-read succeeded and reported the draft incomplete) because the
+   * recovery differs: here the draft may well be complete and simply
+   * unverified, so it is worth looking at before deleting it. */
+  | {
+      readonly stage: "completeness-verify-failed";
+      readonly releaseId: number;
+      readonly releaseUrl: string;
+      readonly error: string;
     }
   | {
       readonly stage: "tag-create-failed";
@@ -811,9 +855,9 @@ export function createTagReleaseRunner(deps: TagReleaseDeps): TagReleaseRunner {
       const error = describeError(cause);
       logError(`tag: could not verify the draft release's assets — ${error}.`);
       logError(
-        `tag: RECOVERY — check ${created.htmlUrl} (id ${created.id}) by hand; delete it and re-run \`bun run tag ${tag}\` if it is incomplete. No tag was created or pushed.`,
+        `tag: RECOVERY — every upload reported success, so the draft may be complete but unverified: check ${created.htmlUrl} (id ${created.id}) by hand; delete it and re-run \`bun run tag ${tag}\` if it is incomplete. No tag was created or pushed.`,
       );
-      return { stage: "upload-failed", releaseId: created.id, releaseUrl: created.htmlUrl, error };
+      return { stage: "completeness-verify-failed", releaseId: created.id, releaseUrl: created.htmlUrl, error };
     }
     log(`tag: draft release ${created.htmlUrl} has both macOS assets`);
 

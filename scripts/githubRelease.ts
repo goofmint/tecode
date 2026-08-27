@@ -128,7 +128,14 @@ export function checkAssetsComplete(
  * - HTTPS: `https://github.com/<owner>/<repo>.git` (or without the
  *   trailing `.git` — GitHub accepts clones either way, so both must
  *   parse identically).
- * - SSH: `git@github.com:<owner>/<repo>.git` (same optional `.git`).
+ * - SSH, scp-like: `git@github.com:<owner>/<repo>.git` (same optional
+ *   `.git`). This is the form GitHub's own UI offers.
+ * - SSH, URL form: `ssh://git@github.com/<owner>/<repo>.git`, with an
+ *   optional `<user>@` and an optional `:<port>`. Git documents this
+ *   alongside the scp-like form and `git remote add` accepts it, so an
+ *   `origin` set up this way is not exotic — and `bun run tag` refusing to
+ *   run against it would be a pure accident of which spellings this
+ *   function happened to cover.
  *
  * Returns `undefined` for anything else (a non-GitHub remote, a malformed
  * URL) — `bun run tag`'s preflight surfaces that as its own actionable
@@ -141,6 +148,8 @@ export function parseGitHubRemote(remoteUrl: string): { owner: string; repo: str
     /^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
     // git@github.com:<owner>/<repo>[.git]
     /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/,
+    // ssh://[<user>@]github.com[:<port>]/<owner>/<repo>[.git]
+    /^ssh:\/\/(?:[^@/]+@)?github\.com(?::\d+)?\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/,
   ];
   for (const pattern of patterns) {
     const match = pattern.exec(trimmed);
