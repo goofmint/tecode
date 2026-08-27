@@ -13,7 +13,7 @@
  *
  * Also covers the two cross-file invariants between this script and
  * `.circleci/config.yml`: that config's `publish` job hard-codes
- * `PUBLISH_EXPECTED_LOCAL_BINARIES` (how many of {@link RELEASE_TARGETS}
+ * `PUBLISH_EXPECTED_CI_BINARIES` (how many of {@link RELEASE_TARGETS}
  * CircleCI's own build jobs produce — 3, since `bun-darwin-arm64` moved to
  * `builtBy: "local"`) and `PUBLISH_EXPECTED_RELEASE_BINARIES` (how many
  * the finished release must hold — {@link RELEASE_TARGETS}`.length`, 4)
@@ -105,14 +105,14 @@ describe("publish job env <-> RELEASE_TARGETS invariants (.circleci/config.yml <
     return Number(stepWithEnv!.run!.environment![key]);
   }
 
-  test("PUBLISH_EXPECTED_LOCAL_BINARIES equals the number of RELEASE_TARGETS CircleCI itself builds", async () => {
+  test("PUBLISH_EXPECTED_CI_BINARIES equals the number of RELEASE_TARGETS CircleCI itself builds", async () => {
     // Since bun-darwin-arm64 moved to `builtBy: "local"` (built by `bun run
     // tag` on the owner's Mac, never by a CircleCI job), the workspace
     // `publish` downloads from ITS OWN build jobs holds only the
     // `builtBy: "circleci"` targets — 3, not RELEASE_TARGETS.length (4).
     // This is the number `publish`'s first artifact-count guard checks
     // BEFORE it ever talks to the GitHub API.
-    const expected = await readPublishEnvNumber("PUBLISH_EXPECTED_LOCAL_BINARIES");
+    const expected = await readPublishEnvNumber("PUBLISH_EXPECTED_CI_BINARIES");
     const circleciBuilt = RELEASE_TARGETS.filter((t) => t.builtBy === "circleci").length;
     expect(expected).toBe(circleciBuilt);
   });

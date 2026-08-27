@@ -68,7 +68,7 @@
 # to download and is pointed at the README's "From source" instructions
 # (`bun run packages/cli/src/main.ts`) instead.
 #
-# `PUBLISH_EXPECTED_LOCAL_BINARIES` (3) and `PUBLISH_EXPECTED_RELEASE_
+# `PUBLISH_EXPECTED_CI_BINARIES` (3) and `PUBLISH_EXPECTED_RELEASE_
 # BINARIES` (4) below MUST always equal, respectively, the number of
 # `builtBy: "circleci"` entries in `RELEASE_TARGETS` and
 # `RELEASE_TARGETS.length` itself (`scripts/release.test.ts` pins both
@@ -280,15 +280,15 @@ jobs:
           # silently drift apart. Change this the same commit you change
           # RELEASE_TARGETS or its builtBy split, or that test fails.
           environment:
-            PUBLISH_EXPECTED_LOCAL_BINARIES: "3"
+            PUBLISH_EXPECTED_CI_BINARIES: "3"
           command: |
             set -euo pipefail
             ls -la dist/
             BIN_COUNT=$(find dist -maxdepth 1 -type f -name 'tecode-*' ! -name '*.sha256' | wc -l | tr -d ' ')
             SHA_COUNT=$(find dist -maxdepth 1 -type f -name '*.sha256' | wc -l | tr -d ' ')
             echo "release: found $BIN_COUNT binaries and $SHA_COUNT checksums from this workflow's own build jobs"
-            if [ "$BIN_COUNT" -ne "$PUBLISH_EXPECTED_LOCAL_BINARIES" ] || [ "$SHA_COUNT" -ne "$PUBLISH_EXPECTED_LOCAL_BINARIES" ]; then
-              echo "release: refusing to publish — expected $PUBLISH_EXPECTED_LOCAL_BINARIES of each from build-linux-x64/build-linux-arm64/build-windows-x64, got $BIN_COUNT and $SHA_COUNT" >&2
+            if [ "$BIN_COUNT" -ne "$PUBLISH_EXPECTED_CI_BINARIES" ] || [ "$SHA_COUNT" -ne "$PUBLISH_EXPECTED_CI_BINARIES" ]; then
+              echo "release: refusing to publish — expected $PUBLISH_EXPECTED_CI_BINARIES of each from build-linux-x64/build-linux-arm64/build-windows-x64, got $BIN_COUNT and $SHA_COUNT" >&2
               exit 1
             fi
       - run:
@@ -301,7 +301,7 @@ jobs:
           #
           # MUST always equal RELEASE_TARGETS.length (scripts/release.ts,
           # currently 4) — scripts/release.test.ts pins this invariant too,
-          # separately from PUBLISH_EXPECTED_LOCAL_BINARIES above (that one
+          # separately from PUBLISH_EXPECTED_CI_BINARIES above (that one
           # is "how many CircleCI itself built this run"; this one is "how
           # many the finished release must hold in total").
           environment:
@@ -322,6 +322,11 @@ jobs:
             # statement, so this shell implementation is verified instead by
             # actually executing it against a stubbed curl (see this
             # change's own validation notes).
+            # One page suffices: the API lists releases newest-first and
+            # `bun run tag` creates this draft seconds before pushing the
+            # tag that started this job, so it is effectively always the
+            # newest release. 100 leaves room for a pathological backlog
+            # without paginating.
             releases=$(curl -fsSL "$api/releases?per_page=100" \
               -H "Authorization: Bearer $TECODE_RELEASE_TOKEN" \
               -H "Accept: application/vnd.github+json")
