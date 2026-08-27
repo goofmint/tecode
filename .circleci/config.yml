@@ -1,0 +1,302 @@
+# CircleCI release pipeline for tecode (Issue: tag-triggered binary release).
+#
+# Mirrors `.github/workflows/release.yml`: pushing a `v*` tag builds one
+# compiled binary per target on a runner of that target's OWN platform, then
+# publishes them as a GitHub Release with per-binary SHA-256 checksums.
+#
+# ## Why one job per target, and not a build matrix on one machine
+#
+# `@opentui/core` ships six platform-native optional dependencies
+# (`@opentui/core-{darwin,linux,win32}-{x64,arm64}`), each gated by `os`/`cpu`
+# in its package.json. `bun install` links only the one matching the HOST, and
+# `@opentui/core` resolves its native half through a template-string dynamic
+# import that Bun's bundler cannot statically resolve for a foreign platform.
+# Cross-compilation therefore fails outright — see `scripts/release.ts`'s
+# "Why this machine cannot produce all six binaries". Each target must be
+# built on its own architecture.
+#
+# ## What CircleCI can and cannot build
+#
+# CircleCI covers four of the project's six targets:
+#
+#   bun-darwin-arm64   macos executor (Apple silicon)
+#   bun-linux-x64      machine executor, x86 resource class
+#   bun-linux-arm64    machine executor, arm resource class
+#   bun-windows-x64    windows executor
+#
+# The other two have no CircleCI-hosted runner of the right architecture:
+#
+#   bun-darwin-x64     CircleCI removed ALL Intel macOS resources in June 2024;
+#                      only Apple silicon remains. See the opt-in
+#                      `build-darwin-x64-rosetta` job below for an UNVERIFIED
+#                      workaround.
+#   bun-windows-arm64  CircleCI offers no Windows arm64 resource class.
+#
+# Keep `.github/workflows/release.yml` for those two, or drop the platforms —
+# whichever you decide, `PUBLISH_EXPECTED_BINARIES` below must match, or the
+# publish job will refuse to release.
+#
+# ## Required project configuration
+#
+# - `GITHUB_TOKEN` — an environment variable in CircleCI project settings,
+#   holding a token with `contents: write` on this repository. Unlike GitHub
+#   Actions there is no ambient `github.token`; nothing here can publish
+#   without it.
+# - macOS and Windows executors require a paid CircleCI plan.
+
+version: 2.1
+
+# How many binaries (and therefore how many .sha256 files) the publish job
+# requires before it will create a release. Four, because that is what the
+# workflow below actually builds — raise it if you add the two missing
+# targets back via self-hosted runners.
+#
+# This gate exists so a partial matrix can never publish a release that
+# silently omits a platform: a user downloading it would find their build
+# missing with no indication anything went wrong.
+
+executors:
+  linux-x64:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: medium
+  linux-arm64:
+    machine:
+      image: ubuntu-2404:current
+    resource_class: arm.medium
+  macos-arm64:
+    macos:
+      xcode: "16.4.0"
+    resource_class: m4pro.medium
+  windows-x64:
+    machine:
+      image: windows-server-2022-gui:current
+      shell: bash.exe
+    resource_class: windows.medium
+
+commands:
+  install-bun-posix:
+    description: Install Bun on Linux/macOS and put it on PATH for later steps.
+    steps:
+      - run:
+          name: Install Bun
+          command: |
+            set -euo pipefail
+            curl -fsSL https://bun.sh/install | bash
+            echo 'export PATH="$HOME/.bun/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Report the Bun and host architecture actually in use
+          command: |
+            set -euo pipefail
+            bun --version
+            uname -m
+
+  build-and-persist:
+    description: >-
+      Build one target with the repo's own release script, then hand the
+      binary and its checksum to the workspace for the publish job.
+    parameters:
+      target:
+        type: string
+    steps:
+      - run:
+          name: Install dependencies
+          # --frozen-lockfile so a runner can never silently resolve a
+          # different dependency tree than the one committed. bun.lock records
+          # all six @opentui/core platform packages, so this succeeds on every
+          # platform even though only one of them links here.
+          command: bun install --frozen-lockfile
+      - run:
+          name: Build << parameters.target >>
+          # release.ts enforces the size limit and writes the .sha256 itself.
+          command: bun run release << parameters.target >>
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist
+
+jobs:
+  build-linux-x64:
+    executor: linux-x64
+    steps:
+      - checkout
+      - install-bun-posix
+      - build-and-persist:
+          target: bun-linux-x64
+
+  build-linux-arm64:
+    executor: linux-arm64
+    steps:
+      - checkout
+      - install-bun-posix
+      - build-and-persist:
+          target: bun-linux-arm64
+
+  build-darwin-arm64:
+    executor: macos-arm64
+    steps:
+      - checkout
+      - install-bun-posix
+      - build-and-persist:
+          target: bun-darwin-arm64
+
+  build-windows-x64:
+    executor: windows-x64
+    steps:
+      - checkout
+      - run:
+          name: Install Bun
+          shell: powershell.exe
+          command: |
+            irm bun.sh/install.ps1 | iex
+      - run:
+          name: Build bun-windows-x64
+          # The Bun installer puts bun.exe under %USERPROFILE%\.bun\bin, which
+          # is not on PATH in this shell yet.
+          command: |
+            set -euo pipefail
+            export PATH="$USERPROFILE/.bun/bin:$PATH"
+            bun --version
+            bun install --frozen-lockfile
+            bun run release bun-windows-x64
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist
+
+  # OPT-IN AND UNVERIFIED — not part of the workflow below.
+  #
+  # CircleCI has no Intel macOS runner, but an Apple silicon runner can run
+  # x86_64 processes under Rosetta 2. Running the Bun installer inside
+  # `arch -x86_64` should fetch the x64 build of Bun, whose `process.arch`
+  # then reports "x64", which should in turn make `bun install` link
+  # `@opentui/core-darwin-x64` and let `--target=bun-darwin-x64` resolve.
+  #
+  # That chain is plausible but has NOT been tested — it depends on Rosetta 2
+  # being present on the image and on Bun's installer selecting by `uname -m`.
+  # Add this job to the workflow (with the same tag filters) to try it, and
+  # verify the resulting binary actually runs on an Intel Mac before trusting
+  # it. Do not assume it works because it is written here.
+  build-darwin-x64-rosetta:
+    executor: macos-arm64
+    steps:
+      - checkout
+      - run:
+          name: Install the x86_64 Bun under Rosetta 2
+          command: |
+            set -euo pipefail
+            arch -x86_64 /bin/bash -c 'curl -fsSL https://bun.sh/install | bash'
+            echo 'export PATH="$HOME/.bun/bin:$PATH"' >> "$BASH_ENV"
+      - run:
+          name: Build bun-darwin-x64 under Rosetta 2
+          command: |
+            set -euo pipefail
+            arch -x86_64 /bin/bash -lc '
+              set -euo pipefail
+              uname -m                       # expect x86_64, not arm64
+              bun --version
+              node -e "console.log(process.arch)" 2>/dev/null || true
+              bun install --frozen-lockfile
+              bun run release bun-darwin-x64
+            '
+      - persist_to_workspace:
+          root: .
+          paths:
+            - dist
+
+  publish:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Refuse to publish unless every expected artifact is present
+          # A partial matrix must never produce a release that silently omits
+          # a platform — someone downloading it would find their build missing
+          # with nothing to say anything went wrong.
+          environment:
+            PUBLISH_EXPECTED_BINARIES: "4"
+          command: |
+            set -euo pipefail
+            ls -la dist/
+            BIN_COUNT=$(find dist -maxdepth 1 -type f -name 'tecode-*' ! -name '*.sha256' | wc -l | tr -d ' ')
+            SHA_COUNT=$(find dist -maxdepth 1 -type f -name '*.sha256' | wc -l | tr -d ' ')
+            echo "release: found $BIN_COUNT binaries and $SHA_COUNT checksums"
+            if [ "$BIN_COUNT" -ne "$PUBLISH_EXPECTED_BINARIES" ] || [ "$SHA_COUNT" -ne "$PUBLISH_EXPECTED_BINARIES" ]; then
+              echo "release: refusing to publish — expected $PUBLISH_EXPECTED_BINARIES of each, got $BIN_COUNT and $SHA_COUNT" >&2
+              exit 1
+            fi
+      - run:
+          name: Create the GitHub Release and upload every asset
+          # CIRCLE_TAG is passed through the environment rather than
+          # interpolated into the script: it is attacker-influenceable by
+          # anyone who can push a tag, and `v$(id)` is a valid Git ref name,
+          # so a directly-substituted tag would be executed by the shell under
+          # a token that can write repository contents.
+          command: |
+            set -euo pipefail
+
+            : "${GITHUB_TOKEN:?set GITHUB_TOKEN in CircleCI project settings (needs contents: write)}"
+            : "${CIRCLE_TAG:?this job only runs for tag pushes}"
+
+            api="https://api.github.com/repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}"
+
+            notes=$(cat docs/release-notes-template.md)
+            payload=$(
+              TAG="$CIRCLE_TAG" NOTES="$notes" python3 -c '
+            import json, os
+            print(json.dumps({
+                "tag_name": os.environ["TAG"],
+                "name": "tecode " + os.environ["TAG"],
+                "body": os.environ["NOTES"],
+            }))'
+            )
+
+            upload_url=$(
+              curl -fsSL -X POST "$api/releases" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                -d "$payload" |
+              python3 -c 'import json,sys; print(json.load(sys.stdin)["upload_url"].split("{")[0])'
+            )
+
+            for asset in dist/tecode-*; do
+              name=$(basename "$asset")
+              echo "release: uploading $name"
+              curl -fsSL -X POST "$upload_url?name=$name" \
+                -H "Authorization: Bearer $GITHUB_TOKEN" \
+                -H "Content-Type: application/octet-stream" \
+                --data-binary "@$asset" > /dev/null
+            done
+
+            echo "release: published $CIRCLE_TAG"
+
+workflows:
+  release:
+    # Every job needs BOTH filters. CircleCI ignores tag pushes unless a job
+    # opts in with `tags`, and without `branches: ignore` the same jobs would
+    # also run on every ordinary branch push. Omitting either on ANY job —
+    # including `publish` — silently breaks the pipeline: a job without them
+    # never runs for the tag, and the whole workflow is then skipped.
+    jobs:
+      - build-linux-x64:
+          filters: &release-tags
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+      - build-linux-arm64:
+          filters: *release-tags
+      - build-darwin-arm64:
+          filters: *release-tags
+      - build-windows-x64:
+          filters: *release-tags
+      - publish:
+          filters: *release-tags
+          requires:
+            - build-linux-x64
+            - build-linux-arm64
+            - build-darwin-arm64
+            - build-windows-x64
