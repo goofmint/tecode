@@ -1,5 +1,5 @@
 /**
- * The nine `tecode.*` namespaces (Req 10.1, design.md §12) and the
+ * The ten `tecode.*` namespaces (Req 10.1, design.md §12) and the
  * aggregate {@link Tecode} interface that bundles them into the single
  * frozen object handed to every extension.
  */
@@ -452,6 +452,61 @@ export interface ThemesNamespace {
 }
 
 /* ------------------------------------------------------------------ */
+/* tecode.clipboard                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The clipboard (Issue #91): an internal buffer holding the last text
+ * copied or cut, write-through synced to the terminal's OWN system
+ * clipboard via OSC 52 (`@opentui/core`'s `CliRenderer.
+ * copyToClipboardOSC52`, `packages/cli/src/renderShell.tsx`'s
+ * `onClipboardWriterReady`) when the host terminal supports it and
+ * `clipboard.useSystemClipboard` (`editor-core`'s own configuration
+ * contribution) is enabled. Backs `editor-core`'s
+ * `editor.action.clipboardCopy`/`clipboardCut`/`clipboardPaste` commands
+ * (Issue #91), and is available to any other extension that wants
+ * programmatic access to the same buffer.
+ *
+ * **Never throws — matches `FileSystem`'s never-crash discipline, NOT its
+ * reject-on-failure one**: unlike {@link FileSystem}'s `read`/`write`
+ * (which reject the returned promise on a real I/O failure — a caller is
+ * expected to handle that), a clipboard write's OSC 52 half is a
+ * best-effort terminal escape sequence with no reliable failure signal at
+ * all — a terminal that ignores it produces neither an error nor any
+ * other observable difference from success. {@link write} therefore always
+ * resolves once the INTERNAL buffer is updated (the part every terminal
+ * supports unconditionally); an OSC 52 write that the host reports failing
+ * is logged (`HostLog`, design.md §14) and otherwise swallowed, never
+ * surfaced as a rejection.
+ *
+ * **OSC 52 is write-only here, deliberately**: reading a terminal's system
+ * clipboard back via OSC 52 is not portable across terminals (many either
+ * don't implement the query form at all or gate it behind a user prompt),
+ * so {@link read} only ever reports this namespace's OWN internal buffer —
+ * never attempts a live OSC 52 query. This means `read()` sees exactly
+ * what THIS process (or another `tecode.clipboard.write` caller) most
+ * recently wrote, not necessarily whatever the OS clipboard currently
+ * holds if something else changed it in between.
+ */
+export interface ClipboardNamespace {
+  /**
+   * The clipboard's current internal buffer contents (this namespace's
+   * TSDoc's "OSC 52 is write-only" note) — `""` when nothing has been
+   * copied/cut yet this session. Always resolves; never rejects.
+   */
+  read(): Promise<string>;
+  /**
+   * Store `text` as the clipboard's new internal buffer contents, and
+   * (when system-clipboard sync is enabled and the host terminal
+   * supports it) write it through to the terminal's OWN clipboard via OSC
+   * 52. Always resolves once the internal buffer is updated — an OSC 52
+   * write failure is logged and swallowed, never surfaced as a rejection
+   * (this namespace's TSDoc).
+   */
+  write(text: string): Promise<void>;
+}
+
+/* ------------------------------------------------------------------ */
 /* Tecode — the aggregate namespace object                            */
 /* ------------------------------------------------------------------ */
 
@@ -472,4 +527,5 @@ export interface Tecode {
   context: ContextNamespace;
   languages: LanguagesNamespace;
   themes: ThemesNamespace;
+  clipboard: ClipboardNamespace;
 }

@@ -327,6 +327,7 @@ export {
 } from "./config/index";
 export {
   createBaseTheme,
+  createClipboardStub,
   createEditorStub,
   createFindStub,
   createLanguagesStub,
@@ -350,3 +351,4 @@ export {
   type EditorInputRouterDeps,
   type LineReader,
 } from "./editor/index";
+export { createClipboard, type Clipboard, type ClipboardDeps } from "./clipboard/index";

@@ -17,6 +17,7 @@ import {
   createConfigService,
   createContextService,
   createDocumentManager,
+  createClipboard,
   createEditorInputRouter,
   createEditorSessionService,
   createExtensionHost,
@@ -58,6 +59,7 @@ import {
   type ContextService,
   type DiscoveryFs,
   type DocumentManager,
+  type Clipboard,
   type EditorInputRouter,
   type EditorSessionService,
   type ExtensionHost,
@@ -89,6 +91,7 @@ import {
   applyConfiguredKeybindingPreset as applyConfiguredKeybindingPresetImpl,
   wireKeybindingPresetConfigSync,
 } from "./keybindingPresetConfigSync";
+import { handlePasteEvent } from "./keyRouting";
 import { createKeymapState, type KeymapState } from "./keymapState";
 import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
 import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./renderShell";
@@ -173,6 +176,13 @@ export interface AssemblyRoot {
   commands: CommandRegistry;
   documents: DocumentManager;
   fs: FileSystem;
+  /** The clipboard service (Issue #91, `@tecode/core`'s `clipboard/
+   * clipboard.ts`) — backs `tecode.clipboard` (via `api` below), and
+   * receives the terminal's OSC 52 write function from `renderShell.tsx`'s
+   * `onClipboardWriterReady` once the render seam resolves one
+   * (`runTecode`, this module's TSDoc). Built once here, exactly like
+   * `fs` above. */
+  clipboard: Clipboard;
   config: ConfigService;
   context: ContextService;
   api: Tecode;
@@ -319,6 +329,37 @@ export interface AssemblyRoot {
    * the active theme. Disposed alongside every other startup-owned
    * subscription in {@link wireProcessExit}. */
   keybindingPresetConfigSync: Disposable;
+  /**
+   * Apply the CURRENT `clipboard.useSystemClipboard` setting (Issue #91)
+   * to {@link clipboard}'s system-clipboard-sync flag. Lives here, in the
+   * composition root, rather than in `editor-core` (the extension that
+   * DECLARES this setting's schema) because `@tecode/api`'s
+   * `ClipboardNamespace` — all an extension can ever see — exposes only
+   * `read`/`write`, never the host-only `setSystemClipboardEnabled` this
+   * needs (`create.ts`'s "narrowing, not re-implementing" boundary
+   * extended to this one setting): only `main.ts` holds the real
+   * `Clipboard` instance. Mirrors `applyConfiguredKeybindingPreset`'s own
+   * shape (a core-owned setting wired to a core-owned service) even though
+   * THIS setting's schema is extension-owned, not `config/coreDefaults.
+   * ts`'s. `runTecode` calls this once after `config.ready` settles;
+   * {@link clipboardConfigSync} (below) calls it again on every live
+   * change to that one key. Falls back to `true` — matching both this
+   * setting's own schema default and {@link Clipboard}'s own internal
+   * default — when `config.get(...)` reports nothing yet (e.g. before
+   * `editor-core`'s manifest has been discovered/registered; an explicit
+   * `false` in the user's `settings.json` still applies immediately
+   * regardless of registration, since JSONC settings are read independent
+   * of schema registration). Synchronous and never throws:
+   * `Clipboard.setSystemClipboardEnabled` itself never throws
+   * (`clipboard/clipboard.ts`'s TSDoc).
+   */
+  applyClipboardSystemSetting(): void;
+  /** Live `clipboard.useSystemClipboard` config-change subscription (Issue
+   * #91) — mirrors {@link keybindingPresetConfigSync}'s own shape, just for
+   * {@link applyClipboardSystemSetting} instead of the keybinding preset
+   * layer. Disposed alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  clipboardConfigSync: Disposable;
   /** The live two-stroke chord state machine (Req 4.4, design.md §6.1,
    * §6.3), built once here against a small forwarding view over `keymap`
    * (see this function's TSDoc's "Live keymap table view") so it always
@@ -617,6 +658,11 @@ export function buildAssemblyRoot(
     sink,
   });
   const fs = createFileSystem({ log });
+  // Issue #91's clipboard service — built once, exactly like `fs` above.
+  // Its OSC 52 system writer arrives later (`runTecode`'s `renderShell(...)`
+  // call, via `deps.onClipboardWriterReady`) since it needs a real
+  // `CliRenderer` that does not exist yet at this point in the sync phase.
+  const clipboard = createClipboard({ log });
 
   // `MODAL_DEFAULT_KEYBINDINGS` (Task 3.1, `ui/modalCommands.ts`) is this
   // codebase's first real occupant of the `defaults` layer
@@ -723,6 +769,28 @@ export function buildAssemblyRoot(
     applyConfiguredKeybindingPresetImpl({ config, keymap, log });
   const keybindingPresetConfigSync = wireKeybindingPresetConfigSync({ config, keymap, log });
 
+  // `AssemblyRoot.applyClipboardSystemSetting`/`clipboardConfigSync` (Issue
+  // #91) — see that field's TSDoc for why this wiring lives here rather
+  // than in `editor-core`, despite that extension owning the setting's
+  // schema. The key string is duplicated (not imported from `editor-core/
+  // manifest.ts`'s `CLIPBOARD_USE_SYSTEM_CONFIG_KEY`) — matching `stubs.
+  // ts`'s `createThemesStub`'s own precedent for this exact kind of small
+  // cross-boundary string duplication — since this composition root
+  // reading an extension's manifest CONSTANT for host-side wiring would
+  // invert the "extensions are data the host reads, not code the host
+  // imports internals from" boundary this repo otherwise keeps clean. Must
+  // stay in sync with `editor-core/manifest.ts`'s own
+  // `CLIPBOARD_USE_SYSTEM_CONFIG_KEY`.
+  const CLIPBOARD_USE_SYSTEM_CONFIG_KEY = "clipboard.useSystemClipboard";
+  const applyClipboardSystemSetting = () => {
+    clipboard.setSystemClipboardEnabled(
+      config.get<boolean>(CLIPBOARD_USE_SYSTEM_CONFIG_KEY) ?? true,
+    );
+  };
+  const clipboardConfigSync = config.onDidChange((event) => {
+    if (event.affectsConfiguration(CLIPBOARD_USE_SYSTEM_CONFIG_KEY)) applyClipboardSystemSetting();
+  });
+
   const context = createContextService();
 
   const layoutState = createLayoutStateService({ log, sink });
@@ -823,6 +891,7 @@ export function buildAssemblyRoot(
     languageRegistry,
     modalService,
     windowMessageService,
+    clipboard,
   });
 
   // Must run before any extension module is imported (see this function's
@@ -938,6 +1007,7 @@ export function buildAssemblyRoot(
     commands,
     documents,
     fs,
+    clipboard,
     config,
     context,
     api,
@@ -958,6 +1028,8 @@ export function buildAssemblyRoot(
     applyKittyKeyboardVerdict,
     applyConfiguredKeybindingPreset,
     keybindingPresetConfigSync,
+    applyClipboardSystemSetting,
+    clipboardConfigSync,
     chordMachine,
     chordPendingIndicator,
     editorSession,
@@ -1208,6 +1280,7 @@ export interface ShutdownRoot {
   hostErrorSink: Pick<Disposable, "dispose">;
   highlightService: Pick<Disposable, "dispose">;
   languageRegistry: Pick<Disposable, "dispose">;
+  clipboardConfigSync: Pick<Disposable, "dispose">;
   hostRef: { current?: Pick<ExtensionHost, "disposeAll"> };
 }
 
@@ -1286,6 +1359,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.editorLangIdSync.dispose();
       root.themeConfigSync.dispose();
       root.keybindingPresetConfigSync.dispose();
+      root.clipboardConfigSync.dispose();
       root.themeSelectCommand.dispose();
       root.openFileCommand.dispose();
       root.tabCommands.dispose();
@@ -1484,6 +1558,12 @@ export async function runTecode(
   // initial application.
   root.applyConfiguredKeybindingPreset();
 
+  // Apply the ACTUAL configured `clipboard.useSystemClipboard` now that
+  // `config.ready` has settled (Issue #91) — same "schema default only,
+  // until ready" reasoning as `keybindings.preset` above
+  // (`AssemblyRoot.applyClipboardSystemSetting`'s TSDoc).
+  root.applyClipboardSystemSetting();
+
   const { shutdown } = wireProcessExit(root);
 
   const renderShell = options.renderShell ?? (headless ? renderShellHeadless : renderShellToTerminal);
@@ -1502,6 +1582,21 @@ export async function runTecode(
     chordMachine: root.chordMachine,
     editorInputRouter: root.editorInputRouter,
     modalService: root.modalService,
+    // Issue #91: the terminal's OSC 52 write function is handed to
+    // `root.clipboard` exactly once, as soon as the render seam resolves
+    // one (`ShellRenderDeps.onClipboardWriterReady`'s TSDoc) —
+    // `renderShellHeadless` never calls this, leaving `root.clipboard`'s
+    // system-clipboard sync permanently inert for a headless run, which is
+    // correct: there is no real terminal to write an OSC 52 escape
+    // sequence to.
+    onClipboardWriterReady: (write) => root.clipboard.setSystemWriter(write),
+    // Issue #91: bracketed-paste text, already decoded to UTF-8 by
+    // `renderShellToTerminal` (`ShellRenderDeps.onPaste`'s TSDoc), routed
+    // through `keyRouting.ts`'s `handlePasteEvent` into
+    // `root.editorInputRouter.insertText` — the same "pulled out for
+    // testability, wired here" shape `handleKeyEvent`'s own `renderer.
+    // keyInput.on("keypress", ...)` registration above already uses.
+    onPaste: (text) => handlePasteEvent({ editorInputRouter: root.editorInputRouter }, text),
     // Task 4.2's Kitty Keyboard Protocol wiring (Req 4.7, 13.3, design.md
     // §6.5): `renderShell.tsx`'s `onCapabilitiesResolved` delivers the raw
     // `@opentui/core` capabilities value (at most twice — synchronously,

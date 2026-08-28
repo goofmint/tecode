@@ -53,3 +53,27 @@ export function handleKeyEvent(deps: KeyRoutingDeps, event: RoutableKeyEvent): v
   }
   deps.editorInputRouter.routeKeyEvent(event);
 }
+
+/** Dependencies for {@link handlePasteEvent} — narrowed to the one method
+ * it needs (matches {@link KeyRoutingDeps}'s own `Pick<...>` convention). */
+export interface PasteRoutingDeps {
+  editorInputRouter: Pick<EditorInputRouter, "insertText">;
+}
+
+/**
+ * Route one decoded bracketed-paste string (Issue #91, design.md §6.1's
+ * pipeline extended to terminal paste input): straight to {@link
+ * EditorInputRouter.insertText}, with no chord-machine step at all —
+ * unlike {@link handleKeyEvent}'s ordinary keystrokes, a paste never has a
+ * keybinding to match against; it always means "insert this text" at
+ * whatever the current selections are. `renderShell.tsx`'s
+ * `renderShellToTerminal` calls this from its `renderer.keyInput.on(
+ * "paste", ...)` listener, already having decoded `PasteEvent.bytes` (a
+ * `Uint8Array`) to a UTF-8 string (`ShellRenderDeps.onPaste`'s TSDoc) —
+ * this function itself never touches raw bytes, matching {@link
+ * handleKeyEvent}'s own "pulled out for direct, `@opentui/core`-free
+ * testability" shape (this module's TSDoc).
+ */
+export function handlePasteEvent(deps: PasteRoutingDeps, text: string): void {
+  deps.editorInputRouter.insertText(text);
+}

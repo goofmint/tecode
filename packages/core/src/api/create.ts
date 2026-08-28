@@ -30,6 +30,7 @@
  */
 
 import type {
+  ClipboardNamespace,
   CommandsNamespace,
   ConfigNamespace,
   ContextNamespace,
@@ -62,6 +63,7 @@ import type { WindowMessageService } from "../ui/windowMessageService";
 import type { LanguageRegistry } from "../languages/languageRegistry";
 import { cloneSelection, createEditorNamespace } from "./editorNamespace";
 import {
+  createClipboardStub,
   createEditorStub,
   createLanguagesStub,
   createThemesStub,
@@ -212,6 +214,17 @@ export interface CreateTecodeApiDeps {
    * that never render anywhere, so a mismatch falls back to the stub.
    */
   windowMessageService?: Pick<WindowMessageService, "registry" | "showMessage" | "setStatusBarItem">;
+  /**
+   * Backs the REAL `tecode.clipboard` (Issue #91, `clipboard/clipboard.ts`'s
+   * `createClipboard`) — `read`/`write` delegate straight through, same
+   * "same function references, no wrapper closures" shape as
+   * `commandsNamespace`/`configNamespace` above. Optional: a caller that
+   * omits this (every test that predates Issue #91) keeps `stubs.ts`'s
+   * `createClipboardStub()` — an always-`""` `read()` and a no-op `write()`
+   * — exactly like every other real-backing dependency's fallback in this
+   * file.
+   */
+  clipboard?: Pick<ClipboardNamespace, "read" | "write">;
 }
 
 /**
@@ -421,6 +434,15 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     getLanguage: languageRegistry ? languageRegistry.getLanguage : languagesStub.getLanguage,
   });
 
+  // Real backing (Issue #91) when a `Clipboard`/`ClipboardNamespace` is
+  // supplied; otherwise `stubs.ts`'s `createClipboardStub()` — see
+  // `CreateTecodeApiDeps.clipboard`'s TSDoc.
+  const clipboardStub = createClipboardStub();
+  const clipboardNamespace: ClipboardNamespace = Object.freeze({
+    read: deps.clipboard ? deps.clipboard.read : clipboardStub.read,
+    write: deps.clipboard ? deps.clipboard.write : clipboardStub.write,
+  });
+
   return Object.freeze({
     commands: commandsNamespace,
     workspace: workspaceNamespace,
@@ -431,5 +453,6 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     context: contextNamespace,
     languages: languagesNamespace,
     themes: themesNamespace,
+    clipboard: clipboardNamespace,
   });
 }

@@ -106,6 +106,7 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
       "context",
       "languages",
       "themes",
+      "clipboard",
     ]);
 
     expect(root.api.workspace.rootUri).toBe(pathToUri(dir));

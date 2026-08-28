@@ -11,7 +11,13 @@ import {
   type KeymapLayers,
 } from "@tecode/core";
 import editorCoreManifest from "@tecode/builtin/editor-core/manifest";
-import { handleKeyEvent, type KeyRoutingDeps, type RoutableKeyEvent } from "./keyRouting";
+import {
+  handleKeyEvent,
+  handlePasteEvent,
+  type KeyRoutingDeps,
+  type PasteRoutingDeps,
+  type RoutableKeyEvent,
+} from "./keyRouting";
 
 function keyOf(partial: Partial<KeyEventLike> & { name: string }): RoutableKeyEvent {
   return {
@@ -406,6 +412,30 @@ describe("editor-core's Task 2.5 find/replace keybindings (Req 11.1, manifest.ts
     );
     expect(executed).toEqual([]);
     expect(routed).toBe(true); // falls through to the editor router
+  });
+});
+
+describe("handlePasteEvent (Issue #91's paste path)", () => {
+  test("delegates the decoded text straight to editorInputRouter.insertText", () => {
+    let received: string | undefined;
+    const deps: PasteRoutingDeps = {
+      editorInputRouter: { insertText: (text) => (received = text) },
+    };
+
+    handlePasteEvent(deps, "pasted\ntext");
+
+    expect(received).toBe("pasted\ntext");
+  });
+
+  test("goes through no chord machine at all — an empty paste is still forwarded", () => {
+    let calls = 0;
+    const deps: PasteRoutingDeps = {
+      editorInputRouter: { insertText: () => calls++ },
+    };
+
+    handlePasteEvent(deps, "");
+
+    expect(calls).toBe(1);
   });
 });
 

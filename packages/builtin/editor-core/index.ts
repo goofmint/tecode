@@ -98,6 +98,7 @@ import type {
   TextEdit,
 } from "@tecode/api";
 import { buildBracketEditBatch } from "./brackets";
+import { buildClipboardText, buildCutResult, buildPasteResult } from "./clipboard";
 import { buildToggleLineCommentResult } from "./comments";
 import {
   buildBackspaceEdit,
@@ -425,6 +426,63 @@ export function activate(ctx: ExtensionContext): void {
     ),
   );
   ctx.subscriptions.push(api.commands.register("editor.action.closeFind", () => api.editor.find.close()));
+
+  // Issue #91: clipboard copy/cut/paste — pure builders in `clipboard.ts`,
+  // wired to `api.clipboard` for the actual buffer/OSC-52 read-write. No
+  // `clipboard.useSystemClipboard` reading happens here: that setting's
+  // schema is declared by THIS manifest (`manifest.ts`'s `contributes.
+  // configuration`), but the flag it controls lives on the host-only
+  // `Clipboard` service `@tecode/api`'s `ClipboardNamespace` deliberately
+  // does not expose (only `read`/`write` are extension-visible) — wiring
+  // config to that flag is `packages/cli/src/main.ts`'s job
+  // (`AssemblyRoot.applyClipboardSystemSetting`'s TSDoc explains why).
+  //
+  // Empty `selections` (`[]`, no active editor) makes each handler a
+  // documented no-op — no `applyEdits` call, no `api.clipboard.write`/
+  // `read` either — matching every other command's own guard in this file.
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.clipboardCopy", async () => {
+      const selections = api.editor.selections;
+      if (selections.length === 0) return;
+      await api.clipboard.write(buildClipboardText(reader(), selections));
+    }),
+  );
+
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.clipboardCut", async () => {
+      const editor = api.window.activeEditor;
+      if (!editor) return;
+      const selections = api.editor.selections;
+      if (selections.length === 0) return;
+      const { text, edits, selections: newSelections } = buildCutResult(reader(), selections);
+      await api.clipboard.write(text);
+      if (edits.length > 0) {
+        const document: Document = editor.document;
+        // Same "one transaction = one undo step" shape as every other
+        // editing command in this file (`registerEditing`'s TSDoc).
+        document.transaction(() => document.applyEdits(edits));
+      }
+      api.editor.setSelections(newSelections);
+    }),
+  );
+
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.clipboardPaste", async () => {
+      const editor = api.window.activeEditor;
+      if (!editor) return;
+      const selections = api.editor.selections;
+      if (selections.length === 0) return;
+      const text = await api.clipboard.read();
+      const { edits, selections: newSelections } = buildPasteResult(selections, text);
+      if (edits.length === 0) return;
+      const document: Document = editor.document;
+      // ONE transaction, ONE `applyEdits` call for the WHOLE batch (Req
+      // 6.6) — a multi-cursor/multi-line paste is a single undo step,
+      // exactly like `buildPasteResult`'s own TSDoc documents.
+      document.transaction(() => document.applyEdits(edits));
+      api.editor.setSelections(newSelections);
+    }),
+  );
 }
 
 export function deactivate(): void {

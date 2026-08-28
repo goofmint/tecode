@@ -8,7 +8,13 @@
  * "object"` actually does at runtime (project the registered object's own
  * enumerable properties onto the module's named exports — `alias.ts`
  * registers the `Tecode` object itself, whose own properties are these
- * nine namespaces).
+ * ten namespaces).
+ *
+ * Every namespace `createTecodeApi` puts on the frozen `Tecode` object
+ * MUST appear below. A namespace missing here still works at runtime — the
+ * `loader: "object"` projection does not consult this file — so the only
+ * symptom is that `import { <name> } from "tecode"` fails to type-check in
+ * an extension, which no test in this repo would catch.
  *
  * **Why this file, here, is enough**: this repo's root `tsconfig.json` sets
  * no `"include"`, so a single `bunx tsc --noEmit` run from the repo root
@@ -32,6 +38,7 @@
 
 declare module "tecode" {
   import type {
+    ClipboardNamespace,
     CommandsNamespace,
     ConfigNamespace,
     ContextNamespace,
@@ -43,6 +50,7 @@ declare module "tecode" {
     WorkspaceNamespace,
   } from "@tecode/api";
 
+  export const clipboard: ClipboardNamespace;
   export const commands: CommandsNamespace;
   export const workspace: WorkspaceNamespace;
   export const window: WindowNamespace;

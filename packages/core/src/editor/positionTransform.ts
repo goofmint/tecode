@@ -90,31 +90,67 @@ export function transformPosition(position: Position, edits: readonly TextEdit[]
   );
   const anchor = containingEdit ? containingEdit.range.start : position;
   let line = anchor.line;
-  let character = anchor.character;
 
-  for (const edit of edits) {
-    if (edit === containingEdit) continue; // contributes nothing beyond the clamp
-    const { range, newText } = edit;
+  // Every edit "before" the anchor (bucket 1 above), regardless of `edits`'
+  // own order — `line` is a pure sum, exactly as this module's TSDoc
+  // describes: each preceding edit contributes its own `netLineDelta`
+  // independently of every other one.
+  const preceding = edits.filter(
+    (edit) => edit !== containingEdit && comparePositions(anchor, edit.range.end) >= 0,
+  );
+  for (const { range, newText } of preceding) {
+    const insertedLineCount = splitIntoLines(newText).length - 1;
+    const removedLineCount = range.end.line - range.start.line;
+    line += insertedLineCount - removedLineCount;
+  }
+
+  // `character`, unlike `line`, is NOT a pure sum once more than one
+  // preceding edit shares the anchor's ORIGINAL line — Issue #91's
+  // `EditorInputRouter.insertText` is this codebase's first caller to ever
+  // hand `transformPosition` a genuinely multi-line `newText` (every edit
+  // shape `routeKeyEvent`'s own `buildEditBatch` builds — a single typed
+  // character, or an always-`newText: ""` backspace/delete — is single-line,
+  // so this branch was previously unexercised here). A SINGLE-line preceding
+  // edit's character contribution is a fixed, order-independent delta
+  // (`newEndCharacter - range.end.character`, added on top of whatever
+  // `character` already is) — that's what makes the reassignment loop below
+  // correct regardless of processing order for that case, matching this
+  // module's own TSDoc reasoning. A MULTI-line preceding edit is different:
+  // it does not shift the anchor's column, it RESETS it — the anchor's line
+  // no longer starts at any original column at all once at least one
+  // newline has been inserted before it, it starts fresh at whatever column
+  // that edit's OWN last inserted line ends at. So same-line preceding
+  // edits must be walked CLOSEST-TO-THE-ANCHOR FIRST (descending
+  // `range.end`): every single-line edit encountered before the first
+  // multi-line one accumulates the usual per-edit delta, and the moment a
+  // multi-line edit is reached, `character` is reset to that edit's own
+  // tail-line length and the walk stops — any edit further left (closer to
+  // the original line's start) no longer affects `character` at all (it
+  // already contributed to `line`, in the sum above, since its own inserted
+  // newlines happened before this position either way). This is
+  // `@tecode/builtin/editor-core`'s `positionTransform.ts` — a module that
+  // cannot import this one (the `builtin`/`core` ESLint layering rule) and
+  // so carries its own copy — documents as a deliberate fix over an
+  // earlier version of THIS function; ported back here now that this
+  // module has its own multi-line caller. When every same-line preceding
+  // edit is single-line (every case exercised before this task), this
+  // reduces to exactly the previous per-edit-in-any-order accumulation,
+  // since plain addition commutes — `positionTransform.test.ts`'s existing
+  // cases are unchanged by this rewrite.
+  let character = anchor.character;
+  const sameLine = preceding
+    .filter((edit) => edit.range.end.line === anchor.line)
+    .sort((a, b) => comparePositions(b.range.end, a.range.end));
+  for (const { range, newText } of sameLine) {
     const insertedLines = splitIntoLines(newText);
     const insertedLineCount = insertedLines.length - 1;
-    const removedLineCount = range.end.line - range.start.line;
-    const netLineDelta = insertedLineCount - removedLineCount;
-
-    if (comparePositions(anchor, range.end) >= 0) {
-      // Bucket 1 (this module's TSDoc): the anchor is at-or-after this
-      // edit's end, in ORIGINAL coordinates.
-      if (anchor.line === range.end.line) {
-        const lastInsertedLineLength = insertedLines[insertedLines.length - 1]!.length;
-        const newEndCharacter =
-          range.start.character + (insertedLineCount === 0 ? newText.length : lastInsertedLineLength);
-        character = character - range.end.character + newEndCharacter;
-      }
-      line += netLineDelta;
+    if (insertedLineCount === 0) {
+      character = character - range.end.character + range.start.character + newText.length;
+      continue;
     }
-
-    // Bucket 2: this edit starts at-or-after the anchor — unaffected.
-    // (Non-overlap guarantees no OTHER edit can strictly contain the
-    // anchor once the containing edit has been factored out.)
+    const lastInsertedLineLength = insertedLines[insertedLines.length - 1]!.length;
+    character = character - range.end.character + lastInsertedLineLength;
+    break;
   }
 
   return { line, character };
