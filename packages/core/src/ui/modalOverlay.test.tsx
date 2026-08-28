@@ -359,3 +359,44 @@ describe("ModalOverlay — long quick picks stay bounded and scrollable (issue #
     expect(frame).toContain(`Item ${ITEM_COUNT - 1}`);
   });
 });
+
+describe("ModalOverlay — a long input-box prompt never hides the input itself", () => {
+  // NOT a regression test: no code change was needed to make this pass.
+  // Review raised the worry that `InputBoxBody`'s `maxHeight` +
+  // `overflow: "hidden"` clip could push the `Input` and the validation
+  // message out through the bottom edge behind a long enough prompt,
+  // leaving a modal that takes keystrokes it cannot show. Rendering a
+  // 468-character prompt in a 40x20 terminal shows it does not: the prompt
+  // truncates and both stay on screen. Adding an explicit `flexShrink: 1`
+  // to the prompt produced a byte-identical frame, so that configuration
+  // was dropped rather than kept as a no-op. This test pins the behaviour
+  // the clip already has, so a future layout change cannot quietly take it
+  // away.
+  test("a prompt long enough to overflow the clip still leaves the typed value and validation message on screen", async () => {
+    const TERMINAL_WIDTH = 40;
+    const TERMINAL_HEIGHT = 20;
+    // 468 characters — long enough to wrap well past the modal's own
+    // clipped height at this width.
+    const prompt = "This prompt is deliberately very long. ".repeat(12);
+    const modalService = createModalService();
+    void modalService.openInputBox({ prompt, validateInput: () => "VALIDATION_SENTINEL" });
+    modalService.setInputValue("TYPED_SENTINEL");
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ModalOverlay modalService={modalService} />
+      </ThemeProvider>,
+      { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    // A modal that accepts keystrokes must show them. Losing some of the
+    // prompt to the clip is the acceptable trade; losing the field the user
+    // is typing into would not be.
+    expect(frame).toContain("TYPED_SENTINEL");
+    expect(frame).toContain("VALIDATION_SENTINEL");
+  });
+});
