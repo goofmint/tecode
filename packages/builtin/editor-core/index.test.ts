@@ -48,6 +48,7 @@ function createFakeApi(initialLines: string[]) {
   const configListeners = new Set<(e: ConfigChangeEvent) => void>();
   const savedUris: string[] = [];
   const languageContributions = new Map<string, LanguageContribution>();
+  let clipboardBuffer = "";
 
   function applyEditsToLines(edits: TextEdit[]): void {
     // Apply in reverse document order so earlier edits' ranges stay valid
@@ -206,6 +207,12 @@ function createFakeApi(initialLines: string[]) {
       getLanguage: (id: string) => languageContributions.get(id),
     },
     themes: undefined as never,
+    clipboard: {
+      read: async () => clipboardBuffer,
+      write: async (text: string) => {
+        clipboardBuffer = text;
+      },
+    },
   } as unknown as Tecode;
 
   function setConfig(key: string, value: unknown): void {
@@ -217,6 +224,10 @@ function createFakeApi(initialLines: string[]) {
   return {
     api,
     lines,
+    getClipboardBuffer: () => clipboardBuffer,
+    setClipboardBuffer: (text: string) => {
+      clipboardBuffer = text;
+    },
     appliedEdits,
     savedUris,
     setConfig,
@@ -518,5 +529,169 @@ describe("editor-core activate() — bracket auto-close (Req 11.1, Task 2.4)", (
     languageContributions.delete("plaintext");
     await api.commands.execute("editor.action.typeOpenParen");
     expect(lines[0]).toBe("(");
+  });
+});
+
+describe("editor-core activate() — clipboard copy/cut/paste (Issue #91)", () => {
+  test("copy writes the selected text to the clipboard and does not touch the buffer", async () => {
+    const { api, lines, appliedEdits, getClipboardBuffer } = activateFixture(["hello world"]);
+    api.editor.setSelections([
+      { start: pos(0, 6), end: pos(0, 11), anchor: pos(0, 6), active: pos(0, 11) },
+    ]);
+
+    await api.commands.execute("editor.action.clipboardCopy");
+
+    expect(getClipboardBuffer()).toBe("world");
+    expect(lines[0]).toBe("hello world");
+    expect(appliedEdits).toHaveLength(0);
+  });
+
+  test("multi-cursor copy joins each selection's text with \\n, in selection order", async () => {
+    const { api, getClipboardBuffer } = activateFixture(["foo bar", "baz qux"]);
+    api.editor.setSelections([
+      { start: pos(0, 0), end: pos(0, 3), anchor: pos(0, 0), active: pos(0, 3) },
+      { start: pos(1, 4), end: pos(1, 7), anchor: pos(1, 4), active: pos(1, 7) },
+    ]);
+
+    await api.commands.execute("editor.action.clipboardCopy");
+
+    expect(getClipboardBuffer()).toBe("foo\nqux");
+  });
+
+  test("cut writes the selected text to the clipboard AND deletes it, as one undo step", async () => {
+    const { api, lines, appliedEdits, getSelections, getClipboardBuffer } = activateFixture(["hello world"]);
+    api.editor.setSelections([
+      { start: pos(0, 5), end: pos(0, 11), anchor: pos(0, 5), active: pos(0, 11) },
+    ]);
+
+    await api.commands.execute("editor.action.clipboardCut");
+
+    expect(getClipboardBuffer()).toBe(" world");
+    expect(lines[0]).toBe("hello");
+    expect(getSelections()).toEqual([cursorAt(0, 5)]);
+    expect(appliedEdits).toHaveLength(1); // ONE applyEdits call — one undo step
+  });
+
+  test("a multi-cursor cut is a SINGLE undo entry, not one per cursor", async () => {
+    const { api, lines } = activateFixture(["aaa bbb ccc"]);
+    api.editor.setSelections([
+      { start: pos(0, 0), end: pos(0, 3), anchor: pos(0, 0), active: pos(0, 3) },
+      { start: pos(0, 8), end: pos(0, 11), anchor: pos(0, 8), active: pos(0, 11) },
+    ]);
+
+    await api.commands.execute("editor.action.clipboardCut");
+    expect(lines[0]).toBe(" bbb ");
+
+    await api.commands.execute("editor.action.undo");
+    expect(lines[0]).toBe("aaa bbb ccc");
+  });
+
+  test("cut with a collapsed (empty) selection copies \"\" and does not call applyEdits", async () => {
+    const { api, appliedEdits, getClipboardBuffer, setClipboardBuffer } = activateFixture(["abc"]);
+    setClipboardBuffer("previous");
+    api.editor.setSelections([cursorAt(0, 1)]);
+
+    await api.commands.execute("editor.action.clipboardCut");
+
+    expect(getClipboardBuffer()).toBe("");
+    expect(appliedEdits).toHaveLength(0);
+  });
+
+  test("paste inserts the clipboard's current text at the cursor, replacing any selection", async () => {
+    const { api, lines, getSelections, setClipboardBuffer } = activateFixture(["hello world"]);
+    setClipboardBuffer("there");
+    api.editor.setSelections([
+      { start: pos(0, 6), end: pos(0, 11), anchor: pos(0, 6), active: pos(0, 11) },
+    ]);
+
+    await api.commands.execute("editor.action.clipboardPaste");
+
+    expect(lines[0]).toBe("hello there");
+    expect(getSelections()).toEqual([cursorAt(0, 11)]);
+  });
+
+  test("a multi-line paste across multiple cursors is a SINGLE applyEdits call (one undo step), not one per line", async () => {
+    const { api, lines, appliedEdits, setClipboardBuffer } = activateFixture(["a", "c"]);
+    setClipboardBuffer("X\nY");
+    api.editor.setSelections([cursorAt(0, 1), cursorAt(1, 1)]);
+
+    await api.commands.execute("editor.action.clipboardPaste");
+
+    expect(appliedEdits).toHaveLength(1); // the mutation this test is built to catch: a loop over lines
+    expect(appliedEdits[0]).toHaveLength(2); // one TextEdit per cursor, batched together
+    expect(lines).toEqual(["aX", "Y", "cX", "Y"]);
+  });
+
+  test("paste with an empty clipboard buffer (nothing copied/cut yet) leaves the buffer unchanged", async () => {
+    const { api, lines } = activateFixture(["abc"]);
+    api.editor.setSelections([cursorAt(0, 1)]);
+    // Default clipboard buffer is "" — nothing has been copied/cut yet.
+    // `buildInsertEdit` still produces a real (zero-width, empty-text)
+    // `TextEdit` for this case — `editor.action.clipboardPaste` applies it
+    // like any other edit rather than special-casing an empty clipboard —
+    // so the observable outcome is simply "the buffer is unchanged", not
+    // "applyEdits was never called".
+    await api.commands.execute("editor.action.clipboardPaste");
+    expect(lines[0]).toBe("abc");
+  });
+
+  test("empty selections array (no active editor): copy/cut/paste never call applyEdits or touch the clipboard", async () => {
+    const commandHandlers = new Map<string, () => Promise<void> | void>();
+    let applyEditsCalls = 0;
+    let clipboardReadCalls = 0;
+    let clipboardWriteCalls = 0;
+    const fakeApi = {
+      commands: {
+        register: (id: string, handler: () => Promise<void> | void) => {
+          commandHandlers.set(id, handler);
+          return { dispose() {} };
+        },
+        execute: async (id: string) => commandHandlers.get(id)?.(),
+        list: () => [],
+      },
+      workspace: { save: async () => {} },
+      window: {
+        get activeEditor() {
+          return { document: { applyEdits: () => applyEditsCalls++, transaction: (fn: () => void) => fn() } };
+        },
+      },
+      editor: {
+        get selections() {
+          return [];
+        },
+        getLine: () => "",
+        get lineCount() {
+          return 0;
+        },
+        setSelections: () => {},
+      },
+      config: { get: () => undefined, onDidChange: () => ({ dispose() {} }) },
+      languages: { register: () => ({ dispose() {} }), getLanguageId: () => "plaintext", getLanguage: () => undefined },
+      clipboard: {
+        read: async () => {
+          clipboardReadCalls++;
+          return "should never be read";
+        },
+        write: async () => {
+          clipboardWriteCalls++;
+        },
+      },
+    } as unknown as Tecode;
+
+    const ctx: ExtensionContext = {
+      api: fakeApi,
+      extensionUri: "file:///fake-ext",
+      subscriptions: [],
+      storagePath: "/tmp/fake-ext-storage",
+    };
+    activate(ctx);
+
+    await fakeApi.commands.execute("editor.action.clipboardPaste");
+    await fakeApi.commands.execute("editor.action.clipboardCut");
+    await fakeApi.commands.execute("editor.action.clipboardCopy");
+
+    expect(applyEditsCalls).toBe(0);
+    expect(clipboardReadCalls).toBe(0);
+    expect(clipboardWriteCalls).toBe(0);
   });
 });

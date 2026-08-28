@@ -13,6 +13,7 @@ export {
 } from "./editorNamespace";
 export {
   createBaseTheme,
+  createClipboardStub,
   createEditorStub,
   createFindStub,
   createLanguagesStub,

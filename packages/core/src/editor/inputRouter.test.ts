@@ -257,3 +257,139 @@ describe("createEditorInputRouter (Task 2.2, Req 4.6, 6.6, design.md §6.1, §8.
     expect(document.undo()).toBeUndefined();
   });
 });
+
+describe("EditorInputRouter.insertText (Issue #91's paste path, Req 6.6)", () => {
+  test("no-op when editorTextFocus is falsy", () => {
+    const document = createTestDocument("hello");
+    const session = createFakeSession(document, [cursorAt(0, 0)]);
+    const context = createContextService(); // editorTextFocus never set
+    const router = buildRouter({ context, editorSession: session });
+
+    router.insertText("X");
+    expect(document.getLine(0)).toBe("hello");
+    expect(session.setStateCallCount()).toBe(0);
+  });
+
+  test("no-op when there is no active document", () => {
+    const session = createFakeSession(undefined, [cursorAt(0, 0)]);
+    const router = buildRouter({ editorSession: session });
+    expect(() => router.insertText("X")).not.toThrow();
+    expect(session.setStateCallCount()).toBe(0);
+  });
+
+  test("no-op on a readonly document", () => {
+    const document = createTestDocument("hello", { readonly: true });
+    const session = createFakeSession(document, [cursorAt(0, 0)]);
+    const router = buildRouter({ editorSession: session });
+
+    router.insertText("X");
+    expect(document.getLine(0)).toBe("hello");
+  });
+
+  test("a single cursor: multi-line text lands as ONE document.applyEdits call, not one per line", () => {
+    // The mutation this test is built to catch: an implementation that
+    // loops `document.applyEdits(...)` once per line of the pasted text
+    // (instead of building one `TextEdit[]` batch and calling `applyEdits`
+    // exactly once) would still leave the BUFFER content correct — the
+    // assertions below on `getLine` alone would not catch it — but would
+    // call through `applyEdits` more than once. Wrapping the real
+    // `CoreDocument.applyEdits` to count invocations is what actually
+    // proves the "one call" contract (this module's `EditorInputRouter.
+    // insertText` TSDoc, Req 6.6).
+    const document = createTestDocument("ac");
+    let applyEditsCallCount = 0;
+    const originalApplyEdits = document.applyEdits.bind(document);
+    document.applyEdits = (edits, opts) => {
+      applyEditsCallCount++;
+      originalApplyEdits(edits, opts);
+    };
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    router.insertText("line1\nline2\nline3");
+
+    expect(applyEditsCallCount).toBe(1);
+    expect(document.getLine(0)).toBe("aline1");
+    expect(document.getLine(1)).toBe("line2");
+    expect(document.getLine(2)).toBe("line3c");
+    expect(session.currentSelections()).toEqual([cursorAt(2, 5)]);
+  });
+
+  test("a multi-line paste across multiple cursors is a SINGLE undo entry", () => {
+    const document = createTestDocument("a\nc");
+    const original = [cursorAt(0, 1), cursorAt(1, 1)];
+    const session = createFakeSession(document, original);
+    const router = buildRouter({ editorSession: session });
+
+    router.insertText("X\nY");
+    // Original text "a\nc" with "X\nY" inserted after 'a' (offset 1) AND
+    // after 'c' (offset 3, the buffer's end) — both in ONE batch, computed
+    // against the ORIGINAL (pre-batch) coordinates: "aX\nY\ncX\nY".
+    expect(document.getLine(0)).toBe("aX");
+    expect(document.getLine(1)).toBe("Y");
+    expect(document.getLine(2)).toBe("cX");
+    expect(document.getLine(3)).toBe("Y");
+
+    const restoredSelections = document.undo();
+    expect(document.getLine(0)).toBe("a");
+    expect(document.getLine(1)).toBe("c");
+    expect(restoredSelections).toEqual(original);
+
+    // A second undo has nothing left to do — the whole multi-cursor,
+    // multi-line paste really was ONE undo entry, not one per cursor/line.
+    expect(document.undo()).toBeUndefined();
+  });
+
+  test("replaces a non-collapsed FORWARD selection and lands the cursor after the inserted text", () => {
+    const document = createTestDocument("abcdef");
+    const start = pos(0, 1);
+    const end = pos(0, 4);
+    const selection: Selection = { start, end, anchor: start, active: end };
+    const session = createFakeSession(document, [selection]);
+    const router = buildRouter({ editorSession: session });
+
+    router.insertText("XY");
+    expect(document.getLine(0)).toBe("aXYef");
+    expect(session.currentSelections()).toEqual([cursorAt(0, 3)]);
+  });
+
+  test("replaces a non-collapsed BACKWARD selection (active at the start) and still lands after the inserted text", () => {
+    const document = createTestDocument("abcdef");
+    const start = pos(0, 1);
+    const end = pos(0, 4);
+    // Backward selection: anchor at the far end, active at the near end —
+    // `range.start`/`range.end` are still `[1, 4)` (Selection extends
+    // Range), but `active` is `start`, not `end`. This is exactly the case
+    // `buildInsertTextBatch`'s TSDoc explains: tracking `active` directly
+    // would land the cursor at the WRONG end of the inserted text.
+    const selection: Selection = { start, end, anchor: end, active: start };
+    const session = createFakeSession(document, [selection]);
+    const router = buildRouter({ editorSession: session });
+
+    router.insertText("XY");
+    expect(document.getLine(0)).toBe("aXYef");
+    expect(session.currentSelections()).toEqual([cursorAt(0, 3)]);
+  });
+
+  test("two cursors on the same line both insert and both advance correctly", () => {
+    const document = createTestDocument("abcdef");
+    const session = createFakeSession(document, [cursorAt(0, 2), cursorAt(0, 5)]);
+    const router = buildRouter({ editorSession: session });
+
+    router.insertText("Z");
+    expect(document.getLine(0)).toBe("abZcdeZf");
+    expect(session.currentSelections()).toEqual([cursorAt(0, 3), cursorAt(0, 7)]);
+  });
+
+  test("bypasses the single-code-point restriction: a multi-character sequence is not rejected", () => {
+    // `routeKeyEvent`'s own `classifyKeyEvent`/`isPrintableSequence` would
+    // reject any `sequence` longer than one code point outright — proving
+    // `insertText` never goes through that path at all.
+    const document = createTestDocument("");
+    const session = createFakeSession(document, [cursorAt(0, 0)]);
+    const router = buildRouter({ editorSession: session });
+
+    router.insertText("hello world");
+    expect(document.getLine(0)).toBe("hello world");
+  });
+});

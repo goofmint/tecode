@@ -252,6 +252,7 @@ function createFakeApi(rootUri: Uri | undefined) {
     },
     languages: undefined as never,
     themes: undefined as never,
+    clipboard: undefined as never,
   };
 
   return {

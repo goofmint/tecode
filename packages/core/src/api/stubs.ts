@@ -36,6 +36,7 @@
  */
 
 import type {
+  ClipboardNamespace,
   Disposable,
   EditorNamespace,
   FindNamespace,
@@ -416,6 +417,28 @@ export interface ThemesStub extends ThemesNamespace {
  * {@link createBaseTheme} palette until a real theme loader (design.md §9)
  * can resolve a registered theme and track the active selection.
  */
+/**
+ * Build the `tecode.clipboard` stub (Issue #91) — `create.ts`'s fallback
+ * for a caller that supplies no `Clipboard` dependency at all (every test
+ * that predates this task). Unlike `createFileSystem`'s real backing
+ * (always constructed, never stubbed — `main.ts` builds one
+ * unconditionally), a clipboard genuinely has nothing useful to do with no
+ * backing buffer: `read()` always resolves `""`, and `write()` is a
+ * documented no-op that never throws (this module's TSDoc's never-throw
+ * discipline) — no extension can observe anything it "wrote" surviving
+ * past this stub, exactly as if no clipboard existed at all.
+ */
+export function createClipboardStub(): ClipboardNamespace {
+  return Object.freeze({
+    read() {
+      return Promise.resolve("");
+    },
+    write() {
+      return Promise.resolve();
+    },
+  });
+}
+
 export function createThemesStub(): ThemesStub {
   const registrations = createRegistrySet<ThemeContribution>();
   const baseTheme = createBaseTheme();

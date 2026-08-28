@@ -203,6 +203,67 @@ function buildEditBatch(
   return { edits, newSelections };
 }
 
+/** Build the single `TextEdit` a call to {@link createEditorInputRouter}'s
+ * `insertText` produces for one selection (Issue #91's paste path): replace
+ * the selection's whole range (a collapsed cursor's zero-width `[active,
+ * active)`, or a real selection's `[start, end)`) with `text` wholesale —
+ * deliberately the SAME "insert, replacing any active selection" shape
+ * `editor-core`'s `editing.ts` uses for `buildInsertEdit` (Tab/Enter), just
+ * duplicated here rather than imported: `editor-core` is a `builtin`
+ * extension and this module lives in `@tecode/core` — the ESLint layering
+ * rule (`no-restricted-imports`) only allows the reverse direction. Unlike
+ * {@link buildEditForCursor}'s `"insert"` case (a single code point at a
+ * collapsed cursor, `classifyKeyEvent`'s domain), `text` here is arbitrary —
+ * one or many lines, from a paste — which is exactly why `insertText` is a
+ * SEPARATE public method rather than a new `EditOp` value: routing it
+ * through `classifyKeyEvent`/`isPrintableSequence` would reject anything
+ * longer than one code point outright (this module's TSDoc's "Scope"). */
+function buildInsertTextEdit(selection: Selection, text: string): TextEdit {
+  return { range: { start: selection.start, end: selection.end }, newText: text };
+}
+
+/**
+ * Build the full multi-cursor batch {@link createEditorInputRouter}'s
+ * `insertText` applies for one paste (Issue #91, Req 6.6's "multi-cursor
+ * batching" — same one-`applyEdits`-call contract this module's TSDoc
+ * states for a keystroke): dedupe cursors sharing one `active` point
+ * (matching {@link buildEditBatch}'s own first step), build one
+ * {@link buildInsertTextEdit} per surviving selection, drop any that
+ * overlaps one already kept, and compute each selection's resulting
+ * collapsed cursor.
+ *
+ * **Tracks each selection's OWN edit's `range.end`, not its `active`** —
+ * unlike this module's private `buildEditBatch` above (whose selections are
+ * always collapsed pre-Task-2.3, so `active` and `range.end` are always the
+ * same point, making the distinction moot there): a PASTE can replace a
+ * genuine, possibly-BACKWARD selection, whose `active` can be the far
+ * (leftward/upward) end of `range` rather than `range.end` — tracking
+ * `active` directly would land the post-paste cursor at the wrong end of a
+ * backward selection's now-inserted text. `editor-core`'s `editing.ts`'s
+ * real `buildEditBatch` (Task 2.3) already solves this identical problem
+ * the identical way; this is that same "own edit's `range.end`, else the
+ * original `active`, run through `transformPosition`" shape, independently
+ * implemented here since `editing.ts` cannot be imported (this function's
+ * sibling {@link buildInsertTextEdit} TSDoc's layering note).
+ */
+function buildInsertTextBatch(
+  selections: readonly Selection[],
+  text: string,
+): { edits: TextEdit[]; newSelections: Selection[] } {
+  const deduped = dedupeByActive(selections);
+  const rawEdits = deduped.map((selection) => buildInsertTextEdit(selection, text));
+  const edits = dropOverlapping(rawEdits);
+  const survivingSet = new Set(edits);
+
+  const newPositions = deduped.map((selection, i) => {
+    const own = rawEdits[i]!;
+    const trackPoint = survivingSet.has(own) ? own.range.end : selection.active;
+    return transformPosition(trackPoint, edits);
+  });
+
+  return { edits, newSelections: toMergedSelections(newPositions) };
+}
+
 /** Dependencies for {@link createEditorInputRouter}. Narrowed to `Pick`s of
  * the real services (matching `keymap/chords.ts`'s `ChordStateMachineDeps`
  * pattern) so tests can inject minimal fakes. */
@@ -232,6 +293,28 @@ export interface EditorInputRouter {
    * `chords.ts`'s/`bindingTable.ts`'s own guarded-boundary discipline).
    */
   routeKeyEvent(event: KeyEventLike): boolean;
+  /**
+   * Insert `text` at every cursor, replacing each selection's range if it
+   * has one (Issue #91's paste path, design.md §6.1/§8.3's "focused
+   * component" destination extended to bracketed-paste terminal input, not
+   * just single-keystroke fallthrough). ALWAYS applied as exactly one
+   * `document.applyEdits(...)` call across every selection ({@link
+   * buildInsertTextBatch}'s TSDoc, Req 6.6) — never one call per line or
+   * per cursor — so a multi-line paste is a single undo step, matching
+   * `routeKeyEvent`'s own one-`applyEdits`-per-invocation contract.
+   * Deliberately bypasses `classifyKeyEvent`/`isPrintableSequence`'s
+   * single-code-point restriction entirely: `text` is not run through
+   * either at all, so an arbitrary-length (and multi-line) paste is never
+   * rejected the way a `KeyEventLike` with a multi-character `sequence`
+   * would be.
+   *
+   * No-ops exactly like `routeKeyEvent` does (same guards, same order): no
+   * `editorTextFocus`, no active document, or a readonly document (Req
+   * 5.5) — `applyEdits` is skipped entirely and `text` never reaches the
+   * buffer. Never throws (this interface's own "guarded boundary"
+   * discipline, matching `routeKeyEvent`).
+   */
+  insertText(text: string): void;
 }
 
 /** Build an {@link EditorInputRouter} (Task 2.2). */
@@ -276,5 +359,40 @@ export function createEditorInputRouter(deps: EditorInputRouterDeps): EditorInpu
     }
   }
 
-  return { routeKeyEvent };
+  /** {@link EditorInputRouter.insertText} — see that TSDoc for the
+   * contract. Same guard order/shape as {@link routeKeyEvent} above, minus
+   * the `classifyKeyEvent` step it deliberately bypasses. */
+  function insertText(text: string): void {
+    try {
+      if (!context.get("editorTextFocus")) return;
+
+      const document = editorSession.getActiveDocument();
+      if (!document) return;
+
+      // Same read-only guard as `routeKeyEvent` (Req 5.5) — no cursor
+      // movement either, for the same "must not desync from an edit
+      // `applyEdits` would silently drop" reason.
+      if (document.readonly) return;
+
+      const state = editorSession.getState(document.uri);
+      const { edits, newSelections } = buildInsertTextBatch(state.selections, text);
+
+      if (edits.length > 0) {
+        // ONE `applyEdits` call for the whole batch (this method's TSDoc,
+        // Req 6.6) — every selection's replacement is one `TextEdit` in
+        // `edits`, so a multi-line/multi-cursor paste is exactly one
+        // atomic buffer mutation and one `UndoStack` entry, never a loop
+        // that calls `applyEdits` once per line or per cursor.
+        document.applyEdits(edits, {
+          selectionsBefore: state.selections,
+          selectionsAfter: newSelections,
+        });
+      }
+      editorSession.setState(document.uri, { ...state, selections: newSelections });
+    } catch {
+      // Never throw past this seam — see `routeKeyEvent`'s own catch.
+    }
+  }
+
+  return { routeKeyEvent, insertText };
 }

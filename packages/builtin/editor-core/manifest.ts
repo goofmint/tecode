@@ -160,6 +160,30 @@
  * Plain `ctrl+letter` combos (`ctrl+s`, `ctrl+z`, `ctrl+y`, `ctrl+d`) are
  * unaffected by any of this — a single modifier with no shift ambiguity
  * decodes identically and unambiguously in every mode.
+ *
+ * **Clipboard commands (Issue #91)**: `editor.action.clipboardCopy`/
+ * `clipboardCut`/`clipboardPaste` are declared like every other command
+ * above — reachable from the command palette and `tecode.commands.execute`
+ * — but `clipboardCopy` is bound to NO default keybinding, deliberately,
+ * even though `ctrl+c` is not claimed by anything else in this manifest
+ * (`ctrl+x`/`ctrl+v` ARE bound below, for cut/paste). `ctrl+c` is NOT
+ * usable as a keybinding at all today: `packages/cli/src/renderShell.tsx`'s
+ * `renderShellToTerminal` calls `@opentui/core`'s `createCliRenderer()`
+ * with no `exitOnCtrlC` override, which defaults to `true` — OpenTUI
+ * itself intercepts the raw `\x03` byte and calls `CliRenderer.destroy()`
+ * directly, BEFORE it ever reaches this manifest's keymap layer (the same
+ * "raw mode disables signal generation" mechanism `renderShell.tsx`'s
+ * `ShellRenderDeps.onDestroy` TSDoc documents for why Ctrl+C never becomes
+ * a real `SIGINT` either). Worse, Ctrl+C is currently the ONLY way to quit
+ * tecode at all (Issue #84, Req 12.3) — no `workbench.action.quit` (or
+ * equivalent) command exists anywhere in any manifest yet, core or
+ * built-in. Adding a `ctrl+c` binding here would therefore be silently
+ * unreachable in practice (OpenTUI's own handling wins the race every
+ * time) while ALSO reading as if a real alternative to Ctrl+C-to-quit
+ * existed, which it does not. Whether/how to free up Ctrl+C for copy (via
+ * `exitOnCtrlC: false` plus a real quit command) is a product decision for
+ * the app owner, out of scope here — do not "fix" this by adding a
+ * `ctrl+c` binding without that decision being made first.
  */
 
 import type { Manifest } from "@tecode/api";
@@ -169,6 +193,13 @@ const WHEN_EDITOR_TEXT_FOCUS = "editorTextFocus";
  * `@tecode/core`'s `ui/findWidget.tsx` query input via `useFocusTracking`,
  * the exact same mechanism `WHEN_EDITOR_TEXT_FOCUS` uses for the buffer. */
 const WHEN_FIND_WIDGET_FOCUS = "findWidgetFocus";
+
+/** Issue #91's `clipboard.useSystemClipboard` setting's key — named,
+ * exported constant, matching `explorer/manifest.ts`'s
+ * `EXPLORER_SHOW_HIDDEN_CONFIG_KEY` precedent (`index.ts` and this
+ * manifest's own `contributes.configuration` block below both reference
+ * this same string). */
+export const CLIPBOARD_USE_SYSTEM_CONFIG_KEY = "clipboard.useSystemClipboard";
 
 export default {
   id: "tecode.editor-core",
@@ -237,6 +268,13 @@ export default {
         category: "Editor",
       },
       { id: "editor.action.closeFind", title: "Close Find", category: "Editor" },
+      // Issue #91: clipboard copy/cut/paste. See this file's TSDoc's
+      // "Clipboard commands (Issue #91)" section, just below the
+      // keybindings table, for why `clipboardCopy` alone has no default
+      // keybinding.
+      { id: "editor.action.clipboardCopy", title: "Copy", category: "Editor" },
+      { id: "editor.action.clipboardCut", title: "Cut", category: "Editor" },
+      { id: "editor.action.clipboardPaste", title: "Paste", category: "Editor" },
     ],
     keybindings: [
       { key: "left", command: "editor.action.cursorLeft", when: WHEN_EDITOR_TEXT_FOCUS },
@@ -307,6 +345,22 @@ export default {
       { key: "return", command: "editor.action.findNext", when: WHEN_FIND_WIDGET_FOCUS },
       { key: "shift+return", command: "editor.action.findPrevious", when: WHEN_FIND_WIDGET_FOCUS },
       { key: "escape", command: "editor.action.closeFind", when: WHEN_FIND_WIDGET_FOCUS },
+      // Issue #91: clipboard cut/paste. See this file's TSDoc's "Clipboard
+      // commands (Issue #91)" section for why `clipboardCopy` has no
+      // keybinding entry here at all.
+      { key: "ctrl+x", command: "editor.action.clipboardCut", when: WHEN_EDITOR_TEXT_FOCUS },
+      { key: "ctrl+v", command: "editor.action.clipboardPaste", when: WHEN_EDITOR_TEXT_FOCUS },
     ],
+    configuration: {
+      title: "Clipboard",
+      properties: {
+        [CLIPBOARD_USE_SYSTEM_CONFIG_KEY]: {
+          type: "boolean",
+          default: true,
+          description:
+            "Sync copy/cut to the terminal's system clipboard via OSC 52, when the terminal supports it.",
+        },
+      },
+    },
   },
 } satisfies Manifest;

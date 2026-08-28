@@ -74,6 +74,7 @@ export type {
   ContextNamespace,
   LanguagesNamespace,
   ThemesNamespace,
+  ClipboardNamespace,
   Tecode,
 } from "./namespaces";
 

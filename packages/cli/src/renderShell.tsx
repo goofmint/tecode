@@ -176,6 +176,40 @@ export interface ShellRenderDeps {
    * every other optional dependency in this module.
    */
   onDestroy?: () => void;
+  /**
+   * Delivers the terminal's OSC 52 write function exactly ONCE (Issue #91),
+   * without exposing the `CliRenderer` itself — the same "hand over a
+   * value/callback, not the renderer" convention as {@link
+   * onCapabilitiesResolved}/{@link onDestroy} above. {@link
+   * renderShellToTerminal} calls this synchronously, right after the
+   * renderer is created, with `renderer.copyToClipboardOSC52` bound to that
+   * renderer instance — the returned function's own boolean return value
+   * (`true`/`false` for accepted/not) is `@opentui/core`'s only per-call
+   * feedback; there is no separate "supported" query this callback also
+   * needs to report, since a terminal that does not support OSC 52 simply
+   * reports `false` (or is silently ignored) on every call, which the
+   * clipboard service (`@tecode/core`'s `clipboard/clipboard.ts`) already
+   * logs and swallows. Optional and never required: {@link
+   * renderShellHeadless} never calls this (no real `CliRenderer`/terminal
+   * exists to write an OSC 52 escape sequence to), matching every other
+   * optional terminal-seam callback in this module.
+   */
+  onClipboardWriterReady?: (write: (text: string) => boolean) => void;
+  /**
+   * Delivers bracketed-paste text as it arrives (Issue #91): {@link
+   * renderShellToTerminal} listens for `renderer.keyInput`'s `"paste"`
+   * event (`@opentui/core`'s `PasteEvent`, `lib/KeyHandler.d.ts`) and
+   * decodes its `bytes` (a `Uint8Array`) as UTF-8 before calling this with
+   * the resulting string — extension/router code never sees raw bytes.
+   * Wired ONLY when this callback is supplied, the same "register nothing
+   * unless the caller actually wants it" pattern the `chordMachine`/
+   * `editorInputRouter` pairing above already uses for `"keypress"` — a
+   * caller/test that omits this leaves paste entirely unhandled, exactly
+   * like every other optional callback here. {@link renderShellHeadless}
+   * never calls this either (this module's TSDoc's "First frame for a
+   * headless run" — there is no real terminal to receive a paste from).
+   */
+  onPaste?: (text: string) => void;
 }
 
 /** The render seam's shape: resolves once "first frame" has happened (see
@@ -238,6 +272,27 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
     const editorInputRouter = deps.editorInputRouter;
     renderer.keyInput.on("keypress", (key) => {
       handleKeyEvent({ chordMachine, editorInputRouter }, key);
+    });
+  }
+
+  // OSC 52 system-clipboard write (Issue #91, `ShellRenderDeps.
+  // onClipboardWriterReady`'s TSDoc): delivered exactly once, bound to
+  // THIS renderer instance — never exposes `renderer` itself, only the
+  // bound write function.
+  if (deps.onClipboardWriterReady) {
+    deps.onClipboardWriterReady((text) => renderer.copyToClipboardOSC52(text));
+  }
+
+  // Bracketed-paste terminal input (Issue #91, `ShellRenderDeps.onPaste`'s
+  // TSDoc): `PasteEvent.bytes` is decoded to a UTF-8 string before ever
+  // reaching `deps.onPaste` — registered only when the caller actually
+  // wants it, the same "nothing wired unless asked" pattern the
+  // `chordMachine && editorInputRouter` pairing above already uses.
+  if (deps.onPaste) {
+    const onPaste = deps.onPaste;
+    const pasteDecoder = new TextDecoder();
+    renderer.keyInput.on("paste", (event) => {
+      onPaste(pasteDecoder.decode(event.bytes));
     });
   }
 

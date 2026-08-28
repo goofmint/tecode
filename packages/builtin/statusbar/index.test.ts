@@ -153,6 +153,7 @@ function createFakeApi() {
       },
       onDidChange: themesChange.on,
     },
+    clipboard: undefined as never,
   };
 
   return {
