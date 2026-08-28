@@ -72,16 +72,68 @@ export interface ListItem {
   description?: string;
 }
 
+/**
+ * A caller-supplied size constraint for {@link List}'s underlying
+ * `<select>` (issue #93: "the display does not update when scrolling
+ * within the modal"). Deliberately just the handful of Yoga layout
+ * properties a bounding parent needs — not the full `SelectRenderableOptions`
+ * — since that is all `List`'s own callers (`modalOverlay.tsx`) have any
+ * business setting; every other renderable option (colors, `selectedIndex`,
+ * `focused`, …) stays owned by `List` itself, above.
+ */
+export interface ListStyle {
+  /** A fixed row count, or a percentage of the parent's height — the same
+   * two forms OpenTUI's own `height` accepts (`Renderable.d.ts`). */
+  height?: number | `${number}%`;
+  /** Take a share of the parent's remaining flex space instead of a fixed
+   * size — e.g. `1` beside a `flexShrink: 0` sibling like the quick pick's
+   * filter `Input` (`modalOverlay.tsx`'s `QuickPickBody`). */
+  flexGrow?: number;
+  /** Clip anything the underlying `<select>` would otherwise draw past its
+   * own bounds — belt-and-suspenders alongside a bounded `height`/
+   * `flexGrow` above; `SelectRenderable` already stops drawing options past
+   * its own `height` on its own (`components.tsx`'s TSDoc's "Sizing"), so
+   * this is defense-in-depth, not load-bearing. */
+  overflow?: "visible" | "hidden" | "scroll";
+}
+
 /** {@link List}'s props. */
 export interface ListProps {
   items?: ListItem[];
   selectedId?: string;
   onSelect?: (id: string) => void;
   focused?: boolean;
+  /**
+   * Bounds `List`'s own height instead of letting it grow to fit every
+   * item (issue #93's root cause: OpenTUI's `<select>` only ever scrolls
+   * — recentring `scrollOffset` on the selected index, per its vendored
+   * `SelectRenderable.updateScrollOffset` — when its assigned `height` is
+   * SMALLER than its option count; sized-to-content, `scrollOffset` can only
+   * ever resolve to `0`). Omitted (the default): `List` keeps sizing itself
+   * to fit every item exactly as before — this prop opts a caller INTO
+   * bounding it, so every pre-existing, unconstrained caller (including
+   * `components.snapshot.test.tsx`) renders byte-for-byte unchanged.
+   */
+  style?: ListStyle;
 }
 
 /** A minimal selectable list (`tecode.ui.List`, Req 10.1), over OpenTUI's
- * `<select>`. */
+ * `<select>`.
+ *
+ * **Sizing** (issue #93 fix): with no {@link ListProps.style}, `List` sizes
+ * its `<select>` to fit every item (`height={Math.max(items.length, 1)}`,
+ * unchanged from before this fix) — the right default for a caller that
+ * already knows its list is short (e.g. the keybindings editor's fixed
+ * panes) and wants no scrolling machinery at all. A caller expecting an
+ * UNBOUNDED item count (the command palette / quick-open / any
+ * `showQuickPick`, via `modalOverlay.tsx`) passes `style` instead, so the
+ * `<select>` gets ONLY that bounded height/`flexGrow` — never the
+ * size-to-content one — letting OpenTUI's own `maxVisibleItems`/
+ * `scrollOffset` machinery (verified against the vendored
+ * `@opentui/core@0.1.107` bundle's `SelectRenderable`) do its job: show a
+ * scrollable window and keep `selectedIndex` centred in it, exactly like
+ * every other bounded `<select>` in the ecosystem.
+ */
 export function List(rawProps: Record<string, unknown>): ReactNode {
   const props = rawProps as ListProps;
   const theme = useTheme();
@@ -94,15 +146,17 @@ export function List(rawProps: Record<string, unknown>): ReactNode {
   const selectedIndex = props.selectedId
     ? items.findIndex((item) => item.id === props.selectedId)
     : -1;
+  const hasSizeConstraint = props.style !== undefined;
 
   return (
     <select
       options={options}
       // OpenTUI's <select> only shows as many rows as its own assigned
       // height, defaulting very small when unconstrained; size it to fit
-      // every item unless a parent layout (flexGrow, an explicit height)
-      // overrides this via `style`.
-      height={Math.max(items.length, 1)}
+      // every item unless the caller opted into a bounded `style` (this
+      // function's TSDoc's "Sizing").
+      height={hasSizeConstraint ? undefined : Math.max(items.length, 1)}
+      style={props.style}
       selectedIndex={selectedIndex >= 0 ? selectedIndex : undefined}
       focused={props.focused}
       showDescription={items.some((item) => item.description)}

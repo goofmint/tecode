@@ -15,7 +15,7 @@ import { createCommandRegistry } from "../commands/registry";
 import { createHostLog } from "../host/errors";
 import { ContextFocusTracker } from "./focus";
 import { MODAL_DEFAULT_KEYBINDINGS, registerModalCommands } from "./modalCommands";
-import { ModalOverlay } from "./modalOverlay";
+import { modalMarginRows, ModalOverlay } from "./modalOverlay";
 import { createModalService } from "./modalService";
 import { ThemeProvider } from "./theme";
 
@@ -43,6 +43,35 @@ function findInputByPlaceholder(
   }
   for (const child of candidate?.getChildren?.() ?? []) {
     const found = findInputByPlaceholder(child, placeholder);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** Depth-first search for the quick pick's underlying OpenTUI `<select>`
+ * renderable — found by its distinctive method signature
+ * (`getSelectedIndex`/`setSelectedIndex`) rather than `instanceof
+ * SelectRenderable` (`@opentui/core` isn't otherwise imported as a runtime
+ * value here) or a `constructor.name` string check (fragile under any
+ * future minification of the vendored bundle). Exposes the real, laid-out
+ * `y`/`height` this suite's regression test needs — `List`'s own React
+ * props (`components.tsx`) don't reveal what OpenTUI's Yoga layout actually
+ * resolved them to. */
+function findSelect(
+  node: unknown,
+): { y: number; height: number; getSelectedIndex(): number; getChildren?: () => unknown[] } | undefined {
+  const candidate = node as {
+    getSelectedIndex?: () => number;
+    setSelectedIndex?: (index: number) => void;
+    y?: number;
+    height?: number;
+    getChildren?: () => unknown[];
+  };
+  if (typeof candidate?.getSelectedIndex === "function" && typeof candidate?.setSelectedIndex === "function") {
+    return candidate as { y: number; height: number; getSelectedIndex(): number; getChildren?: () => unknown[] };
+  }
+  for (const child of candidate?.getChildren?.() ?? []) {
+    const found = findSelect(child);
     if (found) return found;
   }
   return undefined;
@@ -272,5 +301,61 @@ describe("ModalOverlay — focus save/restore (Req 10.1)", () => {
     });
     expect(context.get<boolean>("quickPickFocus")).toBe(false);
     expect(renderer.currentFocusedRenderable).toBe(priorNode as unknown as BoxRenderable);
+  });
+});
+
+describe("ModalOverlay — long quick picks stay bounded and scrollable (issue #93 regression)", () => {
+  test("far more items than the terminal has rows: the select's rendered rows fit inside the terminal, and the active item is inside its visible window", async () => {
+    const TERMINAL_WIDTH = 80;
+    const TERMINAL_HEIGHT = 20;
+    const ITEM_COUNT = 100;
+    const items = Array.from({ length: ITEM_COUNT }, (_, i) => ({ label: `Item ${i}` }));
+    const modalService = createModalService();
+    void modalService.openQuickPick(items);
+
+    const { renderOnce, renderer, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ModalOverlay modalService={modalService} />
+      </ThemeProvider>,
+      { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // The bug (issue #93): `List` used to size its `<select>` to
+    // `Math.max(items.length, 1)` UNCONDITIONALLY — with 100 items in a
+    // 20-row terminal, the select's own assigned height was 100, so (a) it
+    // was laid out far past the terminal's bottom edge, and (b) OpenTUI's
+    // own `updateScrollOffset` can only ever resolve `scrollOffset` to `0`
+    // when `height >= options.length` (`components.tsx`'s TSDoc) — so it
+    // could never scroll a later item into view either.
+    const select = findSelect(renderer.root);
+    expect(select).toBeDefined();
+    expect(select!.height).toBeLessThan(ITEM_COUNT);
+    expect(select!.y + select!.height).toBeLessThanOrEqual(TERMINAL_HEIGHT);
+    // And it isn't sized to some degenerate near-zero window either — this
+    // is a REAL, usable scrollable list, not just "technically bounded".
+    const availableRows = TERMINAL_HEIGHT - modalMarginRows(TERMINAL_HEIGHT);
+    expect(select!.height).toBeGreaterThan(0);
+    expect(select!.height).toBeLessThanOrEqual(availableRows);
+
+    // The active item (index 0 initially) is the very first row — always
+    // trivially visible, bug or no bug. The real regression check is what
+    // happens once the SELECTION moves somewhere the OLD, unbounded layout
+    // would have drawn far below row 20.
+    expect(captureCharFrame()).toContain("Item 0");
+
+    // Move the active selection all the way to the LAST item.
+    for (let i = 0; i < ITEM_COUNT - 1; i++) {
+      act(() => modalService.selectNext());
+    }
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(modalService.getState()).toMatchObject({ mode: "quickPick", activeIndex: ITEM_COUNT - 1 });
+
+    const frame = captureCharFrame();
+    expect(frame).toContain(`Item ${ITEM_COUNT - 1}`);
   });
 });
