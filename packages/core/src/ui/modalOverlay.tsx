@@ -24,11 +24,35 @@
  * `left`/`right`/`bottom` (resolved against the nearest sized ancestor —
  * here, the full-terminal root box `renderShell.tsx` wraps `<Shell>` and
  * this component in), so centering needs no terminal-dimension hook or
- * negative-margin arithmetic: `top: "15%", left: "15%", right: "15%"`
- * removes the overlay from the normal flex flow and centers it
- * horizontally with a 15%-of-width margin on each side, sized vertically by
- * its own content. `zIndex` (a top-level `Renderable` option, confirmed in
+ * negative-margin arithmetic: `top`/`left`/`right`, all
+ * {@link MODAL_MARGIN_PERCENT} (`"15%"`), remove the overlay from
+ * the normal flex flow and center it horizontally with a matching margin on
+ * each side. `zIndex` (a top-level `Renderable` option, confirmed in
  * `Renderable.d.ts`) lifts it above `Shell`'s own content.
+ *
+ * **Vertical bound (issue #93 — "the display does not update when
+ * scrolling within the modal")**: this outer `<box>` itself still has no
+ * `bottom`/`height` — it stays sized to whatever `QuickPickBody`/
+ * `InputBoxBody` render, exactly as before this fix — but neither of THOSE
+ * any longer sizes itself unboundedly. The root cause (`components.tsx`'s
+ * `List` TSDoc): OpenTUI's `<select>` only ever RE-SCROLLS its visible
+ * window when its own assigned `height` is smaller than its option count
+ * (verified against the vendored `SelectRenderable`'s `updateScrollOffset`)
+ * — `List`'s old unconditional `height={Math.max(items.length, 1)}` sized
+ * every quick pick to fit EVERY item, so a long one both overflowed the
+ * terminal and, independently, could never actually scroll (`scrollOffset`
+ * has nowhere to move to when `height === options.length`). `QuickPickBody`
+ * now bounds `List`'s height to however many rows are actually available
+ * below this margin (`modalMarginRows`) — unchanged, and so still exactly
+ * `items.length`, for a short list; capped once there are more items than
+ * fit — while `InputBoxBody` (no `<select>`, but a caller-supplied
+ * `prompt`/`validationMessage` that can ALSO overflow by wrapping across
+ * many rows) just gets a hard `maxHeight` + `overflow: "hidden"` clip,
+ * since it has no scrollable widget for a clamped size to make sense of.
+ * `useTerminalDimensions()` (`@opentui/react`, re-exported alongside this
+ * module's own `useRenderer` import) is what both read: reactive to the
+ * renderer's own `"resize"` event, so a live terminal resize re-bounds an
+ * already-open modal on its very next render, not just at mount.
  *
  * **Focus save/restore, and the ordering hazard this module works around**:
  * {@link ModalOverlay} needs to remember whatever OpenTUI node was focused
@@ -55,7 +79,7 @@
  */
 
 import { useCallback, useEffect, useReducer, useRef, type ReactNode } from "react";
-import { useRenderer } from "@opentui/react";
+import { useRenderer, useTerminalDimensions } from "@opentui/react";
 import { Input, List, type ListItem } from "./components";
 import type { FocusableNode } from "./focus";
 import { useFocusTracking } from "./focus";
@@ -65,6 +89,48 @@ import { toColorInput, useTheme } from "./theme";
 
 type QuickPickModalState = Extract<ModalState, { mode: "quickPick" }>;
 type InputBoxModalState = Extract<ModalState, { mode: "inputBox" }>;
+
+/**
+ * Vertical margin (issue #93 — "the display does not update when scrolling
+ * within the modal"), in percent-of-terminal-height, kept on BOTH sides of
+ * the overlay's content — matches the `top: "15%"` this module's own outer
+ * `<box>` (below) already uses for its top offset and its horizontal
+ * `left`/`right` margins — one number for BOTH axes, which is why it is
+ * not named `..._VERTICAL_...`: changing it to tune the vertical inset
+ * moves the horizontal one too, by design. The modal keeps the same
+ * visual proportions
+ * it always has; the number now ALSO seeds {@link modalMarginRows}, which
+ * bounds every mode's content height so it can never grow past the
+ * terminal (this module's TSDoc's "Positioning" already covers the
+ * horizontal half of this; nothing previously bounded the vertical half —
+ * see `List`'s `style`, `components.tsx`'s TSDoc, for why an OVERSIZED
+ * `<select>` specifically also broke scrolling, not just overflowed).
+ */
+const MODAL_MARGIN_PERCENT = 15;
+
+/**
+ * A conservative (i.e. never UNDER-estimating) row count for one of this
+ * module's `15%`-of-terminal-height margins (this module's TSDoc's
+ * "Positioning"). `Math.ceil` — rather than trying to reproduce Yoga's own
+ * internal percentage-to-row rounding exactly — guarantees this is always
+ * `>=` whatever row count Yoga actually resolves `top: "15%"` to, for ANY
+ * rounding rule Yoga might use (floor, round, or ceil itself): reserving
+ * one row too many just leaves a little extra blank margin; reserving one
+ * row too few is how a bounded box overflows the terminal by exactly the
+ * row this function under-counted. Exported so `modalOverlay.test.tsx`'s
+ * regression test can compute the SAME bound this module uses, instead of
+ * guessing at Yoga's actual resolved pixel offset itself.
+ */
+export function modalMarginRows(terminalHeight: number): number {
+  return Math.ceil((terminalHeight * MODAL_MARGIN_PERCENT) / 100);
+}
+
+/** Rows {@link QuickPickBody}'s own chrome always occupies ABOVE `List`,
+ * inside the modal's top margin (`modalMarginRows`): its `border={[...]}`
+ * (this module's TSDoc — 1 row top + 1 row bottom) plus the filter `Input`
+ * (always exactly 1 row — a single-line OpenTUI `<input>`). Subtracted from
+ * the rows available below the top margin to get `List`'s own bound. */
+const QUICK_PICK_RESERVED_ROWS = 3;
 
 /** Props for {@link ModalOverlay}. */
 export interface ModalOverlayProps {
@@ -123,6 +189,20 @@ function QuickPickBody(props: {
   }));
   const activeId = props.state.activeIndex >= 0 ? String(props.state.activeIndex) : undefined;
 
+  // Bound `List`'s height (issue #93's fix — `components.tsx`'s `List`
+  // TSDoc's "Sizing") to however many rows actually fit below the modal's
+  // own top margin, MINUS this box's own border (1 row top + 1 bottom —
+  // `border={[...]}` below) and the filter `Input` above (always exactly 1
+  // row, single-line). Below that many items, this comes out to
+  // `listItems.length` itself — i.e. IDENTICAL to `List`'s own unconstrained
+  // default — so a short list still hugs its own content exactly as before;
+  // only once there are MORE items than fit does this clamp kick in,
+  // handing `List` a height smaller than its item count so OpenTUI's
+  // `<select>` scrolls instead of overflowing (this module's TSDoc).
+  const { height: terminalHeight } = useTerminalDimensions();
+  const maxListRows = Math.max(1, terminalHeight - modalMarginRows(terminalHeight) - QUICK_PICK_RESERVED_ROWS);
+  const listHeight = Math.max(1, Math.min(listItems.length, maxListRows));
+
   return (
     <box
       style={{ flexDirection: "column" }}
@@ -137,7 +217,7 @@ function QuickPickBody(props: {
         inputRef={inputRef}
       />
       {listItems.length > 0 ? (
-        <List items={listItems} selectedId={activeId} />
+        <List items={listItems} selectedId={activeId} style={{ height: listHeight, overflow: "hidden" }} />
       ) : (
         <text fg={toColorInput(theme.colors["input.placeholderForeground"])}>{" No matching results "}</text>
       )}
@@ -168,9 +248,25 @@ function InputBoxBody(props: {
     nodeRef.current?.focus();
   }, []);
 
+  // `InputBoxBody` has no `<select>` to size (issue #93 is specifically
+  // about `List`'s scrolling), but its `prompt`/`validationMessage` are
+  // caller-supplied strings of unbounded length — a long one wraps across
+  // many rows and can ALSO overflow the terminal, the same underlying
+  // "nothing bounds this modal's content" gap `QuickPickBody` closes above
+  // (verified empirically: a ~400-char prompt/validation pair in a
+  // 20-row terminal renders ~35 content rows, well past the bottom edge).
+  // A hard `maxHeight` + `overflow: "hidden"` clip — rather than
+  // `QuickPickBody`'s adaptive row-counting `listHeight` — is the right fix
+  // here: there is no scrollable widget underneath to keep a selection
+  // visible in, so there is nothing to make scrollable; clipping is simply
+  // "never draw past the terminal's edge", the same guarantee `List`'s own
+  // bounded `<select>` gets from its assigned `height`.
+  const { height: terminalHeight } = useTerminalDimensions();
+  const maxContentRows = Math.max(1, terminalHeight - modalMarginRows(terminalHeight));
+
   return (
     <box
-      style={{ flexDirection: "column" }}
+      style={{ flexDirection: "column", maxHeight: maxContentRows, overflow: "hidden" }}
       backgroundColor={toColorInput(theme.colors["input.background"])}
       border={["top", "right", "bottom", "left"]}
       borderColor={toColorInput(theme.colors["focusBorder"])}
@@ -231,7 +327,15 @@ export function ModalOverlay(props: ModalOverlayProps): ReactNode {
   if (state.mode === null) return null;
 
   return (
-    <box style={{ position: "absolute", top: "15%", left: "15%", right: "15%" }} zIndex={1000}>
+    <box
+      style={{
+        position: "absolute",
+        top: `${MODAL_MARGIN_PERCENT}%`,
+        left: `${MODAL_MARGIN_PERCENT}%`,
+        right: `${MODAL_MARGIN_PERCENT}%`,
+      }}
+      zIndex={1000}
+    >
       {state.mode === "quickPick" ? (
         <QuickPickBody state={state} setFilter={props.modalService.setFilter} />
       ) : (
