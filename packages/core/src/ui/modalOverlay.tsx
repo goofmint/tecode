@@ -25,7 +25,7 @@
  * here, the full-terminal root box `renderShell.tsx` wraps `<Shell>` and
  * this component in), so centering needs no terminal-dimension hook or
  * negative-margin arithmetic: `top`/`left`/`right`, all
- * {@link MODAL_VERTICAL_MARGIN_PERCENT} (`"15%"`), remove the overlay from
+ * {@link MODAL_MARGIN_PERCENT} (`"15%"`), remove the overlay from
  * the normal flex flow and center it horizontally with a matching margin on
  * each side. `zIndex` (a top-level `Renderable` option, confirmed in
  * `Renderable.d.ts`) lifts it above `Shell`'s own content.
@@ -95,7 +95,10 @@ type InputBoxModalState = Extract<ModalState, { mode: "inputBox" }>;
  * within the modal"), in percent-of-terminal-height, kept on BOTH sides of
  * the overlay's content — matches the `top: "15%"` this module's own outer
  * `<box>` (below) already uses for its top offset and its horizontal
- * `left`/`right` margins, so the modal keeps the same visual proportions
+ * `left`/`right` margins — one number for BOTH axes, which is why it is
+ * not named `..._VERTICAL_...`: changing it to tune the vertical inset
+ * moves the horizontal one too, by design. The modal keeps the same
+ * visual proportions
  * it always has; the number now ALSO seeds {@link modalMarginRows}, which
  * bounds every mode's content height so it can never grow past the
  * terminal (this module's TSDoc's "Positioning" already covers the
@@ -103,7 +106,7 @@ type InputBoxModalState = Extract<ModalState, { mode: "inputBox" }>;
  * see `List`'s `style`, `components.tsx`'s TSDoc, for why an OVERSIZED
  * `<select>` specifically also broke scrolling, not just overflowed).
  */
-const MODAL_VERTICAL_MARGIN_PERCENT = 15;
+const MODAL_MARGIN_PERCENT = 15;
 
 /**
  * A conservative (i.e. never UNDER-estimating) row count for one of this
@@ -119,7 +122,7 @@ const MODAL_VERTICAL_MARGIN_PERCENT = 15;
  * guessing at Yoga's actual resolved pixel offset itself.
  */
 export function modalMarginRows(terminalHeight: number): number {
-  return Math.ceil((terminalHeight * MODAL_VERTICAL_MARGIN_PERCENT) / 100);
+  return Math.ceil((terminalHeight * MODAL_MARGIN_PERCENT) / 100);
 }
 
 /** Rows {@link QuickPickBody}'s own chrome always occupies ABOVE `List`,
@@ -327,9 +330,9 @@ export function ModalOverlay(props: ModalOverlayProps): ReactNode {
     <box
       style={{
         position: "absolute",
-        top: `${MODAL_VERTICAL_MARGIN_PERCENT}%`,
-        left: `${MODAL_VERTICAL_MARGIN_PERCENT}%`,
-        right: `${MODAL_VERTICAL_MARGIN_PERCENT}%`,
+        top: `${MODAL_MARGIN_PERCENT}%`,
+        left: `${MODAL_MARGIN_PERCENT}%`,
+        right: `${MODAL_MARGIN_PERCENT}%`,
       }}
       zIndex={1000}
     >
