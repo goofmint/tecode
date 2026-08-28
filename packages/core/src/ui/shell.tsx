@@ -49,6 +49,8 @@
 
 import { basename } from "node:path";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+import { CliRenderEvents } from "@opentui/core";
+import { useAppContext } from "@opentui/react";
 import type { Disposable, SlotId, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
@@ -68,6 +70,7 @@ import type { LayoutState, LayoutStateService } from "./layoutState";
 import { INPUT_BOX_FOCUS_CONTEXT_KEY, QUICK_PICK_FOCUS_CONTEXT_KEY } from "./modalCommands";
 import type { SidebarPair, SlotRegistry, SlotViewEntry } from "./slotRegistry";
 import { toColorInput, useTheme } from "./theme";
+import { computeEditorViewportHeight, type EditorAreaChrome } from "./viewport";
 
 /* ------------------------------------------------------------------ */
 /* Shared reactive-subscription hooks                                  */
@@ -317,6 +320,78 @@ export function Sidebar(props: SidebarProps): ReactNode {
 /* EditorArea (TabBar + EditorView)                                     */
 /* ------------------------------------------------------------------ */
 
+/** Rows `Tabs`' `<tab-select>` (`components.tsx`, over `@opentui/core`'s
+ * `TabSelectRenderable`) occupies once tabs are shown (Issue #92, this
+ * module's `EditorArea` — its `tabs.length > 0` condition below decides
+ * WHETHER this constant applies, never a made-up literal that could drift
+ * from the real render). `TabSelectRenderable`'s own
+ * `calculateDynamicHeight(showUnderline, showDescription)` — both left at
+ * their `@opentui/core@0.1.107` library defaults, `true`/`true`, since
+ * `Tabs` never overrides either — computes `1` (tab row) + `1` (underline)
+ * + `1` (description row) = `3`; confirmed directly against the vendored
+ * headless renderer (a mounted `<tab-select>` with no explicit `height`
+ * measures exactly `3` rows), not merely read off the library's source. */
+const TAB_BAR_HEIGHT = 3;
+
+/** Rows `FindWidget`'s own outer box occupies while open (`findWidget.tsx`'s
+ * `style={{ height: 1 }}`) — Req 11.1. */
+const FIND_WIDGET_HEIGHT = 1;
+
+/** Rows `StatusBar` occupies (`shell.tsx`'s `StatusBar`, `style={{ height: 1
+ * }}`) — always rendered, so always reserved. */
+const STATUS_BAR_HEIGHT = 1;
+
+/**
+ * The live terminal's current row count (Issue #92; Req 6.5, 6.6, 13.1;
+ * design.md §8.3's `EditorView` `viewportHeight` scope note), reactively —
+ * the "optional dependency, `undefined` when unavailable" shape `theme.tsx`'s
+ * {@link useLiveTheme}/`focus.tsx`'s `useFocusTracking` already use, applied
+ * to `@opentui/react`'s live `CliRenderer` instead of a `ThemeService`/
+ * `ContextService`.
+ *
+ * **Why this reads `@opentui/react`'s `AppContext` directly, rather than
+ * calling that package's own `useTerminalDimensions`/`useOnResize`**:
+ * verified against the installed `@opentui/react@0.1.107`'s
+ * `src/hooks/use-renderer.ts` — EVERY ONE of `useRenderer`,
+ * `useTerminalDimensions`, and `useOnResize` calls `useRenderer()`
+ * internally, which THROWS (`"Renderer not found."`) the instant no live
+ * `CliRenderer` is mounted above them (`modalOverlay.tsx`'s `useRenderer`
+ * TSDoc already relies on that renderer always being present for ITS
+ * caller — `ModalOverlay` is unconditionally mounted at the composition
+ * root). `EditorArea` has no such guarantee: a caller/test that constructs
+ * it directly (outside `Shell`, outside a `testRender`/`renderShellToTerminal`
+ * tree) would crash outright. `useAppContext()` itself never throws — its
+ * `AppContext`'s own default value is `{ renderer: null }`
+ * (`@opentui/react`'s `src/components/app.tsx`) — so reading `renderer`
+ * through it and replicating `useTerminalDimensions`'s own
+ * seed-then-subscribe-to-`"resize"` logic by hand gets the exact same live
+ * behavior with a real fallback path instead of a crash.
+ *
+ * Returns `undefined` when no renderer is mounted — `EditorArea` below
+ * falls back to `EditorView`'s own `DEFAULT_VIEWPORT_HEIGHT` constant in
+ * that case (this task's "fall back to the existing constant"), exactly
+ * mirroring `useLiveTheme`'s `themeService === undefined` fallback.
+ */
+function useLiveTerminalHeight(): number | undefined {
+  const { renderer } = useAppContext();
+  const [height, setHeight] = useState<number | undefined>(renderer?.height);
+  useEffect(() => {
+    if (!renderer) return undefined;
+    // Re-syncs to whatever the renderer's height is RIGHT NOW before
+    // subscribing — closes the same subscribe-after-render race
+    // `useLiveTheme`'s TSDoc documents (a resize landing in the gap
+    // between this render and this effect running would otherwise be
+    // missed until some later, unrelated re-render).
+    setHeight(renderer.height);
+    const onResize = (_width: number, newHeight: number) => setHeight(newHeight);
+    renderer.on(CliRenderEvents.RESIZE, onResize);
+    return () => {
+      renderer.off(CliRenderEvents.RESIZE, onResize);
+    };
+  }, [renderer]);
+  return renderer ? height : undefined;
+}
+
 /** Props for {@link EditorArea}. */
 export interface EditorAreaProps {
   /** Open editor tabs — one editor group, N tabs (Req 6.5). Empty by
@@ -349,6 +424,19 @@ export interface EditorAreaProps {
    * `findService`/`config` above: a caller/test that omits it gets
    * `EditorView`'s current (unhighlighted) rendering unchanged. */
   highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
+  /** Whether `Shell`'s bottom `Panel` is currently visible, and its height
+   * when it is (`layoutState.ts`'s `LayoutState.panelVisible`/
+   * `panelHeight`) — Issue #92. `Panel` is `EditorArea`'s SIBLING at the
+   * `Shell` level (design.md §8.1's component tree), not a descendant, but
+   * both sit in the same flex column above `StatusBar`, so `Panel`'s
+   * height still eats into the space left for `EditorArea` (and therefore
+   * `EditorView`'s text plane) to stretch into — the live-`viewportHeight`
+   * computation below needs both to size the text plane correctly. Omitted
+   * (a caller/test that constructs `EditorArea` directly, without `Shell`):
+   * treated as "no panel", matching every other optional-dependency
+   * fallback in this module. */
+  panelVisible?: boolean;
+  panelHeight?: number;
 }
 
 /** The editor area (Req 6.1, 6.5, 6.6, 11.1): a `TabBar` over the real
@@ -442,6 +530,21 @@ export interface EditorAreaProps {
  * retried no matter WHICH of the four guards clears first — the command
  * palette, an input box, the find widget, or the explorer sidebar — with
  * no separate per-key wiring needed for each.
+ *
+ * **Sizing `EditorView`'s `viewportHeight` to the real terminal** (Issue
+ * #92 — "Only the first 20 lines are displayed" no matter how tall the
+ * terminal actually is): {@link useLiveTerminalHeight} reads the live
+ * terminal row count, {@link computeEditorViewportHeight} (`viewport.ts`)
+ * subtracts exactly the chrome THIS render actually draws — the tab bar
+ * (`tabs.length > 0`), the find widget (the same `find && isFindOpen &&
+ * props.findService` condition the JSX below uses to decide whether
+ * `<FindWidget>` renders at all), `Shell`'s sibling `Panel`
+ * (`props.panelVisible`/`panelHeight`), and `StatusBar` — and the result is
+ * threaded straight into `<EditorView>`'s `viewportHeight` prop. When no
+ * live terminal is available (a caller/test that constructs `EditorArea`
+ * outside a real/headless `CliRenderer`), `viewportHeight` is left
+ * `undefined` and `EditorView` falls back to its own
+ * `DEFAULT_VIEWPORT_HEIGHT` constant, unchanged from before this fix.
  */
 export function EditorArea(props: EditorAreaProps): ReactNode {
   const theme = useTheme();
@@ -449,6 +552,23 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
   const tabs = props.tabs ?? [];
   const find = props.activeEditorState?.find;
   const isFindOpen = find?.isOpen ?? false;
+  // The exact same condition the JSX below uses to decide whether
+  // `<FindWidget>` renders at all (this component's TSDoc's "Sizing
+  // `EditorView`'s `viewportHeight`") — computed once and reused for both,
+  // so the chrome height calculation can never drift from what's actually
+  // drawn.
+  const findWidgetVisible = Boolean(find && isFindOpen && props.findService);
+
+  // Issue #92 — see this component's own TSDoc.
+  const terminalHeight = useLiveTerminalHeight();
+  const chrome: EditorAreaChrome = {
+    tabBar: tabs.length > 0 ? TAB_BAR_HEIGHT : 0,
+    findWidget: findWidgetVisible ? FIND_WIDGET_HEIGHT : 0,
+    panel: props.panelVisible ? (props.panelHeight ?? 0) : 0,
+    statusBar: STATUS_BAR_HEIGHT,
+  };
+  const viewportHeight =
+    terminalHeight !== undefined ? computeEditorViewportHeight(terminalHeight, chrome) : undefined;
 
   const textPlaneNodeRef = useRef<FocusableNode | null>(null);
   const wasFindOpenRef = useRef(false);
@@ -568,7 +688,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
       {tabs.length > 0 ? (
         <Tabs tabs={tabs} activeId={props.activeTabId} onSelect={props.onSelectTab} />
       ) : null}
-      {find && isFindOpen && props.findService ? (
+      {findWidgetVisible && find && props.findService ? (
         <FindWidget find={find} findService={props.findService} />
       ) : null}
       <box style={{ flexDirection: "column", flexGrow: 1 }}>
@@ -581,6 +701,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
             key={props.activeDocument.uri}
             document={props.activeDocument}
             state={props.activeEditorState}
+            viewportHeight={viewportHeight}
             config={props.config}
             highlightService={props.highlightService}
             onTextPlaneNode={handleTextPlaneNode}
@@ -935,6 +1056,8 @@ export function Shell(props: ShellProps): ReactNode {
           config={props.config}
           findService={props.findService}
           highlightService={props.highlightService}
+          panelVisible={layout.panelVisible}
+          panelHeight={layout.panelHeight}
         />
       </box>
       <Panel slotRegistry={props.slotRegistry} visible={layout.panelVisible} height={layout.panelHeight} />

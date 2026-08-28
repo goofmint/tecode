@@ -73,14 +73,25 @@
  * result) when the service reports a change with no other prop change —
  * see that hook's own TSDoc.
  *
- * **Scope note on `viewportHeight`**: this task measures the available rows
- * via an explicit, caller-supplied `viewportHeight` prop rather than
- * observing the rendered container's actual height at runtime (which would
- * need an OpenTUI resize-event listener wired to a `useState`) — the caller
- * (`shell.tsx`'s `EditorArea`, tests) passes a fixed value. Auto-measurement
- * from the live layout is left to a later task; nothing here would need to
- * change shape to add it (`viewportHeight` would just come from `useState`
- * instead of a prop default).
+ * **Scope note on `viewportHeight`** (Issue #92 — "Only the first 20 lines
+ * are displayed" regardless of terminal size): this component itself still
+ * takes the available rows as an explicit, caller-supplied `viewportHeight`
+ * prop rather than observing its own rendered container's height at
+ * runtime — `EditorView` has no OpenTUI resize-event listener of its own,
+ * and does not need one. The auto-measurement lives one level up instead:
+ * `shell.tsx`'s `EditorArea` reads the LIVE terminal height
+ * (`useLiveTerminalHeight`, wrapping `@opentui/react`'s resize event) and
+ * subtracts exactly the chrome it itself renders (tab bar, find widget,
+ * `Shell`'s sibling `Panel`, `StatusBar` —
+ * `viewport.ts`'s `computeEditorViewportHeight`), then passes the result
+ * down as this prop — so a real terminal resize reactively resizes the
+ * text plane's virtualization window, even though `EditorView` never reads
+ * the terminal itself. Every other caller (every test in this file,
+ * `editorView.snapshot.test.tsx`) keeps passing a fixed value exactly as
+ * before — `viewportHeight` still just is a number this component trusts,
+ * whatever supplies it. Omitting the prop entirely (no live terminal
+ * available, e.g. a caller/test outside a real `CliRenderer`) falls back
+ * to `DEFAULT_VIEWPORT_HEIGHT` below, unchanged.
  */
 
 import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
@@ -498,8 +509,11 @@ export interface EditorViewProps {
    * the primary cursor that drives reveal scrolling. */
   state: EditorState;
   /** Rows available to the text plane (Req 13.1's virtualization). See this
-   * module's TSDoc for why this is a prop rather than a live measurement.
-   * Defaults to {@link DEFAULT_VIEWPORT_HEIGHT}. */
+   * module's TSDoc's "Scope note on `viewportHeight`" for why this
+   * component takes it as a prop rather than measuring its own container:
+   * `shell.tsx`'s `EditorArea` is what actually derives it from the live
+   * terminal size (Issue #92). Defaults to {@link DEFAULT_VIEWPORT_HEIGHT}
+   * when omitted. */
   viewportHeight?: number;
   /** Reads `editor.lineNumbers` (Req 9.5, design.md §8.3's gutter). Omitted
    * in isolated tests, where line numbers default to shown (`true`) — the

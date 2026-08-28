@@ -358,6 +358,61 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     expect(frame).not.toContain("No editor open.");
   });
 
+  test("a terminal taller than the old hardcoded 20-row default shows more than 20 lines (Issue #92 regression)", async () => {
+    // Before this fix, `EditorView`'s `viewportHeight` was never threaded
+    // from a live measurement at all (`editorView.tsx`'s pre-fix "Scope
+    // note on `viewportHeight`"): `EditorArea` rendered `<EditorView>` with
+    // no `viewportHeight` prop, so it always fell back to its own
+    // `DEFAULT_VIEWPORT_HEIGHT` constant (20) no matter how tall the real
+    // terminal was. This is the test that would have caught it: a document
+    // with 60 lines, rendered into a terminal comfortably taller than 20
+    // rows, must show lines well past index 20.
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const bigFile = Array.from({ length: 60 }, (_, i) => `line${i}`).join("\n");
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/big.ts": bigFile }),
+    });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      // 50 rows total; one open tab (3-row tab bar) + the always-on 1-row
+      // status bar is the only chrome in this fixture (no find widget, no
+      // panel — `panelVisible` defaults `false`), leaving 46 rows for the
+      // text plane (`viewport.test.ts`'s `computeEditorViewportHeight`
+      // covers that arithmetic in isolation; this test proves it actually
+      // reaches `EditorView` through `EditorArea`/`Shell`'s wiring).
+      { width: 60, height: 50 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    await act(async () => {
+      await documents.openDocument(pathToUri("/workspace/big.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("line0");
+    // Line index 20 (the 21st line) is exactly one past the old hardcoded
+    // cap — the pre-fix render could never show it no matter how tall the
+    // terminal was.
+    expect(frame).toContain("line20");
+    // Line index 40 is well within the ~46-row viewport this fixture's
+    // chrome leaves available, and nowhere near reachable under the old
+    // fixed 20-row viewport.
+    expect(frame).toContain("line40");
+  });
+
   test("the tab bar shows the dirty marker the instant a document is edited, and drops it once saved (Task 3.5, Req 6.5)", async () => {
     const { slotRegistry, layoutState, context } = createHarness();
     await layoutState.ready;
