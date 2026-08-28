@@ -217,6 +217,30 @@ export interface ShellRenderDeps {
  * one call site in `main.ts` — an implementation that throws still leaves
  * `runTecode`'s own never-throwing startup contract to that call site, not
  * to this type. */
+/**
+ * Decode a bracketed-paste payload (`PasteEvent.bytes`) into the string
+ * handed to {@link ShellRenderDeps.onPaste} — and, through it, straight
+ * into `EditorInputRouter.insertText` (Issue #91).
+ *
+ * `ignoreBOM: true` is load-bearing, and is the opposite of what the name
+ * suggests: per the WHATWG Encoding Standard a DEFAULT `new TextDecoder()`
+ * has `ignoreBOM: false`, which makes it treat a leading U+FEFF as an
+ * encoding marker and SILENTLY DROP it; `true` makes it treat that U+FEFF
+ * as ordinary text and keep it. Paste has to insert exactly the characters
+ * the user pasted — a round trip that copies a BOM-prefixed line and pastes
+ * it back must not quietly lose a character. Only a LEADING BOM is affected
+ * either way: one in the middle of the payload already survives the default
+ * decoder.
+ *
+ * Exported for its own test: {@link renderShellToTerminal}, its only
+ * caller, opens a real `CliRenderer`/TTY that `bun test` cannot provide
+ * (see this module's TSDoc), so this seam is where the behaviour is
+ * assertable at all.
+ */
+export function decodePastedBytes(bytes: Uint8Array): string {
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+}
+
 export type RenderShell = (deps: ShellRenderDeps) => Promise<void>;
 
 /**
@@ -290,9 +314,8 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
   // `chordMachine && editorInputRouter` pairing above already uses.
   if (deps.onPaste) {
     const onPaste = deps.onPaste;
-    const pasteDecoder = new TextDecoder();
     renderer.keyInput.on("paste", (event) => {
-      onPaste(pasteDecoder.decode(event.bytes));
+      onPaste(decodePastedBytes(event.bytes));
     });
   }
 
