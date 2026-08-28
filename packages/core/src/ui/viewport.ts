@@ -2,10 +2,12 @@
  * Pure viewport math for the `EditorView` (Req 6.5, 6.6, 13.1; design.md
  * §8.3, §15): which document lines are visible for a given scroll offset
  * (virtualization — only these lines materialize as OpenTUI nodes), how a
- * `revealLine` scroll adjusts to keep a target line on screen, and the
- * gutter's digit-count width. No UI dependencies — every function here is a
- * plain, deterministic computation over numbers, unit-testable without a
- * renderer (this task's "keep pure functions pure" house convention).
+ * `revealLine` scroll adjusts to keep a target line on screen, the gutter's
+ * digit-count width, and (Issue #92) how many of those rows `EditorArea`'s
+ * own chrome leaves available in the first place. No UI dependencies — every
+ * function here is a plain, deterministic computation over numbers,
+ * unit-testable without a renderer (this task's "keep pure functions pure"
+ * house convention).
  */
 
 /** The visible line window, as a half-open range `[startLine, endLine)`
@@ -99,4 +101,54 @@ export function revealLine(
 export function gutterDigitWidth(lineCount: number): number {
   const n = Math.max(1, Math.trunc(lineCount) || 1);
   return String(n).length;
+}
+
+/**
+ * The chrome `shell.tsx`'s `EditorArea` may draw ABOVE/AROUND its
+ * `EditorView` text plane, as row counts (Issue #92, Req 6.5, 6.6, 13.1;
+ * design.md §8.1-§8.3): every field is a row count already resolved to `0`
+ * when that particular piece of chrome isn't rendered at all this render
+ * (never a boolean) — the caller derives each one from the EXACT same
+ * condition it uses to decide whether to render that region, so this can
+ * never silently drift out of sync with what actually gets drawn. See
+ * `shell.tsx`'s `EditorArea` for where each field's value comes from.
+ */
+export interface EditorAreaChrome {
+  /** The tab bar (`components.tsx`'s `Tabs`, over `@opentui/core`'s
+   * `<tab-select>`) — rendered when `tabs.length > 0`, `0` rows
+   * otherwise. */
+  tabBar: number;
+  /** `FindWidget` (`findWidget.tsx`) — rendered when `find && isFindOpen
+   * && findService`, `0` rows otherwise (Req 11.1). */
+  findWidget: number;
+  /** `Shell`'s bottom `Panel` — `Panel` is `EditorArea`'s SIBLING, not its
+   * descendant (design.md §8.1's component tree), but both sit in the same
+   * flex column above `StatusBar`, so `Panel`'s height still eats into the
+   * space left for `EditorArea` (and therefore `EditorView`'s text plane)
+   * to stretch into. `0` when `layout.panelVisible` is false. */
+  panel: number;
+  /** `StatusBar` — always rendered, so always reserved in practice, but
+   * still supplied by the caller (not hardcoded here) for the same
+   * "never drifts from what's actually drawn" discipline as every other
+   * field. */
+  statusBar: number;
+}
+
+/**
+ * Rows left for `EditorView`'s text plane once `EditorArea`'s own chrome
+ * is subtracted from the real terminal height (Issue #92 — "Only the
+ * first 20 lines are displayed" regardless of how tall the terminal
+ * actually is, because `EditorView`'s `viewportHeight` prop was never
+ * threaded from a live measurement at all; see that component's
+ * top-of-file "Scope note on `viewportHeight`" TSDoc for the fuller
+ * history). Clamped to a minimum of `1`: a terminal too short (or too much
+ * chrome) to fit even one full row of chrome-plus-text still gets a usable,
+ * positive `viewportHeight` rather than `0`/negative, which
+ * `computeVisibleLineRange` would otherwise turn into an empty (fully
+ * blank) window.
+ */
+export function computeEditorViewportHeight(terminalHeight: number, chrome: EditorAreaChrome): number {
+  const consumed = chrome.tabBar + chrome.findWidget + chrome.panel + chrome.statusBar;
+  const available = Math.trunc(terminalHeight) - Math.trunc(consumed);
+  return Math.max(1, available);
 }
