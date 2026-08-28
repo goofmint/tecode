@@ -171,14 +171,17 @@ inside tmux):
    palette immediately.
 8. **Long modals (issue #93 — "the display does not update when scrolling
    within the modal")**: `modalOverlay.test.tsx`'s headless regression test
-   already proves the underlying layout math (a bounded `<select>` that
-   fits the terminal and keeps the active item inside its visible window,
-   `modalOverlay.tsx`'s TSDoc's "Vertical bound"); what a headless test
-   canNOT prove is that a REAL terminal's live redraw actually shows the
-   scrolled window changing as you move the selection — resize this test
-   for, and the whole reason this bug shipped in the first place. In a
-   directory/project with enough files and commands to overflow the
-   terminal's height (or simply shrink the terminal window first):
+   already proves the underlying layout math — a bounded `<select>` that
+   fits the terminal and keeps the active item inside its visible window
+   (`modalOverlay.tsx`'s TSDoc's "Vertical bound"). What it cannot prove is
+   that a real terminal actually REPAINTS that window as the selection
+   moves: the headless test inspects one captured frame per render, while
+   the bug users hit was a stale-looking screen across many. Nor can it
+   cover a live resize, since it fixes the terminal size up front. Those
+   two gaps are why this bug shipped despite the layout being testable, so
+   check them by hand. In a directory/project with enough files and
+   commands to overflow the terminal's height (or simply shrink the
+   terminal window first):
    1. Open `workbench.action.quickOpen` (`ctrl+p`). Confirm the picker's
       box stops well short of the terminal's bottom edge — no filenames
       spill past it or get cut off mid-row — and that holding `down`
