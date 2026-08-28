@@ -169,7 +169,36 @@ inside tmux):
    switch from the default theme to the other bundled theme (Dark
    Modern ↔ Light Modern). Confirm the whole UI repaints with the new
    palette immediately.
-8. Exit cleanly (`ctrl+c` or the equivalent) and confirm the terminal is
+8. **Long modals (issue #93 — "the display does not update when scrolling
+   within the modal")**: `modalOverlay.test.tsx`'s headless regression test
+   already proves the underlying layout math — a bounded `<select>` that
+   fits the terminal and keeps the active item inside its visible window
+   (`modalOverlay.tsx`'s TSDoc's "Vertical bound"). What it cannot prove is
+   that a real terminal actually REPAINTS that window as the selection
+   moves: the headless test inspects one captured frame per render, while
+   the bug users hit was a stale-looking screen across many. Nor can it
+   cover a live resize, since it fixes the terminal size up front. Those
+   two gaps are why this bug shipped despite the layout being testable, so
+   check them by hand. In a directory/project with enough files and
+   commands to overflow the terminal's height (or simply shrink the
+   terminal window first):
+   1. Open `workbench.action.quickOpen` (`ctrl+p`). Confirm the picker's
+      box stops well short of the terminal's bottom edge — no filenames
+      spill past it or get cut off mid-row — and that holding `down`
+      through every item visibly SCROLLS the list (the window of visible
+      rows moves) with the highlighted row always on screen, all the way
+      to the last item.
+   2. Open `workbench.action.showCommands` (`ctrl+shift+p`) and repeat the
+      same check against the command list.
+   3. Run `keybindings.showResolved` (via the command palette — Req
+      11.7/design.md §13, it has no keybinding of its own) against a
+      keymap with enough bindings to exceed the terminal's height; repeat
+      the same check.
+   4. Shrink the terminal window to a noticeably smaller size WHILE one of
+      the pickers above is still open, and confirm the picker re-bounds
+      itself to the new size on the next redraw rather than staying
+      pinned to the old (now possibly too-large) box.
+9. Exit cleanly (`ctrl+c` or the equivalent) and confirm the terminal is
    restored to its normal (non-raw, non-alternate-screen) state.
-9. Record which terminal emulator and OS/arch combination was used, plus a
-   screenshot or terminal recording, in the PR.
+10. Record which terminal emulator and OS/arch combination was used, plus a
+    screenshot or terminal recording, in the PR.
