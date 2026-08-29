@@ -330,3 +330,109 @@ describe("createLayoutStateService — update()/debounce/flush (Req 6.4, design.
     expect(written.activeView).toBe("explorer");
   });
 });
+
+describe("createLayoutStateService — onDidChange (Issue #101)", () => {
+  test("a registered listener is called synchronously on update()", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let calls = 0;
+    service.onDidChange(() => {
+      calls += 1;
+      // Synchronous: get() already reflects the new value by the time the
+      // listener runs, with no microtask/timer in between.
+      expect(service.get().panelVisible).toBe(true);
+    });
+
+    service.update({ panelVisible: true });
+    expect(calls).toBe(1);
+  });
+
+  test("multiple listeners all fire", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let firstCalls = 0;
+    let secondCalls = 0;
+    service.onDidChange(() => {
+      firstCalls += 1;
+    });
+    service.onDidChange(() => {
+      secondCalls += 1;
+    });
+
+    service.update({ sidebarWidth: 50 });
+    expect(firstCalls).toBe(1);
+    expect(secondCalls).toBe(1);
+  });
+
+  test("a disposed listener stops firing; dispose() is idempotent", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let calls = 0;
+    const sub = service.onDidChange(() => {
+      calls += 1;
+    });
+
+    service.update({ sidebarWidth: 1 });
+    expect(calls).toBe(1);
+
+    sub.dispose();
+    service.update({ sidebarWidth: 2 });
+    expect(calls).toBe(1); // no further calls once disposed
+
+    // Idempotent — a second dispose() must not throw or double-remove
+    // some other listener.
+    expect(() => sub.dispose()).not.toThrow();
+  });
+
+  test("one listener throwing does not affect the others or the update() caller", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let secondCalls = 0;
+    service.onDidChange(() => {
+      throw new Error("boom");
+    });
+    service.onDidChange(() => {
+      secondCalls += 1;
+    });
+
+    expect(() => service.update({ sidebarWidth: 7 })).not.toThrow();
+    expect(secondCalls).toBe(1);
+    expect(log.entries().some((e) => e.level === "error" && e.error.message.includes("boom"))).toBe(true);
+  });
+
+  test("a no-op update (value unchanged) does not fire onDidChange", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let calls = 0;
+    service.onDidChange(() => {
+      calls += 1;
+    });
+
+    // DEFAULT_LAYOUT_STATE.panelVisible is already false.
+    service.update({ panelVisible: false });
+    expect(calls).toBe(0);
+
+    service.update({ panelVisible: true });
+    expect(calls).toBe(1);
+  });
+});

@@ -29,14 +29,18 @@
  * reactively off an optional `DocumentManager` via {@link useOpenDocuments}
  * (Req 6.5, 6.6, design.md §8.3).
  *
- * **Layout persistence** (Req 6.4): {@link useLayoutState} seeds React state
- * from `LayoutStateService.get()` (already populated with defaults even
- * before `ready` settles) and re-seeds once `ready` resolves; every
- * mutating action (toggling the sidebar, switching the active view,
- * resizing the panel) calls both `LayoutStateService.update()` (persisted,
- * debounced) and the local `setState` in the same handler — the Shell is
- * the layout service's one and only writer, so no `onDidChange` round-trip
- * is needed to stay in sync with itself.
+ * **Layout persistence** (Req 6.4, Issue #101): {@link useLayoutState} seeds
+ * React state from `LayoutStateService.get()` (already populated with
+ * defaults even before `ready` settles), re-seeds once `ready` resolves, and
+ * subscribes to `LayoutStateService.onDidChange` for the rest of its life —
+ * every mutating action (toggling the sidebar, switching the active view,
+ * resizing the panel) calls `LayoutStateService.update()` and relies on that
+ * subscription firing back into `setState`, rather than also poking a local
+ * optimistic copy. This used to assume the Shell was the layout service's
+ * one and only writer (an assumption Issue #98's `panelCommands.ts` broke —
+ * its `workbench.action.showPanel` handler updates the service directly,
+ * with no Shell handler in the loop at all); `onDidChange` is what lets
+ * `useLayoutState` react correctly no matter which caller wrote the change.
  *
  * **`EditorArea`/`EditorView` wiring** (Req 6.5, 6.6, design.md §8.3):
  * `Shell` accepts an optional `documents: DocumentManager` prop — when
@@ -176,8 +180,33 @@ function useOpenDocuments(documents: DocumentManager | undefined): readonly Core
 }
 
 /** Seeds React state from `layoutState.get()` (Req 6.4) and keeps it in
- * sync with the service across `ready` and every local `update` call (this
- * module's TSDoc). */
+ * sync with the service across `ready` and every subsequent
+ * `onDidChange` (Issue #101; this module's TSDoc).
+ *
+ * **Subscription is the only source of truth**: the returned `update`
+ * callback calls `layoutState.update(partial)` and nothing else — it used
+ * to also optimistically `setState` in the same handler, which only stayed
+ * correct while the Shell was the service's sole writer (this module's
+ * TSDoc explains why that stopped being true). `layoutState.update` now
+ * fires `onDidChange` synchronously as part of its own in-memory merge
+ * (`layoutState.ts`'s TSDoc), and the subscription below calls
+ * `setState(layoutState.get())` in response — so a change this hook's own
+ * `update` makes and a change some other caller (`panelCommands.ts`) makes
+ * both drive the exact same, single code path into React. This also rules
+ * out the two copies (React's and the service's) ever disagreeing, which is
+ * exactly the failure mode Issue #101 reported.
+ *
+ * **No re-entrancy risk**: `update` → `layoutState.update` → `onDidChange`
+ * → this hook's listener → `setState(get())`, and `setState` never calls
+ * back into `layoutState.update` — nothing here loops. (Grep `shell.tsx`
+ * for `updateLayout`: every call site is an event handler, never a
+ * `useEffect` reacting to `layout` itself.)
+ *
+ * Same subscribe-then-force-render shape as `useSlotViews` above and
+ * `theme.tsx`'s `useLiveTheme`, including the post-subscribe re-sync that
+ * closes the same render-before-subscribe race those hooks document: a
+ * change landing in the gap between this render and the subscribing effect
+ * running would otherwise be lost until some later, unrelated re-render. */
 function useLayoutState(
   layoutState: LayoutStateService,
 ): [LayoutState, (partial: Partial<LayoutState>) => void] {
@@ -193,10 +222,16 @@ function useLayoutState(
     };
   }, [layoutState]);
 
+  useEffect(() => {
+    const sub = layoutState.onDidChange(() => setState(layoutState.get()));
+    // Closes the subscribe-after-render race — see this function's TSDoc.
+    setState(layoutState.get());
+    return () => sub.dispose();
+  }, [layoutState]);
+
   const update = useCallback(
     (partial: Partial<LayoutState>) => {
       layoutState.update(partial);
-      setState((prev) => ({ ...prev, ...partial }));
     },
     [layoutState],
   );
