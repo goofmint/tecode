@@ -170,7 +170,7 @@ describe("TerminalGridView (Issue #98 Phase 4, @opentui/react/test-utils)", () =
 
     // `renderer.currentFocusedRenderable` mirrors `modalOverlay.tsx`'s own
     // "read the renderer's live focus state directly" precedent.
-    expect((renderer as unknown as { currentFocusedRenderable?: unknown }).currentFocusedRenderable).toBeDefined();
+    expect((renderer as unknown as { currentFocusedRenderable?: unknown }).currentFocusedRenderable).not.toBeNull();
   });
 
   test("without autoFocus, mounting does not grab focus", async () => {
@@ -215,7 +215,7 @@ describe("TerminalGridView (Issue #98 Phase 4, @opentui/react/test-utils)", () =
       handle?.();
     });
 
-    expect((renderer as unknown as { currentFocusedRenderable?: unknown }).currentFocusedRenderable).toBeDefined();
+    expect((renderer as unknown as { currentFocusedRenderable?: unknown }).currentFocusedRenderable).not.toBeNull();
   });
 
   test("renders with no session at all — a blank grid, never throws", async () => {

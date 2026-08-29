@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { act, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import { testRender } from "@opentui/react/test-utils";
 import type { Disposable, PtySpawnOptions, Tecode } from "@tecode/api";
 import { createTerminalStore } from "./store";
@@ -104,7 +104,7 @@ describe("TerminalView (Issue #98 Phase 4)", () => {
     expect(lastProps()?.["rows"]).toBe(1);
   });
 
-  test("the published onFocusHandleChange handle registers with the store, and unmount clears it", async () => {
+  test("the published onFocusHandleChange handle registers with the store", async () => {
     const { store } = createStoreWithFakeSpawn();
     const { Terminal, lastProps } = createFakeTerminalComponent();
 
@@ -123,6 +123,64 @@ describe("TerminalView (Issue #98 Phase 4)", () => {
     });
     store.requestFocus();
     expect(focused).toBe(1);
+  });
+
+  test("unmount clears the published focus handle: a stale handle is never invoked by a later requestFocus(), which is instead remembered as pending for the next mount's handle", async () => {
+    const { store } = createStoreWithFakeSpawn();
+    const { Terminal, lastProps } = createFakeTerminalComponent();
+
+    // `testRender` (`@opentui/react/test-utils`) has no `unmount` — so a
+    // small wrapper conditionally mounts/unmounts `TerminalView` based on
+    // `show`, and the test flips `show` from outside by capturing `set`
+    // into a closure variable (this file's own "capture a closure
+    // variable" convention, e.g. `createFakeTerminalComponent`'s
+    // `captured`) rather than exposing it as a prop.
+    let setShow: (show: boolean) => void = () => {
+      throw new Error("setShow was never captured — Wrapper did not render");
+    };
+    function Wrapper(): ReactNode {
+      const [show, set] = useState(true);
+      setShow = set;
+      return show
+        ? (<TerminalView store={store} Terminal={Terminal} /> as ReactNode)
+        : (<text>{"unmounted"}</text> as unknown as ReactNode);
+    }
+
+    const { renderOnce } = await testRender(<Wrapper />, { width: 10, height: 5 });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const handle = lastProps()?.["onFocusHandleChange"] as (focus: () => void) => void;
+    let focused = 0;
+    act(() => {
+      handle(() => focused++);
+    });
+    store.requestFocus();
+    expect(focused).toBe(1);
+
+    // Unmount `TerminalView` — its cleanup effect (`TerminalView.tsx`'s
+    // `return () => store.registerFocusHandle(undefined);`) must run.
+    act(() => {
+      setShow(false);
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // The stale handle must NOT fire: the store no longer holds it, so
+    // `requestFocus()` falls back to `store.ts`'s "pending" path instead
+    // of invoking a handle whose underlying node already detached.
+    store.requestFocus();
+    expect(focused).toBe(1);
+
+    // ...and that pending request is consumed the moment a fresh handle
+    // registers (`store.ts`'s `registerFocusHandle`: "Consumes a pending
+    // requestFocus call immediately if one is outstanding"), proving the
+    // request was remembered rather than silently dropped.
+    let refocused = 0;
+    store.registerFocusHandle(() => refocused++);
+    expect(refocused).toBe(1);
   });
 
   test("store.onDidChange (a respawn) forces a re-render with the new session", async () => {

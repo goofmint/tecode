@@ -52,6 +52,20 @@ test("256-color background (CSI 48;5;174m) resolves via the xterm-256 cube, matc
   emulator.dispose();
 });
 
+test("256-color foreground (CSI 38;5;174m) pins the exact literal RGB, not just agreement with a fresh buildXterm256Palette() call — covers vtEmulator.ts's own hoisted module-level XTERM_256_PALETTE (built once at module load, not per resolvePaletteRgb call)", async () => {
+  const emulator = createVtEmulator({ cols: 20, rows: 3 });
+  await emulator.write("\x1b[38;5;174mX\x1b[0m");
+
+  const cell = emulator.getCell(0, 0)!;
+  // Index 174 is in the 6x6x6 cube (16-231): 174-16=158 -> r=158/36|0=4,
+  // g=(158%36)/6|0=2, b=158%6=2 -> cube levels [0,95,135,175,215,255]
+  // index 4/2/2 -> (215, 135, 135) (`colorQuantize.ts`'s own
+  // `CUBE_LEVELS`/`buildXterm256Palette` ordering).
+  expect(cell.foreground).toEqual({ kind: "palette", index: 174, rgb: { r: 215, g: 135, b: 135 } });
+
+  emulator.dispose();
+});
+
 test("truecolor RGB (CSI 38;2;10;20;30m) round-trips exactly", async () => {
   const emulator = createVtEmulator({ cols: 20, rows: 3 });
   await emulator.write("\x1b[38;2;10;20;30mX\x1b[0m");

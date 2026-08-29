@@ -132,18 +132,25 @@ function describeError(err: unknown): string {
 }
 
 /**
+ * The 16-255 xterm-256 cube/gray-ramp table, built exactly once at module
+ * load (`buildXterm256Palette()` is documented cheap and side-effect free
+ * — its own TSDoc — so a plain module-level `const` needs no lazy-init
+ * ceremony). {@link resolvePaletteRgb} is called per cell while walking a
+ * whole grid (`rows * cols` cells per frame, e.g. 1,920 for an 80x24
+ * viewport) — rebuilding a 240-entry table on every one of those calls
+ * was measurable waste for zero benefit, since the table never changes
+ * after the first build.
+ */
+const XTERM_256_PALETTE = buildXterm256Palette();
+
+/**
  * Resolve a cell's xterm-256 palette index (0-255) to RGB: 0-15 via
- * `ansiPalette.ts`'s well-known ANSI-16 approximation, 16-255 via `ui/
- * colorQuantize.ts`'s fixed cube/gray-ramp table (this module's TSDoc
- * explains both choices). `buildXterm256Palette()` is cheap and
- * side-effect free (its own TSDoc) but IS rebuilt on every call here —
- * acceptable at "resolve one cell's color" call frequency, matching
- * `colorQuantize.ts`'s own `quantizeToXterm256` doing the same.
+ * `ansiPalette.ts`'s well-known ANSI-16 approximation, 16-255 via {@link
+ * XTERM_256_PALETTE} (this module's TSDoc explains both choices).
  */
 function resolvePaletteRgb(index: number): RGB {
   if (index < 16) return resolveAnsi16(index);
-  const xterm256 = buildXterm256Palette();
-  return xterm256[index - 16] ?? { r: 0, g: 0, b: 0 };
+  return XTERM_256_PALETTE[index - 16] ?? { r: 0, g: 0, b: 0 };
 }
 
 /** Resolve one of a cell's two colors (`"fg"` or `"bg"`) using the
