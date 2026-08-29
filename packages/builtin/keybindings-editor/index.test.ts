@@ -65,6 +65,7 @@ function createFakeApi() {
     languages: undefined as never,
     themes: undefined as never,
     clipboard: undefined as never,
+    terminal: undefined as never,
     context: undefined as never,
     window: {
       showMessage(message: string, kind?: MessageKind) {

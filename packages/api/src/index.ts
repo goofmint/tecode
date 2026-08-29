@@ -75,6 +75,10 @@ export type {
   LanguagesNamespace,
   ThemesNamespace,
   ClipboardNamespace,
+  PtySpawnOptions,
+  PtyExitEvent,
+  PtySession,
+  TerminalNamespace,
   Tecode,
 } from "./namespaces";
 

@@ -137,6 +137,7 @@ function createFakeApi(tree: FakeTree, rootUri: Uri | undefined = "file:///works
     languages: undefined as never,
     themes: undefined as never,
     clipboard: undefined as never,
+    terminal: undefined as never,
   };
 
   return {

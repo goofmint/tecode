@@ -44,9 +44,12 @@ import type {
   LanguagesNamespace,
   Listener,
   Position,
+  PtyExitEvent,
+  PtySession,
   ResolvedTheme,
   RGB,
   StatusBarItem,
+  TerminalNamespace,
   ThemeContribution,
   ThemesNamespace,
   UiColorKey,
@@ -435,6 +438,61 @@ export function createClipboardStub(): ClipboardNamespace {
     },
     write() {
       return Promise.resolve();
+    },
+  });
+}
+
+/**
+ * Build the `tecode.terminal` stub (Issue #98) — `create.ts`'s fallback
+ * for a caller that supplies no `TerminalService` at all (every test that
+ * predates this issue, and `main.ts`'s own pre-Phase-5 startup wiring).
+ * `isSupported()` always reports `false` (there is no real pty backing
+ * this stub, so there is nothing to support) and `spawn()` always returns
+ * the same inert-but-real session shape the REAL service degrades to on
+ * an unsupported platform (`ptyService.ts`'s `createInertSession`): `write`/
+ * `resize` are no-ops, `onData` never fires (a real, register/dispose-
+ * symmetric `Event` that just never has anything to report — this file's
+ * `createInertEvent` precedent), and `onExit` fires exactly once, shortly
+ * after `spawn()` returns, with a negative sentinel exit code (matching
+ * `PtySession.onExit`'s own documented "always observes it" guarantee for
+ * a caller that subscribes right away). Never throws, matching every
+ * other stub in this module.
+ */
+export function createTerminalStub(): TerminalNamespace {
+  return Object.freeze({
+    isSupported() {
+      return false;
+    },
+    spawn(): PtySession {
+      // `onExit` must actually fire once (`PtySession.onExit`'s own
+      // documented "spawn on an unsupported platform fires once shortly
+      // after this call returns" guarantee) — unlike this file's other
+      // `createInertEvent`-based stubs (`onDidChange`s that never have
+      // anything to report), this one manages its own listener set
+      // directly so it can fire it.
+      const exitListeners = new Set<Listener<PtyExitEvent>>();
+      queueMicrotask(() => {
+        for (const listener of Array.from(exitListeners)) {
+          listener({ exitCode: -1 });
+        }
+      });
+      return {
+        write() {},
+        resize() {},
+        onData: createInertEvent<Uint8Array>().on,
+        onExit(listener) {
+          exitListeners.add(listener);
+          let disposed = false;
+          return {
+            dispose() {
+              if (disposed) return;
+              disposed = true;
+              exitListeners.delete(listener);
+            },
+          };
+        },
+        dispose() {},
+      };
     },
   });
 }

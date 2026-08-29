@@ -332,6 +332,7 @@ export {
   createFindStub,
   createLanguagesStub,
   createTecodeApi,
+  createTerminalStub,
   createThemesStub,
   createWindowStub,
   registerTecodeAlias,
@@ -352,3 +353,16 @@ export {
   type LineReader,
 } from "./editor/index";
 export { createClipboard, type Clipboard, type ClipboardDeps } from "./clipboard/index";
+export {
+  ANSI_16_PALETTE,
+  createTerminalService,
+  createVtEmulator,
+  isPosixPlatform,
+  resolveAnsi16,
+  type TerminalCell,
+  type TerminalCellColor,
+  type TerminalService,
+  type TerminalServiceDeps,
+  type VtEmulator,
+  type VtEmulatorDeps,
+} from "./terminal/index";

@@ -154,6 +154,7 @@ function createFakeApi() {
       onDidChange: themesChange.on,
     },
     clipboard: undefined as never,
+    terminal: undefined as never,
   };
 
   return {
