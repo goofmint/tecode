@@ -356,7 +356,10 @@ describe.skipIf(!hasRealPty)("createTerminalService — real POSIX pty spawn", (
     };
 
     try {
-      const service = createTerminalService();
+      // Pinned for the same reason as the ordering test below: defaulted,
+      // this reads the ambient platform/Bun version, and an unsupported
+      // host would hand back an inert session that never touches the fakes.
+      const service = createTerminalService({ platform: "win32", bunVersion: "1.3.14" });
       const session = service.spawn({ cmd: ["irrelevant-fake-cmd"], cols: 80, rows: 24 });
 
       let exitFired = false;
@@ -410,7 +413,17 @@ describe.skipIf(!hasRealPty)("createTerminalService — real POSIX pty spawn", (
     });
 
     try {
-      const service = createTerminalService();
+      // `platform`/`bunVersion` are BOTH pinned rather than defaulted: a
+      // bare `createTerminalService()` reads the ambient `process.
+      // platform`/`Bun.version`, and on a Windows host below the 1.3.14
+      // ConPTY threshold `spawn()` returns `createInertSession()`, whose
+      // `dispose()` is a no-op — the fakes above would never be called and
+      // this assertion would fail for a reason that has nothing to do with
+      // ordering (`TerminalServiceDeps.bunVersion`'s own TSDoc warns about
+      // exactly this). Pinning the SUPPORTED Windows configuration also
+      // says what the test is for: `win32` on 1.3.14+ is the one
+      // combination where the wrong order actually hangs.
+      const service = createTerminalService({ platform: "win32", bunVersion: "1.3.14" });
       const session = service.spawn({ cmd: ["irrelevant-fake-cmd"], cols: 80, rows: 24 });
 
       session.dispose();
