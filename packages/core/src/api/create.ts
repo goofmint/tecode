@@ -40,6 +40,7 @@ import type {
   LanguageContribution,
   LanguagesNamespace,
   Tecode,
+  TerminalNamespace,
   ThemeContribution,
   ThemesNamespace,
   UiNamespace,
@@ -57,6 +58,7 @@ import type { FindService } from "../ui/findService";
 import { Input, List, Tabs, Tree } from "../ui/components";
 import type { ModalService } from "../ui/modalService";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
+import { TerminalGridView } from "../ui/terminalGridView";
 import type { ThemeRegistry } from "../ui/themeRegistry";
 import type { ThemeService } from "../ui/themeService";
 import type { WindowMessageService } from "../ui/windowMessageService";
@@ -66,6 +68,7 @@ import {
   createClipboardStub,
   createEditorStub,
   createLanguagesStub,
+  createTerminalStub,
   createThemesStub,
   createWindowStub,
 } from "./stubs";
@@ -225,6 +228,17 @@ export interface CreateTecodeApiDeps {
    * file.
    */
   clipboard?: Pick<ClipboardNamespace, "read" | "write">;
+  /**
+   * Backs the REAL `tecode.terminal` (Issue #98, `terminal/ptyService.ts`'s
+   * `createTerminalService`) — `isSupported`/`spawn` delegate straight
+   * through, same "same function references, no wrapper closures" shape
+   * as `commandsNamespace`/`configNamespace`/`clipboardNamespace` above.
+   * Optional: a caller that omits this (every test that predates Issue
+   * #98) keeps `stubs.ts`'s `createTerminalStub()` — `isSupported()`
+   * always `false`, `spawn()` always an inert session — exactly like
+   * every other real-backing dependency's fallback in this file.
+   */
+  terminal?: Pick<TerminalNamespace, "isSupported" | "spawn">;
 }
 
 /**
@@ -413,6 +427,12 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     Tree,
     Input,
     Tabs,
+    // `tecode.ui.Terminal` (Issue #98 Phase 4) — the real, `@xterm/
+    // headless`-backed cell-grid renderer, wired unconditionally exactly
+    // like `List`/`Tree`/`Input`/`Tabs` above (a UI COMPONENT, not a
+    // service — there is nothing to stub here the way `deps.terminal`
+    // itself is stubbed just below for the pty/spawn half of Issue #98).
+    Terminal: TerminalGridView,
   });
 
   // Real backing (Task 2.8) when a `LanguageRegistry` is supplied;
@@ -443,6 +463,15 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     write: deps.clipboard ? deps.clipboard.write : clipboardStub.write,
   });
 
+  // Real backing (Issue #98) when a `TerminalService`/`TerminalNamespace`
+  // is supplied; otherwise `stubs.ts`'s `createTerminalStub()` — see
+  // `CreateTecodeApiDeps.terminal`'s TSDoc.
+  const terminalStub = createTerminalStub();
+  const terminalNamespace: TerminalNamespace = Object.freeze({
+    isSupported: deps.terminal ? deps.terminal.isSupported : terminalStub.isSupported,
+    spawn: deps.terminal ? deps.terminal.spawn : terminalStub.spawn,
+  });
+
   return Object.freeze({
     commands: commandsNamespace,
     workspace: workspaceNamespace,
@@ -454,5 +483,6 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     languages: languagesNamespace,
     themes: themesNamespace,
     clipboard: clipboardNamespace,
+    terminal: terminalNamespace,
   });
 }

@@ -6,9 +6,10 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "dependencies": {
-    "@tecode/api": "workspace:*",
     "@opentui/core": "^0.1.107",
     "@opentui/react": "^0.1.107",
+    "@tecode/api": "workspace:*",
+    "@xterm/headless": "6.0.0",
     "react": "^19.0.0",
     "string-width": "^7.2.0",
     "web-tree-sitter": "0.25.10"

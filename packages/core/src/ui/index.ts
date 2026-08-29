@@ -96,6 +96,13 @@ export {
 } from "./themeConfigSync";
 
 export {
+  createShowPanelCommandHandler,
+  registerShowPanelCommand,
+  SHOW_PANEL_COMMAND_ID,
+  type ShowPanelCommandDeps,
+} from "./panelCommands";
+
+export {
   createExtensionsReloadHandler,
   EXTENSIONS_RELOAD_COMMAND_ID,
   registerExtensionsReloadCommand,
@@ -181,6 +188,13 @@ export {
 export { FindWidget, type FindWidgetProps } from "./findWidget";
 
 export { cursorCellColumn, EditorView, type EditorViewProps } from "./editorView";
+
+export {
+  buildTerminalRowRuns,
+  TerminalGridView,
+  type TerminalGridViewProps,
+  type TerminalRowRun,
+} from "./terminalGridView";
 
 export {
   createEditorSessionService,

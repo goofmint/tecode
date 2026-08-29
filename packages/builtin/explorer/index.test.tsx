@@ -238,6 +238,7 @@ function createFakeApi(rootUri: Uri | undefined) {
       Tree,
       Input: undefined as never,
       Tabs: undefined as never,
+      Terminal: undefined as never,
     },
     config: {
       get: <T,>(key: string) => configValues.get(key) as T | undefined,
@@ -253,6 +254,7 @@ function createFakeApi(rootUri: Uri | undefined) {
     languages: undefined as never,
     themes: undefined as never,
     clipboard: undefined as never,
+    terminal: undefined as never,
   };
 
   return {

@@ -359,6 +359,20 @@ export interface UiNamespace {
   Tree: ComponentType;
   Input: ComponentType;
   Tabs: ComponentType;
+  /**
+   * The integrated terminal's cell-grid renderer (Issue #98 Phase 4) —
+   * owns a VT emulator and draws a live `PtySession`'s output, the same
+   * "real, renderer-coupled implementation lives in `@tecode/core`, this
+   * is just the `ComponentType`-shaped door into it" pattern {@link Tree}/
+   * {@link List}/{@link Input}/{@link Tabs} already establish. Duck-typed
+   * props (no dedicated exported prop type here, matching every other
+   * component on this namespace — `@tecode/api` stays React-free): `{
+   * session: PtySession | undefined; cols: number; rows: number }`. A
+   * `panel.tab` extension (the `tecode.terminal` built-in) spawns the
+   * session itself via {@link TerminalNamespace.spawn} and hands it to
+   * this component as a prop — this component never spawns a process.
+   */
+  Terminal: ComponentType;
 }
 
 /* ------------------------------------------------------------------ */
@@ -507,6 +521,137 @@ export interface ClipboardNamespace {
 }
 
 /* ------------------------------------------------------------------ */
+/* tecode.terminal                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Options for spawning one pseudo-terminal-attached child process (Issue
+ * #98). `cmd[0]` is the executable to run; the remaining entries are its
+ * argv (matches `node:child_process`'s/Bun's own `cmd` array shape — no
+ * shell parsing is done on it).
+ */
+export interface PtySpawnOptions {
+  /** Argv: `cmd[0]` is the executable, the rest are its arguments. */
+  cmd: string[];
+  /** Working directory for the spawned process. Host-defined default (the
+   * host process's own cwd) when omitted. */
+  cwd?: string;
+  /** Extra environment variables layered over the host's own `process.env`
+   * for the spawned process (host-defined key wins on a collision, EXCEPT
+   * `TERM`: the host always forces this to a 256-color terminal name
+   * regardless of what is passed here, since the pty needs a real
+   * terminfo entry for a full-screen TUI's cursor addressing/colors to
+   * render correctly — an under-informed `TERM` here would silently
+   * degrade every such program, not just this one call). */
+  env?: Record<string, string>;
+  /** Initial pty column count. */
+  cols: number;
+  /** Initial pty row count. */
+  rows: number;
+}
+
+/** Payload of {@link PtySession.onExit}: the spawned CHILD PROCESS's own
+ * exit code — not any lower-level pty-stream lifecycle status the host's
+ * pty implementation may track internally for its own bookkeeping. */
+export interface PtyExitEvent {
+  exitCode: number;
+}
+
+/**
+ * One live pseudo-terminal-attached child process (Issue #98), returned by
+ * {@link TerminalNamespace.spawn}. Every failure this session's own
+ * operations can hit (a process that has already died, a write to a
+ * disposed session, ...) is reported through the host's own logging and
+ * swallowed — none of `write`/`resize`/`dispose` ever throws (matches
+ * {@link FileSystem}'s `watch`, not its reject-on-failure `read`/`write`).
+ */
+export interface PtySession {
+  /** Send `data` to the child process as raw terminal input (keystrokes,
+   * pasted text, escape sequences the caller constructs itself — e.g.
+   * `"\x1b[B"` for a Down-arrow key). A no-op once {@link dispose} has
+   * been called. */
+  write(data: string): void;
+  /**
+   * Resize the pty. The child process is expected to notice this the same
+   * way it would notice a real terminal resizing — a well-behaved program
+   * redraws for the new dimensions without any other signal from the
+   * caller. A no-op once {@link dispose} has been called.
+   */
+  resize(cols: number, rows: number): void;
+  /** Fires for every chunk of raw output bytes the child process writes to
+   * its side of the pty (its own stdout/stderr, interleaved exactly as a
+   * real terminal would receive them) — feed these, in order, to a VT
+   * parser to reconstruct what the program is drawing. */
+  onData: Event<Uint8Array>;
+  /** Fires exactly once, when the child process exits, with its exit
+   * code. Never fires again after. This INCLUDES an exit caused by
+   * calling {@link dispose} — `dispose` stops the child process by
+   * actually killing it, so the child genuinely exits, and this event
+   * reports that exit like any other; it is not suppressed just because
+   * the exit was caller-initiated. A caller that calls `dispose` itself
+   * must therefore tolerate an `onExit` arriving afterward and treat it
+   * as a no-op (matches this contract's known consumers — `@tecode/
+   * builtin`'s terminal `store.ts` and `@tecode/cli`'s
+   * `terminalSessionTracker.ts` — both of which are already written this
+   * way). */
+  onExit: Event<PtyExitEvent>;
+  /**
+   * Tear down this session: stop the child process and release the pty.
+   * Idempotent — calling this more than once (or after the child has
+   * already exited on its own) is always safe and never throws.
+   */
+  dispose(): void;
+}
+
+/**
+ * The integrated terminal (Issue #98): spawn a child process attached to a
+ * real pseudo-terminal (pty) so full-screen, cursor-addressing CLIs (a
+ * shell, `claude`, ...) run and redraw correctly, the same way they would
+ * in the user's own terminal emulator.
+ *
+ * **Vocabulary, used deliberately throughout this namespace's TSDoc**:
+ * "terminal" names the FEATURE this namespace exposes (matches its own
+ * `Tecode.terminal` field name) — spawning and driving an interactive
+ * program from an extension. "pty" (pseudo-terminal) names the underlying
+ * OS PRIMITIVE {@link PtySession} wraps: the kernel-level device pair a
+ * process can be attached to so it believes it is talking to a real
+ * terminal (`isTTY` true, `SIGWINCH` on resize, cursor-addressing escape
+ * sequences work). Every method/type below is one or the other, never
+ * both at once — {@link spawn}/{@link PtySpawnOptions}/{@link PtySession}
+ * are all pty-primitive-shaped (they spawn and drive the OS object
+ * directly); {@link isSupported} answers a feature-level question ("can
+ * this host offer the terminal feature at all").
+ *
+ * **Platform support**: the pty primitive this namespace is built on
+ * (`Bun.Terminal`) is unconditionally available on Linux/macOS, and on
+ * Windows as of Bun 1.3.14 (2026-05-13), which added ConPTY-backed
+ * support (`CreatePseudoConsole`) — below that Bun version, Windows has
+ * none. {@link isSupported} reports `false` only in that below-threshold
+ * Windows case, and {@link spawn} degrades to an inert, harmless session
+ * there rather than throwing (this namespace never throws — see {@link
+ * PtySession}'s TSDoc).
+ */
+export interface TerminalNamespace {
+  /** Whether this host can spawn ptys at all (Issue #98's Windows
+   * degradation) — `false` on an unsupported platform. A caller should
+   * check this before offering terminal UI, but {@link spawn} itself
+   * never throws even when this is `false` (see its own TSDoc). */
+  isSupported(): boolean;
+  /**
+   * Spawn `options.cmd` attached to a new pty and return a live {@link
+   * PtySession} for it. Never throws — see {@link PtySession}'s TSDoc.
+   * On an unsupported platform, or when the underlying spawn itself fails
+   * (`options.cmd[0]` does not exist, ...), the returned session is inert:
+   * `write`/`resize` are no-ops, `onData` never fires, and `onExit` fires
+   * once with a non-zero `exitCode` shortly after this call returns (a
+   * caller that subscribes to `onExit` immediately after receiving the
+   * session — before this call site's own microtask queue runs again —
+   * always observes it).
+   */
+  spawn(options: PtySpawnOptions): PtySession;
+}
+
+/* ------------------------------------------------------------------ */
 /* Tecode — the aggregate namespace object                            */
 /* ------------------------------------------------------------------ */
 
@@ -528,4 +673,5 @@ export interface Tecode {
   languages: LanguagesNamespace;
   themes: ThemesNamespace;
   clipboard: ClipboardNamespace;
+  terminal: TerminalNamespace;
 }

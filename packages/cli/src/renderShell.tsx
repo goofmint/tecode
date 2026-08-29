@@ -31,7 +31,7 @@ import {
   type SlotRegistry,
   type ThemeService,
 } from "@tecode/core";
-import { handleKeyEvent } from "./keyRouting";
+import { handleKeyEvent, type TerminalKeyRoutingDeps } from "./keyRouting";
 
 /** Everything one `renderShell` call needs to mount the Shell (this
  * module's TSDoc) — exactly the live services `main.ts`'s sync phase has
@@ -98,6 +98,20 @@ export interface ShellRenderDeps {
    * See {@link chordMachine}'s TSDoc for when the listener is actually
    * wired. */
   editorInputRouter?: Pick<EditorInputRouter, "routeKeyEvent">;
+  /** Terminal-forwarding collaborator (Issue #98 Phase 3, `keyRouting.ts`'s
+   * `TerminalKeyRoutingDeps`) — threaded straight into `handleKeyEvent`
+   * alongside `chordMachine`/`editorInputRouter` above whenever `main.ts`
+   * has a real pty to route to. Optional and independent of `chordMachine`/
+   * `editorInputRouter`'s own "both or neither" pairing: a caller/test that
+   * supplies those two but omits this keeps every key going through the
+   * ordinary keymap pipeline exactly as before this issue. */
+  terminal?: TerminalKeyRoutingDeps;
+  /** Receives a stable focus-the-editor-text-plane handle once `Shell`'s
+   * `EditorArea` publishes one (Issue #98 Phase 3) — threaded straight
+   * through to `Shell`'s own `onEditorFocusHandleChange` prop. `main.ts`
+   * wires this to build {@link terminal}'s own `escape` callback. Optional:
+   * a caller/test that omits it simply never receives the handle. */
+  onEditorFocusHandleChange?: (focus: () => void) => void;
   /** The core-owned modal overlay's state/logic (Task 3.1, Req 10.1,
    * design.md §12) — when given, rendered as the LAST sibling of `<Shell>`,
    * inside the same `<ThemeProvider>`/`<ContextFocusTracker>`, via
@@ -276,6 +290,7 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
           editorSession={deps.editorSession}
           findService={deps.findService}
           highlightService={deps.highlightService}
+          onEditorFocusHandleChange={deps.onEditorFocusHandleChange}
         />
         {/* LAST sibling of <Shell> (Task 3.1, `ui/modalOverlay.tsx`'s
          * TSDoc's "Mount point") — omitted entirely (not even an inert
@@ -294,8 +309,9 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
   if (deps.chordMachine && deps.editorInputRouter) {
     const chordMachine = deps.chordMachine;
     const editorInputRouter = deps.editorInputRouter;
+    const terminal = deps.terminal;
     renderer.keyInput.on("keypress", (key) => {
-      handleKeyEvent({ chordMachine, editorInputRouter }, key);
+      handleKeyEvent({ chordMachine, editorInputRouter, terminal }, key);
     });
   }
 

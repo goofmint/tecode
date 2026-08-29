@@ -44,6 +44,7 @@ declare module "tecode" {
     ContextNamespace,
     EditorNamespace,
     LanguagesNamespace,
+    TerminalNamespace,
     ThemesNamespace,
     UiNamespace,
     WindowNamespace,
@@ -60,4 +61,5 @@ declare module "tecode" {
   export const context: ContextNamespace;
   export const languages: LanguagesNamespace;
   export const themes: ThemesNamespace;
+  export const terminal: TerminalNamespace;
 }

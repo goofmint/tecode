@@ -14,9 +14,11 @@ import editorCoreManifest from "@tecode/builtin/editor-core/manifest";
 import {
   handleKeyEvent,
   handlePasteEvent,
+  TERMINAL_ESCAPE_STROKE,
   type KeyRoutingDeps,
   type PasteRoutingDeps,
   type RoutableKeyEvent,
+  type TerminalKeyRoutingDeps,
 } from "./keyRouting";
 
 function keyOf(partial: Partial<KeyEventLike> & { name: string }): RoutableKeyEvent {
@@ -412,6 +414,160 @@ describe("editor-core's Task 2.5 find/replace keybindings (Req 11.1, manifest.ts
     );
     expect(executed).toEqual([]);
     expect(routed).toBe(true); // falls through to the editor router
+  });
+});
+
+describe("handleKeyEvent — terminal focus routing (Issue #98 Phase 3)", () => {
+  /** A `KeyRoutingDeps.chordMachine`/`editorInputRouter` pair that fails
+   * the test the instant either is touched — proves the terminal-focus
+   * branch runs BEFORE, and instead of, the ordinary keymap pipeline. */
+  function forbiddenPipeline(): Pick<KeyRoutingDeps, "chordMachine" | "editorInputRouter"> {
+    return {
+      chordMachine: {
+        handleStroke: () => {
+          throw new Error("chordMachine must not run while the terminal has focus");
+        },
+      },
+      editorInputRouter: {
+        routeKeyEvent: () => {
+          throw new Error("editorInputRouter must not run while the terminal has focus");
+        },
+      },
+    };
+  }
+
+  function fakeTerminal(focused: boolean): TerminalKeyRoutingDeps & {
+    written: string[];
+    escaped: number;
+  } {
+    const written: string[] = [];
+    let escaped = 0;
+    return {
+      written,
+      get escaped() {
+        return escaped;
+      },
+      isFocused: () => focused,
+      write: (data) => written.push(data),
+      escape: () => {
+        escaped++;
+      },
+    };
+  }
+
+  test("while focused, an ordinary key is written to the pty using event.raw, never reaching chordMachine/editorInputRouter", () => {
+    const terminal = fakeTerminal(true);
+    let prevented = false;
+    const event = keyOf({ name: "down", sequence: "\x1b[B" });
+    (event as RoutableKeyEvent).raw = "\x1b[B";
+    event.preventDefault = () => {
+      prevented = true;
+    };
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["\x1b[B"]);
+    expect(terminal.escaped).toBe(0);
+    expect(prevented).toBe(true);
+  });
+
+  test("while focused, a key with no event.raw falls back to event.sequence", () => {
+    const terminal = fakeTerminal(true);
+    const event = keyOf({ name: "a", sequence: "a" });
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["a"]);
+  });
+
+  test("Ctrl+C reaching this function while focused is still forwarded like any other key — OpenTUI's own exitOnCtrlC intercepts it earlier in production, this function has no special case for it", () => {
+    const terminal = fakeTerminal(true);
+    const event = keyOf({ name: "c", ctrl: true, sequence: "\x03" });
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["\x03"]);
+  });
+
+  test("the reserved escape stroke (ctrl+o) while focused calls terminal.escape(), writes nothing, and never reaches chordMachine/editorInputRouter", () => {
+    const terminal = fakeTerminal(true);
+    let prevented = false;
+    const event = keyOf({ name: "o", ctrl: true });
+    event.preventDefault = () => {
+      prevented = true;
+    };
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.escaped).toBe(1);
+    expect(terminal.written).toEqual([]);
+    expect(prevented).toBe(true);
+  });
+
+  test("TERMINAL_ESCAPE_STROKE is exactly the canonical stroke ctrl+o presses normalize to", () => {
+    expect(TERMINAL_ESCAPE_STROKE).toBe("ctrl+o");
+  });
+
+  test("mutation check — removing the escape-stroke branch would trap the user: without it, ctrl+o would be forwarded to the pty like any other key", () => {
+    // This test documents (and pins) the SHAPE of the safety property by
+    // asserting the escape stroke's actual behavior differs from a
+    // same-shaped ordinary key's — if a future edit collapsed the
+    // `stroke === TERMINAL_ESCAPE_STROKE` branch into the plain forwarding
+    // branch, this test fails because `written` would gain an entry and
+    // `escaped` would stay 0.
+    const terminal = fakeTerminal(true);
+    const escapeEvent = keyOf({ name: "o", ctrl: true });
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, escapeEvent);
+    expect(terminal.written).toEqual([]);
+    expect(terminal.escaped).toBe(1);
+  });
+
+  test("when NOT focused, isFocused() false falls through to the ordinary chordMachine/editorInputRouter pipeline untouched", () => {
+    const terminal = fakeTerminal(false);
+    let handled: string | undefined;
+    const deps: KeyRoutingDeps = {
+      chordMachine: {
+        handleStroke: (s) => {
+          handled = s;
+          return "passthrough";
+        },
+      },
+      editorInputRouter: { routeKeyEvent: () => true },
+      terminal,
+    };
+
+    handleKeyEvent(deps, keyOf({ name: "b", sequence: "b" }));
+
+    expect(handled).toBe("b");
+    expect(terminal.written).toEqual([]);
+    expect(terminal.escaped).toBe(0);
+  });
+
+  test("when deps.terminal is entirely omitted (pre-#98 callers/tests), behavior is unchanged", () => {
+    let routed = false;
+    const deps: KeyRoutingDeps = {
+      chordMachine: { handleStroke: () => "passthrough" },
+      editorInputRouter: { routeKeyEvent: () => (routed = true) },
+    };
+
+    handleKeyEvent(deps, keyOf({ name: "x", sequence: "x" }));
+
+    expect(routed).toBe(true);
+  });
+
+  test("the escape stroke does nothing special when the terminal is NOT focused — ctrl+o falls through to the ordinary pipeline like any other unbound stroke", () => {
+    const terminal = fakeTerminal(false);
+    let handledStroke: string | undefined;
+    const deps: KeyRoutingDeps = {
+      chordMachine: { handleStroke: (s) => ((handledStroke = s), "passthrough") },
+      editorInputRouter: { routeKeyEvent: () => true },
+      terminal,
+    };
+
+    handleKeyEvent(deps, keyOf({ name: "o", ctrl: true }));
+
+    expect(handledStroke).toBe("ctrl+o");
+    expect(terminal.escaped).toBe(0);
   });
 });
 

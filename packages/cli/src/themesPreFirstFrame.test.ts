@@ -122,6 +122,7 @@ test("Dark Modern is active before renderShell would be called, with zero extens
       "tecode.keybindings-editor",
       "tecode.languages-basic",
       "tecode.statusbar",
+      "tecode.terminal",
       "tecode.themes-default",
     ]);
     // The theme is still Dark Modern after the deferred phase re-applies

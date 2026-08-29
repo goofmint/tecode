@@ -17,6 +17,7 @@ export {
   createEditorStub,
   createFindStub,
   createLanguagesStub,
+  createTerminalStub,
   createThemesStub,
   createWindowStub,
   type LanguagesStub,
