@@ -73,7 +73,13 @@ export interface TerminalServiceDeps {
    * both sides of the Bun 1.3.14 ConPTY threshold on `"win32"` with a
    * literal version string, with no global `Bun.version` mutation (which
    * is not even writable). Irrelevant on non-`"win32"` platforms — see
-   * `supportsBunTerminal`'s own TSDoc. */
+   * `supportsBunTerminal`'s own TSDoc.
+   *
+   * **Any test that injects `platform: "win32"` to reach the UNSUPPORTED
+   * state must pin this too.** Left out, it falls back to whatever Bun is
+   * running the suite, and the assertion silently becomes environment-
+   * dependent: `create.terminal.test.ts` did exactly that and passed on a
+   * 1.3.11 dev machine while failing on CI's `bun-version: latest`. */
   bunVersion?: string;
   /**
    * Sends a POSIX signal to a pid — defaults to `process.kill`. Injected

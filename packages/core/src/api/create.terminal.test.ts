@@ -56,11 +56,17 @@ describe("createTecodeApi's tecode.terminal (Issue #98)", () => {
 
   test("isSupported/spawn delegate to the real TerminalService when supplied", async () => {
     const deps = await buildBaseDeps();
-    // Injected `platform: "win32"` keeps this test POSIX-independent and
-    // fast — it only proves DELEGATION (the real service's own methods,
+    // `platform: "win32"` plus a Bun BELOW the 1.3.14 ConPTY threshold
+    // (`platform.ts`'s `supportsBunTerminal`) is what puts the real
+    // service in its unsupported state — keeping this test POSIX-
+    // independent and fast. Both must be pinned: `bunVersion` defaults to
+    // the real `Bun.version`, so omitting it makes the assertion below
+    // depend on whichever Bun happens to run the suite (it passed on a
+    // 1.3.11 dev machine and failed on CI's `bun-version: latest`).
+    // This test only proves DELEGATION (the real service's own methods,
     // not stubs.ts's, are what tecode.terminal calls), not the real pty
     // behavior itself (covered by ptyService.test.ts).
-    const terminal = createTerminalService({ platform: "win32" });
+    const terminal = createTerminalService({ platform: "win32", bunVersion: "1.3.13" });
     const api = createTecodeApi({ ...deps, terminal });
 
     expect(api.terminal.isSupported()).toBe(false);
