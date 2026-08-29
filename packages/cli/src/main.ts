@@ -45,9 +45,11 @@ import {
   registerKeybindingsCommands,
   registerModalCommands,
   registerOpenFileCommand,
+  registerShowPanelCommand,
   registerTabCommands,
   registerTecodeAlias,
   registerThemeSelectCommand,
+  createTerminalService,
   TAB_DEFAULT_KEYBINDINGS,
   wireEditorLangIdContext,
   wireThemeConfigSync,
@@ -74,6 +76,7 @@ import {
   type PendingThemeContribution,
   type SlotRegistry,
   type StatusSink,
+  type TerminalService,
   type ThemeRegistry,
   type ThemeService,
   type WindowMessageService,
@@ -95,6 +98,7 @@ import { handlePasteEvent } from "./keyRouting";
 import { createKeymapState, type KeymapState } from "./keymapState";
 import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
 import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./renderShell";
+import { createTerminalSessionTracker, type TerminalSessionTracker } from "./terminalSessionTracker";
 import { createBuiltinThemeAssetsFs } from "./themeAssetsFs";
 import { detectTerminalCapabilities, resolveKittyKeyboardSupport } from "./terminalCapabilities";
 // `web-tree-sitter`'s OWN Emscripten runtime wasm (Finding 4, NOTICE.md's
@@ -183,6 +187,27 @@ export interface AssemblyRoot {
    * (`runTecode`, this module's TSDoc). Built once here, exactly like
    * `fs` above. */
   clipboard: Clipboard;
+  /** The real pty service backing `tecode.terminal` (Issue #98 Phases 1-2,
+   * `@tecode/core`'s `terminal/ptyService.ts`, unmodified) — held here (not
+   * just inside {@link terminalSessionTracker} below) specifically so
+   * `performShutdown` can call its `dispose()` directly: unlike `clipboard`,
+   * a pty owns a REAL child process, so leaving one running past process
+   * exit is a genuine leak, not just an inert object
+   * (`TerminalService.dispose`'s own TSDoc). */
+  terminal: TerminalService;
+  /** Wraps {@link terminal} to additionally track the most-recently-spawned
+   * still-live `PtySession` (Issue #98 Phase 3, `terminalSessionTracker.ts`)
+   * — this is what `createTecodeApi`'s `deps.terminal` is actually built
+   * from (NOT {@link terminal} directly), and what `runTecode`'s
+   * `renderShell(...)` call reads to build `keyRouting.ts`'s
+   * `TerminalKeyRoutingDeps.write`. */
+  terminalSessionTracker: TerminalSessionTracker;
+  /** The `workbench.action.showPanel` command registration (Issue #98 Phase
+   * 3, `ui/panelCommands.ts`) — registered directly on `commands` for the
+   * same privilege-boundary reason as `openFileCommand`/`tabCommands`
+   * above. Disposed alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  showPanelCommand: Disposable;
   config: ConfigService;
   context: ContextService;
   api: Tecode;
@@ -664,6 +689,18 @@ export function buildAssemblyRoot(
   // `CliRenderer` that does not exist yet at this point in the sync phase.
   const clipboard = createClipboard({ log });
 
+  // Issue #98's integrated terminal — built once, exactly like `clipboard`
+  // above, but wrapped in `terminalSessionTracker.ts`'s `TerminalSessionTracker`
+  // BEFORE it is handed to `createTecodeApi` below: `keyRouting.ts`'s
+  // terminal-forwarding branch needs to write every terminal-focused
+  // keystroke into "whichever `PtySession` a `tecode.terminal.spawn` call
+  // most recently produced" (Issue #98's MVP: exactly one terminal at a
+  // time), and the wrapper is what tracks that — see its own TSDoc for why
+  // this composes here rather than inside `@tecode/core`'s `ptyService.ts`
+  // itself (Phases 1-2, unmodified).
+  const terminal = createTerminalService({ log });
+  const terminalSessionTracker = createTerminalSessionTracker(terminal);
+
   // `MODAL_DEFAULT_KEYBINDINGS` (Task 3.1, `ui/modalCommands.ts`) is this
   // codebase's first real occupant of the `defaults` layer
   // (`keymapState.ts`'s TSDoc) — core-owned bindings, not an extension
@@ -795,6 +832,13 @@ export function buildAssemblyRoot(
 
   const layoutState = createLayoutStateService({ log, sink });
 
+  // `workbench.action.showPanel` (Issue #98 Phase 3, `ui/panelCommands.ts`'s
+  // TSDoc): another PRIVILEGED registration straight on `commands`, same
+  // privilege-boundary reasoning as `openFileCommand`/`tabCommands` above —
+  // `tecode.terminal`'s `terminal.focus`/`terminal.new` are this command's
+  // only callers today, reaching it purely through `tecode.commands.execute`.
+  const showPanelCommand = registerShowPanelCommand(commands, { layoutState });
+
   // Sync-phase theme construction (Req 7.4, 11.4, design.md §3, §9):
   // color-depth detection is synchronous env-var sniffing
   // (`terminalCapabilities.ts`'s TSDoc), so it can run right here, ahead of
@@ -892,6 +936,7 @@ export function buildAssemblyRoot(
     modalService,
     windowMessageService,
     clipboard,
+    terminal: terminalSessionTracker,
   });
 
   // Must run before any extension module is imported (see this function's
@@ -1008,6 +1053,9 @@ export function buildAssemblyRoot(
     documents,
     fs,
     clipboard,
+    terminal,
+    terminalSessionTracker,
+    showPanelCommand,
     config,
     context,
     api,
@@ -1264,6 +1312,12 @@ export interface ShutdownRoot {
   config: Pick<Disposable, "dispose">;
   chordPendingIndicator: Pick<Disposable, "dispose">;
   chordMachine: Pick<Disposable, "dispose">;
+  /** The real pty service's own `dispose()` (Issue #98 Phase 5,
+   * `AssemblyRoot.terminal`'s own TSDoc on why this is not merely another
+   * inert-object disposal like `clipboardConfigSync`'s — a live pty owns a
+   * real child process). */
+  terminal: Pick<TerminalService, "dispose">;
+  showPanelCommand: Pick<Disposable, "dispose">;
   findService: Pick<Disposable, "dispose">;
   editorSession: Pick<Disposable, "dispose">;
   editorLangIdSync: Pick<Disposable, "dispose">;
@@ -1360,6 +1414,15 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.themeConfigSync.dispose();
       root.keybindingPresetConfigSync.dispose();
       root.clipboardConfigSync.dispose();
+      // Issue #98 Phase 5: the pty service owns a REAL child process
+      // (unlike `clipboard`, which owns nothing OS-level to release) —
+      // disposing it here stops every still-live terminal session before
+      // the process itself exits, matching `AssemblyRoot.terminal`'s own
+      // TSDoc. Idempotent and never-throwing (`TerminalService.dispose`'s
+      // own contract), so ordering relative to the rest of this sequence
+      // is not load-bearing beyond "runs during shutdown at all".
+      root.terminal.dispose();
+      root.showPanelCommand.dispose();
       root.themeSelectCommand.dispose();
       root.openFileCommand.dispose();
       root.tabCommands.dispose();
@@ -1566,6 +1629,28 @@ export async function runTecode(
 
   const { shutdown } = wireProcessExit(root);
 
+  // Issue #98 Phase 3/5: the imperative "focus the editor's text plane"
+  // handle `@tecode/core`'s `shell.tsx`'s `EditorArea` publishes once it
+  // mounts (`onEditorFocusHandleChange` below) — read lazily, inside
+  // `terminalKeyRoutingDeps.escape` below, not captured at THIS point:
+  // `renderShell(...)` has not even mounted `<Shell>` yet when this
+  // variable is declared, so it is still `undefined` here and only ever
+  // becomes real once `EditorArea`'s own mount effect runs, strictly
+  // BEFORE any real keystroke could arrive to read it.
+  let focusEditorHandle: (() => void) | undefined;
+
+  // Issue #98 Phase 3: `keyRouting.ts`'s `TerminalKeyRoutingDeps` — reads
+  // `root.context` live (not a captured snapshot) so `isFocused()` always
+  // reflects the CURRENT `"terminalFocus"` value, writes into whichever
+  // `PtySession` `root.terminalSessionTracker` currently tracks as active
+  // (Issue #98's MVP: one terminal at a time), and moves focus back to the
+  // editor via the handle above.
+  const terminalKeyRoutingDeps = {
+    isFocused: () => root.context.get<boolean>("terminalFocus") === true,
+    write: (data: string) => root.terminalSessionTracker.writeToActiveSession(data),
+    escape: () => focusEditorHandle?.(),
+  };
+
   const renderShell = options.renderShell ?? (headless ? renderShellHeadless : renderShellToTerminal);
   await renderShell({
     slotRegistry: root.slotRegistry,
@@ -1581,6 +1666,10 @@ export async function runTecode(
     highlightService: root.highlightService,
     chordMachine: root.chordMachine,
     editorInputRouter: root.editorInputRouter,
+    terminal: terminalKeyRoutingDeps,
+    onEditorFocusHandleChange: (focus) => {
+      focusEditorHandle = focus;
+    },
     modalService: root.modalService,
     // Issue #91: the terminal's OSC 52 write function is handed to
     // `root.clipboard` exactly once, as soon as the render seam resolves

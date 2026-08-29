@@ -38,7 +38,11 @@
  * keybindingsCommands.ts` registers directly on the core
  * `CommandRegistry` (that module's TSDoc). `themes-default` (Task 2.7,
  * Req 11.4) and `languages-basic` (Task 2.9, Req 8.4) are the second and
- * third.
+ * third. `terminal` (Issue #98 Phase 4) is the eighth — `terminal.focus`/
+ * `terminal.new`, a `panel.tab` view over a real pty session
+ * (`tecode.terminal`) rendered through `tecode.ui.Terminal`
+ * (`@tecode/core`'s `TerminalGridView`); registers commands but no view at
+ * all on an unsupported platform (`terminal/index.ts`'s TSDoc).
  *
  * **`builtinThemeAssets`** (Task 2.7, design.md §3): the embedded-JSON
  * counterpart to `builtinModules` above, for a built-in's
@@ -64,6 +68,8 @@ import * as statusbarModule from "./statusbar/index";
 import statusbarManifest from "./statusbar/manifest";
 import * as keybindingsEditorModule from "./keybindings-editor/index";
 import keybindingsEditorManifest from "./keybindings-editor/manifest";
+import * as terminalModule from "./terminal/index";
+import terminalManifest from "./terminal/manifest";
 import * as themesDefaultModule from "./themes-default/index";
 import themesDefaultManifest, {
   DARK_MODERN_THEME_ID,
@@ -106,6 +112,7 @@ export const builtinManifests: Manifest[] = [
   explorerManifest,
   statusbarManifest,
   keybindingsEditorManifest,
+  terminalManifest,
 ];
 
 /** Every built-in extension's real implementation module, keyed by
@@ -120,6 +127,7 @@ export const builtinModules: Record<string, BuiltinExtensionModule> = {
   [explorerManifest.id]: explorerModule,
   [statusbarManifest.id]: statusbarModule,
   [keybindingsEditorManifest.id]: keybindingsEditorModule,
+  [terminalManifest.id]: terminalModule,
 };
 
 /** Every built-in extension's embedded theme JSON assets, keyed by the

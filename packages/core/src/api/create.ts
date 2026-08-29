@@ -58,6 +58,7 @@ import type { FindService } from "../ui/findService";
 import { Input, List, Tabs, Tree } from "../ui/components";
 import type { ModalService } from "../ui/modalService";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
+import { TerminalGridView } from "../ui/terminalGridView";
 import type { ThemeRegistry } from "../ui/themeRegistry";
 import type { ThemeService } from "../ui/themeService";
 import type { WindowMessageService } from "../ui/windowMessageService";
@@ -426,6 +427,12 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     Tree,
     Input,
     Tabs,
+    // `tecode.ui.Terminal` (Issue #98 Phase 4) — the real, `@xterm/
+    // headless`-backed cell-grid renderer, wired unconditionally exactly
+    // like `List`/`Tree`/`Input`/`Tabs` above (a UI COMPONENT, not a
+    // service — there is nothing to stub here the way `deps.terminal`
+    // itself is stubbed just below for the pty/spawn half of Issue #98).
+    Terminal: TerminalGridView,
   });
 
   // Real backing (Task 2.8) when a `LanguageRegistry` is supplied;

@@ -359,6 +359,20 @@ export interface UiNamespace {
   Tree: ComponentType;
   Input: ComponentType;
   Tabs: ComponentType;
+  /**
+   * The integrated terminal's cell-grid renderer (Issue #98 Phase 4) —
+   * owns a VT emulator and draws a live `PtySession`'s output, the same
+   * "real, renderer-coupled implementation lives in `@tecode/core`, this
+   * is just the `ComponentType`-shaped door into it" pattern {@link Tree}/
+   * {@link List}/{@link Input}/{@link Tabs} already establish. Duck-typed
+   * props (no dedicated exported prop type here, matching every other
+   * component on this namespace — `@tecode/api` stays React-free): `{
+   * session: PtySession | undefined; cols: number; rows: number }`. A
+   * `panel.tab` extension (the `tecode.terminal` built-in) spawns the
+   * session itself via {@link TerminalNamespace.spawn} and hands it to
+   * this component as a prop — this component never spawns a process.
+   */
+  Terminal: ComponentType;
 }
 
 /* ------------------------------------------------------------------ */

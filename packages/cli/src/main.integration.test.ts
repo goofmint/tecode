@@ -135,7 +135,7 @@ test("headless startup renders the shell before any extension's index.ts loads, 
     // `explorer.focus` is never executed here), but every manifest still
     // counts as LOADED/registered regardless of activation — all load
     // during this real (no `builtins` override) subprocess run.
-    expect(headlessExit?.["loaded"]).toBe(8);
+    expect(headlessExit?.["loaded"]).toBe(9);
     expect(headlessExit?.["skipped"]).toBe(0);
   } finally {
     await rm(homeDir, { recursive: true, force: true });

@@ -422,4 +422,70 @@ describe("Shell — initial editor focus (Req 4.6, 6.7, design.md §8.1; Issue #
     expect(handled).toBe(true);
     expect(docB.getLine(0)).toBe("ZBBBB");
   });
+
+  test("does not steal focus from the terminal panel when a document opens while it holds terminalFocus (Issue #98)", async () => {
+    // `terminalFocus` is set directly on the real `ContextService` rather
+    // than through a mounted competing component — `tecode.terminal`'s own
+    // `TerminalView` lives in `packages/builtin`, which cannot be mounted
+    // inside a `@tecode/core`-only test tree (the ESLint layering rule runs
+    // the other way too: core cannot depend on builtin). This is exactly
+    // the same "the guard reads a context key set by something outside
+    // this component's own React subtree" situation `EditorArea`'s own
+    // TSDoc describes for `explorerFocus`/`findWidgetFocus` — the guard
+    // itself does not care WHERE the key came from, only what it reads.
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({ "/workspace/hello.ts": "hello" }),
+    });
+    const editorSession = createEditorSessionService({ documents });
+
+    const { renderOnce } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell
+            slotRegistry={slotRegistry}
+            layoutState={layoutState}
+            documents={documents}
+            editorSession={editorSession}
+          />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 80, height: 20 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    expect(context.get<boolean>("editorTextFocus")).toBeFalsy();
+
+    // The terminal panel is showing and focused — the real-world sequence
+    // this simulates: `terminal.focus` ran, `TerminalGridView` mounted with
+    // `autoFocus`, and its own `useFocusTracking("terminalFocus")` ref
+    // reported real OpenTUI focus into this SAME context service.
+    context.set("terminalFocus", true);
+
+    // A document opens WHILE the terminal holds focus (an extension's own
+    // startup activation, or a file opened programmatically) — this
+    // component's TSDoc's case 2, now racing the terminal instead of the
+    // command palette. Without `terminalFocus` in the do-not-steal guard,
+    // the initial-focus effect would call `.focus()` on the new tab's text
+    // plane here, silently yanking real OpenTUI focus away from the
+    // terminal out from under the user mid-keystroke (Issue #82's own
+    // class of bug, aimed at the terminal this time).
+    const document = await documents.openDocument(pathToUri("/workspace/hello.ts"));
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(context.get<boolean>("editorTextFocus")).toBeFalsy();
+
+    const router = createEditorInputRouter({ context, editorSession });
+    const handled = router.routeKeyEvent(printableKey("X"));
+    // Dropped by the real `editorTextFocus` gate — never reaches the
+    // buffer "behind" the terminal.
+    expect(handled).toBe(false);
+    expect(document.getLine(0)).toBe("hello");
+  });
 });

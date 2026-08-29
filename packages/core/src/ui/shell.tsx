@@ -341,10 +341,19 @@ const FIND_WIDGET_HEIGHT = 1;
  * }}`) — always rendered, so always reserved. */
 const STATUS_BAR_HEIGHT = 1;
 
+/** The live terminal's current column/row count, reactively — see this
+ * function's own TSDoc for the full rationale. */
+interface LiveTerminalDimensions {
+  width: number;
+  height: number;
+}
+
 /**
- * The live terminal's current row count (Issue #92; Req 6.5, 6.6, 13.1;
- * design.md §8.3's `EditorView` `viewportHeight` scope note), reactively —
- * the "optional dependency, `undefined` when unavailable" shape `theme.tsx`'s
+ * The live terminal's current column/row count (Issue #92's row half; Req
+ * 6.5, 6.6, 13.1; design.md §8.3's `EditorView` `viewportHeight` scope
+ * note; Issue #98's column half, needed to size the terminal panel's own
+ * pty/VT emulator to the real terminal width), reactively — the "optional
+ * dependency, `undefined` when unavailable" shape `theme.tsx`'s
  * {@link useLiveTheme}/`focus.tsx`'s `useFocusTracking` already use, applied
  * to `@opentui/react`'s live `CliRenderer` instead of a `ThemeService`/
  * `ContextService`.
@@ -358,38 +367,49 @@ const STATUS_BAR_HEIGHT = 1;
  * `CliRenderer` is mounted above them (`modalOverlay.tsx`'s `useRenderer`
  * TSDoc already relies on that renderer always being present for ITS
  * caller — `ModalOverlay` is unconditionally mounted at the composition
- * root). `EditorArea` has no such guarantee: a caller/test that constructs
- * it directly (outside `Shell`, outside a `testRender`/`renderShellToTerminal`
- * tree) would crash outright. `useAppContext()` itself never throws — its
- * `AppContext`'s own default value is `{ renderer: null }`
- * (`@opentui/react`'s `src/components/app.tsx`) — so reading `renderer`
- * through it and replicating `useTerminalDimensions`'s own
- * seed-then-subscribe-to-`"resize"` logic by hand gets the exact same live
- * behavior with a real fallback path instead of a crash.
+ * root). `EditorArea`/`Panel` have no such guarantee: a caller/test that
+ * constructs either directly (outside `Shell`, outside a `testRender`/
+ * `renderShellToTerminal` tree) would crash outright. `useAppContext()`
+ * itself never throws — its `AppContext`'s own default value is
+ * `{ renderer: null }` (`@opentui/react`'s `src/components/app.tsx`) — so
+ * reading `renderer` through it and replicating `useTerminalDimensions`'s
+ * own seed-then-subscribe-to-`"resize"` logic by hand gets the exact same
+ * live behavior with a real fallback path instead of a crash.
  *
- * Returns `undefined` when no renderer is mounted — `EditorArea` below
- * falls back to `EditorView`'s own `DEFAULT_VIEWPORT_HEIGHT` constant in
- * that case (this task's "fall back to the existing constant"), exactly
- * mirroring `useLiveTheme`'s `themeService === undefined` fallback.
+ * Returns `undefined` when no renderer is mounted — `EditorArea` falls
+ * back to `EditorView`'s own `DEFAULT_VIEWPORT_HEIGHT` constant in that
+ * case (this task's "fall back to the existing constant"), exactly
+ * mirroring `useLiveTheme`'s `themeService === undefined` fallback; `Panel`
+ * (Issue #98) falls back to not sizing its `viewProps` at all, leaving a
+ * `panel.tab` view's own component to pick its own default.
+ *
+ * One hook, one subscription, both dimensions together (rather than two
+ * separate `useLiveTerminalHeight`/`useLiveTerminalWidth` hooks each
+ * re-deriving the same `AppContext`/`RESIZE` wiring) — a single `resize`
+ * event already carries both values in one payload, so splitting this into
+ * two hooks would either drop one of them or double-subscribe for no
+ * benefit.
  */
-function useLiveTerminalHeight(): number | undefined {
+function useLiveTerminalDimensions(): LiveTerminalDimensions | undefined {
   const { renderer } = useAppContext();
-  const [height, setHeight] = useState<number | undefined>(renderer?.height);
+  const [dimensions, setDimensions] = useState<LiveTerminalDimensions | undefined>(
+    renderer ? { width: renderer.width, height: renderer.height } : undefined,
+  );
   useEffect(() => {
     if (!renderer) return undefined;
-    // Re-syncs to whatever the renderer's height is RIGHT NOW before
+    // Re-syncs to whatever the renderer's size is RIGHT NOW before
     // subscribing — closes the same subscribe-after-render race
     // `useLiveTheme`'s TSDoc documents (a resize landing in the gap
     // between this render and this effect running would otherwise be
     // missed until some later, unrelated re-render).
-    setHeight(renderer.height);
-    const onResize = (_width: number, newHeight: number) => setHeight(newHeight);
+    setDimensions({ width: renderer.width, height: renderer.height });
+    const onResize = (width: number, height: number) => setDimensions({ width, height });
     renderer.on(CliRenderEvents.RESIZE, onResize);
     return () => {
       renderer.off(CliRenderEvents.RESIZE, onResize);
     };
   }, [renderer]);
-  return renderer ? height : undefined;
+  return renderer ? dimensions : undefined;
 }
 
 /** Props for {@link EditorArea}. */
@@ -437,6 +457,13 @@ export interface EditorAreaProps {
    * fallback in this module. */
   panelVisible?: boolean;
   panelHeight?: number;
+  /** Receives a stable `() => void` handle for focusing the editor's text
+   * plane from outside React (Issue #98 Phase 3) — see this module's
+   * `EditorArea` TSDoc's "Publishing a focus handle for the terminal's own
+   * escape hatch". Optional: a caller/test that omits it simply never gets
+   * the handle, matching every other optional-dependency fallback in this
+   * module. */
+  onEditorFocusHandleChange?: (focus: () => void) => void;
 }
 
 /** The editor area (Req 6.1, 6.5, 6.6, 11.1): a `TabBar` over the real
@@ -491,11 +518,12 @@ export interface EditorAreaProps {
  *
  * **Do-not-steal guard**: skipped entirely while the command palette
  * (`quickPickFocus`), an input box (`inputBoxFocus`), the find widget
- * (`findWidgetFocus`, or this tab's own `find.isOpen`), or the explorer
- * sidebar (`explorerFocus`) legitimately holds focus. None of those are
- * `EditorArea`'s own React descendants — `ModalOverlay` is `Shell`'s
- * sibling (`modalOverlay.tsx`), `Sidebar` is `Shell`'s child — so this
- * reads them back through the shared `ContextService`
+ * (`findWidgetFocus`, or this tab's own `find.isOpen`), the explorer
+ * sidebar (`explorerFocus`), or the terminal panel (`terminalFocus`, Issue
+ * #98) legitimately holds focus. None of those are `EditorArea`'s own
+ * React descendants — `ModalOverlay` is `Shell`'s sibling (`modalOverlay.
+ * tsx`), `Sidebar`/`Panel` are `Shell`'s children — so this reads them
+ * back through the shared `ContextService`
  * (`focus.tsx`'s `useFocusContextService`) rather than through React's own
  * tree structure. Getting this wrong (focusing unconditionally) would
  * steal focus out from under someone mid-typing in the palette the moment
@@ -527,9 +555,27 @@ export interface EditorAreaProps {
  * since `attemptFocus` itself no-ops the instant nothing is pending.
  * Subscribing to `onDidChange` unfiltered (not just for the specific key
  * that unblocked things) is deliberate: it means a deferred attempt is
- * retried no matter WHICH of the four guards clears first — the command
- * palette, an input box, the find widget, or the explorer sidebar — with
- * no separate per-key wiring needed for each.
+ * retried no matter WHICH of the five guards clears first — the command
+ * palette, an input box, the find widget, the explorer sidebar, or the
+ * terminal panel — with no separate per-key wiring needed for each.
+ *
+ * **Publishing a focus handle for the terminal's own escape hatch** (Issue
+ * #98 Phase 3): `packages/cli`'s `keyRouting.ts` needs a way to
+ * imperatively focus THIS component's text plane from outside React
+ * entirely — when the terminal panel has focus and the user presses the
+ * one reserved escape stroke, focus must move back to the editor, and
+ * nothing else in the app currently exposes a handle for that (this
+ * component's own `textPlaneNodeRef` is otherwise private). `props.
+ * onEditorFocusHandleChange`, when given, is called once with a STABLE
+ * function (`focusEditorText` below, closing only over the ref, matching
+ * `handleTextPlaneNode`'s own empty-deps stability rationale) that calls
+ * `.focus()` on whatever text plane is currently attached — the same
+ * "hand over a callback, not the renderer" convention `renderShell.tsx`'s
+ * `onClipboardWriterReady`/`onDestroy` already use. This is independent of
+ * (and does not replace) the do-not-steal guard above — calling the
+ * published handle is always an explicit, caller-requested focus move
+ * (Escape pressed while the terminal genuinely has focus), never a
+ * side-effect of some unrelated re-render the guard exists to suppress.
  *
  * **Sizing `EditorView`'s `viewportHeight` to the real terminal** (Issue
  * #92 — "Only the first 20 lines are displayed" no matter how tall the
@@ -560,7 +606,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
   const findWidgetVisible = Boolean(find && isFindOpen && props.findService);
 
   // Issue #92 — see this component's own TSDoc.
-  const terminalHeight = useLiveTerminalHeight();
+  const terminalHeight = useLiveTerminalDimensions()?.height;
   const chrome: EditorAreaChrome = {
     tabBar: tabs.length > 0 ? TAB_BAR_HEIGHT : 0,
     findWidget: findWidgetVisible ? FIND_WIDGET_HEIGHT : 0,
@@ -615,6 +661,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
       focusContext?.get<boolean>(INPUT_BOX_FOCUS_CONTEXT_KEY) ||
       focusContext?.get<boolean>("findWidgetFocus") ||
       focusContext?.get<boolean>("explorerFocus") ||
+      focusContext?.get<boolean>("terminalFocus") ||
       isFindOpen
     ) {
       return;
@@ -678,6 +725,20 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
     textPlaneNodeRef.current = node;
   }, []);
 
+  // Publishes the terminal's escape-hatch focus handle (this component's
+  // TSDoc's "Publishing a focus handle for the terminal's own escape
+  // hatch", Issue #98 Phase 3) — stable identity (empty deps, mirrors
+  // `handleTextPlaneNode` above) so `props.onEditorFocusHandleChange` is
+  // called exactly once for this component's whole lifetime, regardless of
+  // how many times the active document (and therefore `textPlaneNodeRef`'s
+  // underlying node) changes afterward.
+  const focusEditorText = useCallback(() => {
+    textPlaneNodeRef.current?.focus();
+  }, []);
+  useEffect(() => {
+    props.onEditorFocusHandleChange?.(focusEditorText);
+  }, [props.onEditorFocusHandleChange, focusEditorText]);
+
   return (
     <box
       ref={focusRef}
@@ -727,13 +788,35 @@ export interface PanelProps {
   height: number;
 }
 
+/** Rows the Panel's own top border occupies (`border={["top"]}` below) —
+ * always drawn while the panel is visible at all, so always reserved
+ * (matches `STATUS_BAR_HEIGHT`'s own "always rendered, always reserved"
+ * framing). */
+const PANEL_BORDER_HEIGHT = 1;
+
 /** The bottom panel (Req 6.1, 6.2, 6.4): one tab per `panel.tab`
- * registration. */
+ * registration.
+ *
+ * **`viewProps` (Issue #98 Phase 3)**: the active tab's component receives
+ * `{ height, width }` — the panel's own CONTENT area, already net of this
+ * component's own chrome (`PANEL_BORDER_HEIGHT`'s top border, plus
+ * `TAB_BAR_HEIGHT` whenever a tab bar actually renders) — via `viewProps`,
+ * the same mechanism `ActivityBar` already uses for `viewProps={{ active
+ * }}`; `RegisteredView` (`components.tsx`) simply spreads whatever object
+ * it's given onto the rendered component as props. A `panel.tab` view that
+ * needs to size a live pty/VT emulator to its real drawing area (the
+ * terminal built-in, Issue #98 Phase 4) reads these instead of trying to
+ * re-derive Panel's own internal layout constants itself. `undefined`
+ * width/height (no live renderer mounted — `useLiveTerminalDimensions`'s
+ * own TSDoc) is passed through as-is; a view that cares falls back to its
+ * own default, matching every other "optional dependency" convention in
+ * this module. */
 export function Panel(props: PanelProps): ReactNode {
   const theme = useTheme();
   const views = useSlotViews(props.slotRegistry, "panel.tab");
   const focusRef = useFocusTracking("panelFocus");
   const [activeTabId, setActiveTabId] = useState<string | undefined>(undefined);
+  const terminalDimensions = useLiveTerminalDimensions();
 
   if (!props.visible) return null;
 
@@ -745,6 +828,12 @@ export function Panel(props: PanelProps): ReactNode {
   }
 
   const tabs: TabItem[] = views.map((v) => ({ id: v.id, label: v.title ?? v.id }));
+  const tabBarHeight = tabs.length > 0 ? TAB_BAR_HEIGHT : 0;
+  const contentHeight = Math.max(0, props.height - PANEL_BORDER_HEIGHT - tabBarHeight);
+  const viewProps = {
+    height: contentHeight,
+    width: terminalDimensions?.width,
+  };
 
   return (
     <box
@@ -759,7 +848,9 @@ export function Panel(props: PanelProps): ReactNode {
       {/* Keyed by active.id for the same reason as Sidebar above — switching
        * the active panel tab must remount rather than reuse the previous
        * tab's fiber. */}
-      {active?.component ? <RegisteredView key={active.id} component={active.component} /> : null}
+      {active?.component ? (
+        <RegisteredView key={active.id} component={active.component} viewProps={viewProps} />
+      ) : null}
     </box>
   );
 }
@@ -854,6 +945,9 @@ export interface ShellProps {
    * highlighting (Req 8.1, design.md §10) — see
    * `EditorAreaProps.highlightService`'s TSDoc. */
   highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
+  /** Threaded straight through to `EditorArea` (Issue #98 Phase 3) — see
+   * `EditorAreaProps.onEditorFocusHandleChange`'s TSDoc. */
+  onEditorFocusHandleChange?: (focus: () => void) => void;
 }
 
 /** Re-renders the calling component whenever any currently-open document's
@@ -1058,6 +1152,7 @@ export function Shell(props: ShellProps): ReactNode {
           highlightService={props.highlightService}
           panelVisible={layout.panelVisible}
           panelHeight={layout.panelHeight}
+          onEditorFocusHandleChange={props.onEditorFocusHandleChange}
         />
       </box>
       <Panel slotRegistry={props.slotRegistry} visible={layout.panelVisible} height={layout.panelHeight} />
