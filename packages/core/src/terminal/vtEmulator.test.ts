@@ -161,3 +161,33 @@ test("dispose() is idempotent, and write()/getCell() after dispose are inert rat
   await expect(emulator.write("x")).resolves.toBeUndefined();
   expect(emulator.getCell(0, 0)).toBeUndefined();
 });
+
+test("after the child scrolls past the screen height, getCell reads the CURRENT viewport, not the oldest scrollback (Issue #102)", async () => {
+  // The test MUST scroll. `IBuffer.getLine` indexes the whole buffer,
+  // scrollback included, so a viewport-relative read only diverges from a
+  // bare `getLine(y)` once content has been pushed off the top — an
+  // assertion on an unscrolled grid passes against the buggy code, which
+  // is exactly how Issue #102 shipped despite this file's other tests.
+  const cols = 20;
+  const rows = 5;
+  const emulator = createVtEmulator({ cols, rows });
+  for (let i = 1; i <= 12; i++) await emulator.write(`LINE${i}\r\n`);
+
+  const rowText = (y: number): string => {
+    let text = "";
+    // `|| " "`, never `?? " "`: an empty cell's `chars` is `""`, not
+    // `undefined`, so `??` would silently drop every space.
+    for (let x = 0; x < cols; x++) text += emulator.getCell(x, y)?.chars || " ";
+    return text.trimEnd();
+  };
+
+  // 12 lines into a 5-row screen leaves LINE9..LINE12 visible, with the
+  // cursor's own (blank) line last. Before the fix these read LINE1..LINE5.
+  expect(rowText(0)).toBe("LINE9");
+  expect(rowText(1)).toBe("LINE10");
+  expect(rowText(2)).toBe("LINE11");
+  expect(rowText(3)).toBe("LINE12");
+  expect(rowText(4)).toBe("");
+
+  emulator.dispose();
+});
