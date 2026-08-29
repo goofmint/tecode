@@ -385,4 +385,40 @@ describe.skipIf(!hasRealPty)("createTerminalService — real POSIX pty spawn", (
       Bun.spawn = originalSpawn;
     }
   });
+
+  test("dispose() kills the child BEFORE closing the pty — the order ConPTY requires", async () => {
+    // Same double-fake approach as the test above, for the same reason:
+    // the real primitives tolerate either order silently on POSIX, so the
+    // ORDER is only observable through fakes that record it. This pins a
+    // Windows-only hazard (`ClosePseudoConsole` waits for its client, and
+    // before Windows 11 24H2 waits forever) that no Linux CI run could
+    // ever surface on its own.
+    const originalTerminal = Bun.Terminal;
+    const originalSpawn = Bun.spawn;
+    const order: string[] = [];
+
+    (Bun as unknown as { Terminal: unknown }).Terminal = class {
+      close() {
+        order.push("close");
+      }
+    };
+    (Bun as unknown as { spawn: unknown }).spawn = () => ({
+      pid: 4242,
+      kill() {
+        order.push("kill");
+      },
+    });
+
+    try {
+      const service = createTerminalService();
+      const session = service.spawn({ cmd: ["irrelevant-fake-cmd"], cols: 80, rows: 24 });
+
+      session.dispose();
+
+      expect(order).toEqual(["kill", "close"]);
+    } finally {
+      Bun.Terminal = originalTerminal;
+      Bun.spawn = originalSpawn;
+    }
+  });
 });
