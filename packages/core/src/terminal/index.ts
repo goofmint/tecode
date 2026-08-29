@@ -3,7 +3,7 @@
 // backing `tecode.terminal`, the standalone ANSI-16 color table
 // (`ansiPalette.ts`), and the `@xterm/headless`-backed VT emulator wrapper
 // (`vtEmulator.ts`) that turns pty output bytes into a readable cell grid.
-export { isPosixPlatform } from "./platform";
+export { deliversSigwinch, supportsBunTerminal } from "./platform";
 export { ANSI_16_PALETTE, resolveAnsi16 } from "./ansiPalette";
 export {
   createTerminalService,

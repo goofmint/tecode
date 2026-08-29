@@ -26,11 +26,15 @@
  *    "xterm-256color"` on `Bun.spawn`'s own `env` (last, unconditionally —
  *    see {@link PtySpawnOptions.env}'s TSDoc for why a caller-supplied
  *    `TERM` cannot override this).
- * 3. **`Bun.Terminal` is POSIX-only.** tecode ships a `bun-windows-x64`
- *    binary, so this module never constructs one unless {@link
- *    isPosixPlatform} says so — `spawn` degrades to {@link
- *    createInertSession} on Windows instead of throwing (`platform.ts`'s
- *    TSDoc explains the injectable platform check this relies on).
+ * 3. **`Bun.Terminal` needs Bun 1.3.14+ on Windows.** It was POSIX-only
+ *    (Linux, macOS) through Bun 1.3.13; Bun 1.3.14 (2026-05-13) added
+ *    ConPTY-backed (`CreatePseudoConsole`) support on Windows. tecode
+ *    ships a `bun-windows-x64` binary, so this module never constructs a
+ *    `Bun.Terminal` unless {@link supportsBunTerminal} says the running
+ *    platform/Bun version actually supports it — `spawn` degrades to
+ *    {@link createInertSession} when it does not, instead of throwing
+ *    (`platform.ts`'s TSDoc explains the injectable platform/version
+ *    check this relies on).
  *
  * **Never crashes the process** (matches `fileSystem.ts`'s `watch`/
  * `clipboard.ts`'s `write`): a spawn failure, a `term.close()` throw, or
@@ -42,7 +46,7 @@
 
 import type { Disposable, Event, Listener, PtyExitEvent, PtySession, PtySpawnOptions, TerminalNamespace } from "@tecode/api";
 import type { HostError, HostLog } from "../host/errors";
-import { isPosixPlatform } from "./platform";
+import { deliversSigwinch, supportsBunTerminal } from "./platform";
 
 /** The exit code an inert/degraded {@link PtySession} reports on {@link
  * PtySession.onExit} (Windows, a disposed service, or a real spawn
@@ -59,10 +63,18 @@ export interface TerminalServiceDeps {
    * still never throws either way. */
   log?: HostLog;
   /** The platform to gate pty construction on — defaults to the real
-   * `process.platform` (`platform.ts`'s `isPosixPlatform`). Inject
+   * `process.platform` (`platform.ts`'s `supportsBunTerminal`). Inject
    * `"win32"` in a test to exercise the Windows-degradation path with no
    * global `process.platform` mutation. */
   platform?: NodeJS.Platform;
+  /** The Bun version to gate Windows pty construction on — defaults to
+   * the real `Bun.version` (`platform.ts`'s `supportsBunTerminal`).
+   * Injected for the same reason as `platform` above: a test can exercise
+   * both sides of the Bun 1.3.14 ConPTY threshold on `"win32"` with a
+   * literal version string, with no global `Bun.version` mutation (which
+   * is not even writable). Irrelevant on non-`"win32"` platforms — see
+   * `supportsBunTerminal`'s own TSDoc. */
+  bunVersion?: string;
   /**
    * Sends a POSIX signal to a pid — defaults to `process.kill`. Injected
    * (rather than calling `process.kill` directly) so a test can assert
@@ -160,7 +172,8 @@ function createInertSession(exitCode: number): PtySession {
  * `deps.sendSignal` are optional — see {@link TerminalServiceDeps}.
  */
 export function createTerminalService(deps: TerminalServiceDeps = {}): TerminalService {
-  const posix = isPosixPlatform(deps.platform);
+  const supported = supportsBunTerminal(deps.platform, deps.bunVersion);
+  const sigwinch = deliversSigwinch(deps.platform);
   const sendSignal = deps.sendSignal ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal));
 
   let serviceDisposed = false;
@@ -176,11 +189,11 @@ export function createTerminalService(deps: TerminalServiceDeps = {}): TerminalS
   }
 
   function isSupported(): boolean {
-    return posix;
+    return supported;
   }
 
   /** Build a real, `Bun.Terminal`-backed `PtySession` for `options`. Only
-   * ever called once `posix`/`serviceDisposed` have already been checked
+   * ever called once `supported`/`serviceDisposed` have already been checked
    * by {@link spawn}. */
   function spawnReal(options: PtySpawnOptions): PtySession {
     const dataListeners = new Set<Listener<Uint8Array>>();
@@ -198,6 +211,20 @@ export function createTerminalService(deps: TerminalServiceDeps = {}): TerminalS
     }
 
     function fireExit(exitCode: number): void {
+      // A session that exits on its own (the child died/was killed by
+      // something other than this module's own `dispose()`) must also
+      // stop being tracked in `sessions` — otherwise `sessions` grows
+      // without bound over a long editing session with repeated
+      // respawns, since only `sessionHandle.dispose()` below used to
+      // remove an entry. `sessionHandle` is referenced here even though
+      // it is a `const` declared further down this same function: safe
+      // because `fireExit` is only ever invoked from `Bun.spawn`'s own
+      // `onExit` callback below, which — being how a child process exit
+      // is reported — cannot fire until AFTER `spawnReal` has returned
+      // and `sessionHandle` has been assigned. Idempotent: harmless if
+      // `dispose()` already removed it (killing a still-live child also
+      // makes this same callback fire).
+      sessions.delete(sessionHandle);
       for (const listener of Array.from(exitListeners)) {
         try {
           listener({ exitCode });
@@ -207,14 +234,29 @@ export function createTerminalService(deps: TerminalServiceDeps = {}): TerminalS
       }
     }
 
-    const term = new Bun.Terminal({
-      cols: options.cols,
-      rows: options.rows,
-      name: "xterm-256color",
-      data(_t, bytes) {
-        fireData(bytes);
-      },
-    });
+    // `new Bun.Terminal(...)` can throw on its own — fd exhaustion, an
+    // unusable `/dev/ptmx`, ... — same as `Bun.spawn` just below, so it
+    // gets the identical guarded-`let`-assigned-inside-`try` shape rather
+    // than being left to throw straight out of `spawnReal`/`spawn`/
+    // `activate()` (this module's TSDoc's "Never crashes the process"
+    // paragraph; `@tecode/api`'s `TerminalNamespace.spawn` "never throws"
+    // contract).
+    let term: Bun.Terminal;
+    try {
+      term = new Bun.Terminal({
+        cols: options.cols,
+        rows: options.rows,
+        name: "xterm-256color",
+        data(_t, bytes) {
+          fireData(bytes);
+        },
+      });
+    } catch (cause) {
+      logSafely({
+        message: `Failed to construct pty (Bun.Terminal) for "${options.cmd.join(" ")}": ${describeError(cause)}`,
+      });
+      return createInertSession(UNSUPPORTED_EXIT_CODE);
+    }
 
     let proc: Bun.Subprocess;
     try {
@@ -264,6 +306,13 @@ export function createTerminalService(deps: TerminalServiceDeps = {}): TerminalS
       // `resize()` call above failed — the pty's winsize and the child's
       // own idea of its size are two independent things, and a child
       // that is still alive deserves the signal regardless.
+      //
+      // Skipped entirely where the signal does not exist (Windows —
+      // `platform.ts`'s `deliversSigwinch`): ConPTY resizes the console
+      // natively, so there is nothing to hand-deliver, and attempting it
+      // would throw `ERR_UNKNOWN_SIGNAL` on EVERY resize and log a
+      // warning the user can do nothing about.
+      if (!sigwinch) return;
       try {
         sendSignal(proc.pid, "SIGWINCH");
       } catch (cause) {
@@ -302,8 +351,10 @@ export function createTerminalService(deps: TerminalServiceDeps = {}): TerminalS
   }
 
   function spawn(options: PtySpawnOptions): PtySession {
-    if (!posix) {
-      logSafely({ message: "Integrated terminal is not supported on this platform (Windows)." });
+    if (!supported) {
+      logSafely({
+        message: "Integrated terminal is not supported here: Bun.Terminal needs Bun 1.3.14 or newer on Windows.",
+      });
       return createInertSession(UNSUPPORTED_EXIT_CODE);
     }
     if (serviceDisposed) {

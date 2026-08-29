@@ -11,7 +11,9 @@
  * **Windows degradation (Issue #98's own "Platform support" scope,
  * `@tecode/api`'s `TerminalNamespace.isSupported`'s TSDoc)**: `activate`
  * checks `api.terminal.isSupported()` FIRST, before building anything
- * else. `false` (Windows): both commands are still registered — so they
+ * else. `false` (Windows on a Bun below 1.3.14, the release that added
+ * `Bun.Terminal`'s ConPTY backing — `@tecode/core`'s `platform.ts`'s
+ * `supportsBunTerminal`): both commands are still registered — so they
  * remain discoverable in the command palette and reachable via
  * `commands.execute`, matching design choice 2 of this issue's plan — but
  * their handlers only report the platform limitation via `api.window.
@@ -47,7 +49,8 @@ const SHOW_PANEL_COMMAND_ID = "workbench.action.showPanel";
 /** Reported when a terminal command runs on an unsupported platform (Issue
  * #98's Windows degradation, this module's TSDoc). Exported for the test
  * that pins this exact message. */
-export const TERMINAL_UNSUPPORTED_MESSAGE = "Integrated terminal is not supported on this platform (Windows).";
+export const TERMINAL_UNSUPPORTED_MESSAGE =
+  "Integrated terminal is not supported here: Bun.Terminal needs Bun 1.3.14 or newer on Windows.";
 
 /** Approximate initial pty size (this module's TSDoc's "the default shell
  * command" paragraph's sibling concern) — `TerminalGridView`'s own resize
