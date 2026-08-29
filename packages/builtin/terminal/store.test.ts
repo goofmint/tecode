@@ -135,6 +135,33 @@ describe("createTerminalStore — session lifecycle", () => {
     const { store } = createHarness();
     expect(() => store.dispose()).not.toThrow();
   });
+
+  test("dispose() fires onDidChange so a mounted view stops rendering the dead session", () => {
+    const { store } = createHarness();
+    store.ensureSession();
+    let changes = 0;
+    store.onDidChange(() => changes++);
+
+    store.dispose();
+
+    // `TerminalStore.onDidChange`'s own TSDoc promises an event whenever
+    // `getSession()`'s return value would change — disposing takes it from
+    // a live session to `undefined`, so exactly one event is owed here.
+    expect(changes).toBe(1);
+    expect(store.getSession()).toBeUndefined();
+  });
+
+  test("a second dispose() fires nothing more (there was no further change)", () => {
+    const { store } = createHarness();
+    store.ensureSession();
+    store.dispose();
+    let changes = 0;
+    store.onDidChange(() => changes++);
+
+    store.dispose();
+
+    expect(changes).toBe(0);
+  });
 });
 
 describe("createTerminalStore — focus handle brokering", () => {

@@ -65,10 +65,14 @@ export function createTerminalSessionTracker(
     active = session;
 
     // A session that exits on its own (the child process died) must stop
-    // being "active" the same way an explicit `dispose()` does below —
-    // `PtySession.onExit`'s own TSDoc: fires exactly once, never again,
-    // including never for `dispose()` itself, which is why `dispose` is
-    // ALSO wrapped separately rather than relying on this alone.
+    // being "active" — `PtySession.onExit`'s own TSDoc: fires exactly
+    // once, and this INCLUDES an exit caused by the wrapped `dispose()`
+    // below, since that genuinely kills the child. `dispose` is ALSO
+    // wrapped separately (rather than relying on this listener alone) so
+    // `active` is cleared SYNCHRONOUSLY the moment a caller disposes,
+    // without waiting for the child's exit to actually land; this
+    // listener then finds `active === session` already false when that
+    // exit does arrive, so it becomes a harmless no-op.
     session.onExit(() => {
       if (active === session) active = undefined;
     });

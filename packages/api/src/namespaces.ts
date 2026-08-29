@@ -584,9 +584,16 @@ export interface PtySession {
    * parser to reconstruct what the program is drawing. */
   onData: Event<Uint8Array>;
   /** Fires exactly once, when the child process exits, with its exit
-   * code. Never fires again after — including never firing for {@link
-   * dispose} itself, which is a caller-initiated teardown, not something
-   * the child process reported on its own. */
+   * code. Never fires again after. This INCLUDES an exit caused by
+   * calling {@link dispose} — `dispose` stops the child process by
+   * actually killing it, so the child genuinely exits, and this event
+   * reports that exit like any other; it is not suppressed just because
+   * the exit was caller-initiated. A caller that calls `dispose` itself
+   * must therefore tolerate an `onExit` arriving afterward and treat it
+   * as a no-op (matches this contract's known consumers — `@tecode/
+   * builtin`'s terminal `store.ts` and `@tecode/cli`'s
+   * `terminalSessionTracker.ts` — both of which are already written this
+   * way). */
   onExit: Event<PtyExitEvent>;
   /**
    * Tear down this session: stop the child process and release the pty.
@@ -615,10 +622,13 @@ export interface PtySession {
  * directly); {@link isSupported} answers a feature-level question ("can
  * this host offer the terminal feature at all").
  *
- * **Platform support**: the pty primitive this namespace is built on is
- * POSIX-only (Linux, macOS) — {@link isSupported} reports `false` on
- * Windows, and {@link spawn} degrades to an inert, harmless session there
- * rather than throwing (this namespace never throws — see {@link
+ * **Platform support**: the pty primitive this namespace is built on
+ * (`Bun.Terminal`) is unconditionally available on Linux/macOS, and on
+ * Windows as of Bun 1.3.14 (2026-05-13), which added ConPTY-backed
+ * support (`CreatePseudoConsole`) — below that Bun version, Windows has
+ * none. {@link isSupported} reports `false` only in that below-threshold
+ * Windows case, and {@link spawn} degrades to an inert, harmless session
+ * there rather than throwing (this namespace never throws — see {@link
  * PtySession}'s TSDoc).
  */
 export interface TerminalNamespace {

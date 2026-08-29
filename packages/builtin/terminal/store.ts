@@ -99,10 +99,16 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
 
   function attachExitHandling(newSession: PtySession): void {
     // A session that exits on its own (the shell was closed with `exit`,
-    // the child crashed, ...) must stop being "the current session" the
-    // same way an explicit dispose does — `PtySession.onExit`'s own
-    // TSDoc: fires exactly once, never for `dispose()` itself, so this is
-    // the ONLY place that observes a self-terminated child.
+    // the child crashed, ...) must stop being "the current session".
+    // `PtySession.onExit`'s own TSDoc: it also fires when `dispose()`
+    // itself caused the exit (killing the child makes it genuinely
+    // exit) — so this same listener also sees the OLD session's exit
+    // when `respawn()` below calls `session?.dispose()`. That is
+    // harmless here: by the time a disposed session's exit lands (always
+    // after `dispose()`'s own synchronous `proc.kill()` returns), `respawn`
+    // has already reassigned `session` to the NEW session, so the `session
+    // === newSession` guard below is false for the old one and this
+    // becomes a no-op.
     newSession.onExit(() => {
       if (session === newSession) {
         session = undefined;
@@ -138,6 +144,15 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
     if (!session) return;
     session.dispose();
     session = undefined;
+    // Fires for the same reason `ensureSession`/`respawn` do:
+    // `getSession()`'s return value just changed (to `undefined`), and
+    // {@link TerminalStore.onDidChange}'s own TSDoc promises an event for
+    // exactly that. Without it a still-mounted `TerminalView` keeps
+    // rendering the session it was last handed — one that is now disposed
+    // — until some unrelated re-render happens to correct it. Safe to
+    // fire here: the only subscriber (`TerminalView.tsx`) just calls
+    // `forceRender()`, and nothing in that path re-enters this store.
+    fireChange();
   }
 
   function requestFocus(): void {
