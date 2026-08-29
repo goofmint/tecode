@@ -356,7 +356,10 @@ describe.skipIf(!hasRealPty)("createTerminalService — real POSIX pty spawn", (
     };
 
     try {
-      const service = createTerminalService();
+      // Pinned for the same reason as the ordering test below: defaulted,
+      // this reads the ambient platform/Bun version, and an unsupported
+      // host would hand back an inert session that never touches the fakes.
+      const service = createTerminalService({ platform: "win32", bunVersion: "1.3.14" });
       const session = service.spawn({ cmd: ["irrelevant-fake-cmd"], cols: 80, rows: 24 });
 
       let exitFired = false;
@@ -380,6 +383,52 @@ describe.skipIf(!hasRealPty)("createTerminalService — real POSIX pty spawn", (
 
       expect(closeCalls).toBe(0);
       expect(killCalls).toBe(0);
+    } finally {
+      Bun.Terminal = originalTerminal;
+      Bun.spawn = originalSpawn;
+    }
+  });
+
+  test("dispose() kills the child BEFORE closing the pty — the order ConPTY requires", async () => {
+    // Same double-fake approach as the test above, for the same reason:
+    // the real primitives tolerate either order silently on POSIX, so the
+    // ORDER is only observable through fakes that record it. This pins a
+    // Windows-only hazard (`ClosePseudoConsole` waits for its client, and
+    // before Windows 11 24H2 waits forever) that no Linux CI run could
+    // ever surface on its own.
+    const originalTerminal = Bun.Terminal;
+    const originalSpawn = Bun.spawn;
+    const order: string[] = [];
+
+    (Bun as unknown as { Terminal: unknown }).Terminal = class {
+      close() {
+        order.push("close");
+      }
+    };
+    (Bun as unknown as { spawn: unknown }).spawn = () => ({
+      pid: 4242,
+      kill() {
+        order.push("kill");
+      },
+    });
+
+    try {
+      // `platform`/`bunVersion` are BOTH pinned rather than defaulted: a
+      // bare `createTerminalService()` reads the ambient `process.
+      // platform`/`Bun.version`, and on a Windows host below the 1.3.14
+      // ConPTY threshold `spawn()` returns `createInertSession()`, whose
+      // `dispose()` is a no-op — the fakes above would never be called and
+      // this assertion would fail for a reason that has nothing to do with
+      // ordering (`TerminalServiceDeps.bunVersion`'s own TSDoc warns about
+      // exactly this). Pinning the SUPPORTED Windows configuration also
+      // says what the test is for: `win32` on 1.3.14+ is the one
+      // combination where the wrong order actually hangs.
+      const service = createTerminalService({ platform: "win32", bunVersion: "1.3.14" });
+      const session = service.spawn({ cmd: ["irrelevant-fake-cmd"], cols: 80, rows: 24 });
+
+      session.dispose();
+
+      expect(order).toEqual(["kill", "close"]);
     } finally {
       Bun.Terminal = originalTerminal;
       Bun.spawn = originalSpawn;

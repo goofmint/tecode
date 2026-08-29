@@ -36,6 +36,16 @@
  *    (`platform.ts`'s TSDoc explains the injectable platform/version
  *    check this relies on).
  *
+ * 4. **`dispose()` must kill the child BEFORE closing the pty.** ConPTY's
+ *    `ClosePseudoConsole` waits for its client to exit, and on Windows
+ *    builds before 11 24H2 (26100) it waits indefinitely — so closing a
+ *    pty whose child is still running hangs the calling thread and the
+ *    kill that would have released it never runs, stalling the editor's
+ *    whole shutdown sweep ({@link TerminalService.dispose}). POSIX is
+ *    indifferent to the order (the child takes SIGHUP/EIO from the closed
+ *    master either way), so `PtySession.dispose` kills first
+ *    unconditionally rather than branching on the platform.
+ *
  * **Never crashes the process** (matches `fileSystem.ts`'s `watch`/
  * `clipboard.ts`'s `write`): a spawn failure, a `term.close()` throw, or
  * killing an already-dead process is caught, reported through `deps.log`
@@ -331,17 +341,27 @@ export function createTerminalService(deps: TerminalServiceDeps = {}): TerminalS
         if (disposed) return;
         disposed = true;
         sessions.delete(sessionHandle);
-        try {
-          term.close();
-        } catch (cause) {
-          logSafely({ message: `PtySession term.close() failed: ${describeError(cause)}` });
-        }
+        // KILL FIRST, then close the pty — the order matters on Windows
+        // and is harmless everywhere else (finding 4, this module's
+        // TSDoc). ConPTY's `ClosePseudoConsole` waits for its client to
+        // exit, and before Windows 11 24H2 (build 26100) it waits
+        // INDEFINITELY, so closing while the child is still running hangs
+        // here and `proc.kill()` below is never reached — the editor's
+        // whole shutdown sweep stalls on it. Killing first means the
+        // child is already gone (or going) by the time the pty closes.
+        // On POSIX either order works: the child gets SIGHUP/EIO from the
+        // closed master whichever way round it happens.
         try {
           proc.kill();
         } catch (cause) {
           // Includes killing an already-dead process — this module's
           // TSDoc's "never crashes" contract covers exactly this case.
           logSafely({ message: `PtySession process.kill() failed: ${describeError(cause)}` });
+        }
+        try {
+          term.close();
+        } catch (cause) {
+          logSafely({ message: `PtySession term.close() failed: ${describeError(cause)}` });
         }
       },
     };
