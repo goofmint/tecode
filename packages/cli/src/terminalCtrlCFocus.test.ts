@@ -218,3 +218,55 @@ describe("runTecode wires onCtrlCInterceptControlReady end to end (Issue #113)",
     }
   });
 });
+
+/**
+ * Dependency canary for Issue #113's Part B.
+ *
+ * `renderShell.tsx`'s `onCtrlCInterceptControlReady` writes
+ * `renderer.exitOnCtrlC`, a property `@opentui/core` declares `private` and
+ * that no type-level check can protect: `tsc` only sees the cast, and the
+ * unit tests above only exercise this codebase's own sync logic against a
+ * captured `setEnabled`. Nothing in `bun test` can construct a real
+ * `CliRenderer` (it needs a TTY), so if an `@opentui/core` upgrade renamed
+ * that property, moved the read out of the keypress handler, or stopped
+ * consulting it per-keystroke, EVERY test in this file would still pass
+ * while Ctrl+C silently went back to killing the editor from inside the
+ * terminal panel — the exact bug Issue #113 is about, returning with no
+ * failing test to announce it (CodeRabbit PR #114 review flagged this
+ * compatibility risk).
+ *
+ * So assert the shape this fix actually depends on, directly against the
+ * INSTALLED bundle (`packages/cli/package.json` allows `^0.1.107`, i.e. any
+ * 0.1.x): the property is assigned from config in the constructor, and it is
+ * read inside a `"keypress"` handler that matches ctrl+c. A future upgrade
+ * that breaks either half fails HERE, loudly, naming what to re-check —
+ * rather than shipping a silently dead toggle.
+ *
+ * The bundle's own filename is content-hashed (`index-mw2x3082.js` today),
+ * so this scans the package directory rather than hard-coding it.
+ */
+test("@opentui/core still reads a mutable exitOnCtrlC inside its ctrl+c keypress handler (Issue #113 dependency canary)", async () => {
+  const { readdir, readFile } = await import("node:fs/promises");
+  const { dirname, join } = await import("node:path");
+
+  const packageDir = dirname(Bun.resolveSync("@opentui/core", import.meta.dir));
+  const jsFiles = (await readdir(packageDir)).filter((name) => name.endsWith(".js"));
+  const sources = await Promise.all(
+    jsFiles.map((name) => readFile(join(packageDir, name), "utf8")),
+  );
+
+  // Half 1: assigned as an ordinary instance property in the constructor —
+  // what makes a later write from `renderShell.tsx` take effect at all.
+  const assigns = sources.some((source) =>
+    /this\.exitOnCtrlC\s*=\s*config\.exitOnCtrlC/.test(source),
+  );
+  expect(assigns).toBe(true);
+
+  // Half 2: read FRESH off `this` inside the keypress handler, guarding a
+  // ctrl+c match — what makes the value at keystroke time the one that
+  // decides, so flipping it on focus change (never per-keystroke) works.
+  const readsInKeypressHandler = sources.some((source) =>
+    /"keypress"[\s\S]{0,200}?this\.exitOnCtrlC\s*&&[\s\S]{0,120}?ctrl:\s*true/.test(source),
+  );
+  expect(readsInKeypressHandler).toBe(true);
+});
