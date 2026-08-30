@@ -12,7 +12,6 @@ import { createConfigService, type ConfigServiceFs } from "./service";
 import {
   CORE_CONFIGURATION,
   DEFAULT_COLOR_THEME_ID,
-  DEFAULT_KEYBINDING_PRESET,
   DEFAULT_SIDEBAR_WIDTH,
   registerCoreConfiguration,
 } from "./coreDefaults";
@@ -44,16 +43,14 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     expect(config.get<number>("editor.tabSize")).toBe(4);
     expect(config.get<boolean>("editor.insertSpaces")).toBe(true);
     expect(config.get<string>("workbench.colorTheme")).toBe(DEFAULT_COLOR_THEME_ID);
-    expect(config.get<string>("keybindings.preset")).toBe(DEFAULT_KEYBINDING_PRESET);
     expect(config.get<number>("workbench.sidebarWidth")).toBe(DEFAULT_SIDEBAR_WIDTH);
   });
 
-  test("CORE_CONFIGURATION declares exactly the six documented keys", () => {
+  test("CORE_CONFIGURATION declares exactly the five documented keys", () => {
     expect(Object.keys(CORE_CONFIGURATION.properties).sort()).toEqual([
       "editor.insertSpaces",
       "editor.lineNumbers",
       "editor.tabSize",
-      "keybindings.preset",
       "workbench.colorTheme",
       "workbench.sidebarWidth",
     ]);
@@ -73,10 +70,6 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
       type: "string",
       default: DEFAULT_COLOR_THEME_ID,
     });
-    expect(CORE_CONFIGURATION.properties["keybindings.preset"]).toMatchObject({
-      type: "string",
-      default: DEFAULT_KEYBINDING_PRESET,
-    });
     expect(CORE_CONFIGURATION.properties["workbench.sidebarWidth"]).toMatchObject({
       type: "number",
       default: DEFAULT_SIDEBAR_WIDTH,
@@ -87,8 +80,7 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     // These two constants are intentionally duplicated (no `config ->
     // ui` import edge exists for one literal number, `coreDefaults.ts`'s
     // own TSDoc) — this is the drift guard that duplication's TSDoc
-    // promises, mirroring `keybindingPresets.test.ts`'s identical
-    // `DEFAULT_KEYBINDING_PRESET`/`DEFAULT_KEYBINDING_PRESET_NAME` check.
+    // promises.
     expect(DEFAULT_SIDEBAR_WIDTH).toBe(DEFAULT_LAYOUT_STATE.sidebarWidth);
   });
 

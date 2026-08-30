@@ -40,12 +40,3 @@ export {
   type FallbackKeybindingsFs,
   type LoadFallbackKeybindingsDeps,
 } from "./fallbackKeybindings";
-export {
-  DEFAULT_KEYBINDING_PRESET_NAME,
-  EMACS_KEYBINDING_PRESET,
-  KEYBINDING_PRESET_NAMES,
-  resolveKeybindingPreset,
-  WINDOWS_KEYBINDING_PRESET,
-  type KeybindingPresetName,
-  type ResolveKeybindingPresetDeps,
-} from "./presetKeybindings";

@@ -35,21 +35,20 @@
  * any number of times, exactly like its two siblings, which is what lets
  * tests call it directly without needing a fake terminal.
  *
- * **`preset` — the bundled keybinding preset overlay** (Req 4.8, design.md
- * §6.6, Issue #81 Phase 2): starts `[]` and is rebuilt via
- * {@link setPresetEntries} — `main.ts`'s `buildAssemblyRoot` resolves the
- * INITIAL `keybindings.preset` value once `config.ready` settles (same
- * "schema default only, until ready" caveat `ui/themeConfigSync.ts`'s
- * TSDoc documents for `workbench.colorTheme`) and calls it once, then
- * again on every live `keybindings.preset` config change via
- * `ConfigService.onDidChange` — unlike `fallback` (fixed for the run) but
- * exactly like `user`/`extension`, this setter is expected to be called
- * an arbitrary number of times over the app's lifetime. Sits ABOVE
- * `extension` in precedence (`@tecode/core`'s `bindingTable.ts`'s
- * `KeymapLayers` TSDoc explains why that specific position is
- * load-bearing, not just "somewhere in the middle") — a preset can
- * override, or `-command`-remove, an extension's own default binding, but
- * never a `user` one.
+ * **A fifth layer, `preset` (Req 4.8, design.md §6.6, Issue #81 Phase 2),
+ * lived here until Issue #115 removed it**: a bundled keybinding preset
+ * overlay, selected by name via a `keybindings.preset` setting, sitting
+ * above `extension` and below `user`. It shipped ~950 lines of machinery
+ * (this module's own `setPresetEntries` setter, `@tecode/core`'s
+ * `presetKeybindings.ts`, `cli`'s `keybindingPresetConfigSync.ts`, a
+ * dedicated `bindingTable.ts` layer) for 19 lines of JSON that the `user`
+ * layer above already expresses just as well — a hand-authored
+ * `~/.config/tecode/keybindings.json` entry sits at the HIGHEST
+ * precedence of all, so it inherits the exact same "can override, or
+ * `-command`-remove, an extension's own default binding" power a preset
+ * needed a dedicated layer for. `samples/keybindings.emacs.json`/
+ * `samples/keybindings.windows.json` (in this repository) are the same
+ * content as plain, copyable starting points now.
  */
 
 import { createBindingTable, type BindingTable, type HostLog } from "@tecode/core";
@@ -82,15 +81,6 @@ export interface KeymapState {
    * certainly the user's own `keybindings.json`, always wins over this
    * overlay on the same key. */
   setFallbackEntries(entries: readonly KeybindingContribution[]): void;
-  /** Rebuild with a new `preset` layer (Req 4.8, design.md §6.6, Issue #81
-   * Phase 2) — called once with the initially-configured `keybindings.preset`
-   * value, then again on every live change to that setting
-   * (`main.ts`'s `buildAssemblyRoot`, mirroring `ui/themeConfigSync.ts`'s
-   * `workbench.colorTheme` wiring). Sits ABOVE `extension` in precedence
-   * (`@tecode/core`'s `bindingTable.ts`'s `KeymapLayers` TSDoc) — a plain
-   * replace, callable any number of times, exactly like
-   * `setUserEntries`/`setExtensionEntries`. */
-  setPresetEntries(entries: readonly KeybindingContribution[]): void;
 }
 
 /** Build a {@link KeymapState} (Req 4.1-4.3). `defaults` seeds the
@@ -106,7 +96,6 @@ export function createKeymapState(
   let userEntries: KeybindingContribution[] = [];
   let extensionEntries: KeybindingContribution[] = [];
   let fallbackEntries: KeybindingContribution[] = [];
-  let presetEntries: KeybindingContribution[] = [];
   let table = build();
 
   function build(): BindingTable {
@@ -115,7 +104,6 @@ export function createKeymapState(
         defaults: defaultEntries,
         fallback: fallbackEntries,
         extension: extensionEntries,
-        preset: presetEntries,
         user: userEntries,
       },
       { log },
@@ -134,10 +122,6 @@ export function createKeymapState(
     },
     setFallbackEntries(entries) {
       fallbackEntries = entries.slice();
-      table = build();
-    },
-    setPresetEntries(entries) {
-      presetEntries = entries.slice();
       table = build();
     },
   };

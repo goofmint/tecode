@@ -32,12 +32,6 @@
   // instead of a literal "\t".
   "editor.insertSpaces": true,
 
-  // A bundled keybinding scheme layered over the defaults (Req 4.8):
-  // "default" (none, shown here), "emacs", or "windows". See README.md's
-  // "Bundled keybinding presets" section for exactly what each one binds.
-  // Takes effect immediately on save, no restart needed.
-  "keybindings.preset": "default",
-
   // The sidebar's width in columns (Issue #105). Also adjustable by
   // dragging the sidebar's right border with the mouse, or the
   // "Increase/Decrease Sidebar Width" commands (default keybinding

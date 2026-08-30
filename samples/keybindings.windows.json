@@ -1,0 +1,55 @@
+// keybindings.windows.json — a sample Windows/Linux-flavored tecode user
+// keybindings file (Issue #115, replacing the removed "windows"
+// keybindings.preset). Copy this to ~/.config/tecode/keybindings.json (or
+// %APPDATA%\tecode\keybindings.json on Windows), or merge these entries
+// into your own file — same plain JSONC `{ key, command, when? }` shape
+// documented in samples/keybindings.json.
+//
+// Deliberately small — and, as shipped, deliberately a NO-OP. Read this
+// before assuming the entries below change anything.
+//
+// This codebase's defaults are already VS-Code-on-Windows/Linux-shaped
+// throughout (ctrl-based shortcuts everywhere), so there was little left
+// for a "windows" scheme to change. The removed bundled preset claimed
+// one difference: editor-core binds move/duplicate-line to alt+meta+up /
+// alt+meta+down / shift+alt+meta+down, which LOOKS like a macOS idiom
+// (meta = Cmd), so the preset added alt+up / alt+down / shift+alt+down as
+// the "Windows/Linux-native equivalents".
+//
+// That premise was wrong, and those three bindings never fired. The meta
+// token there is not a Cmd key at all: Alt+Arrow decodes through
+// @opentui/core's modifier-bitmask branch, which sets `option` AND `meta`
+// from the SAME Alt bit, so keyEventToStroke always emits BOTH tokens for
+// an Alt-held arrow on EVERY platform — a bare alt+up stroke is never
+// produced for anyone, on Windows or anywhere else, and an entry bound to
+// it is unreachable (packages/builtin/editor-core/manifest.ts's "Alt+Arrow"
+// TSDoc documents the decoding, verified against the CSI \x1b[1;{n}A form,
+// the double-ESC \x1b\x1b[A form, and both Kitty and legacy parsing).
+//
+// Corrected to the strokes that actually arrive, the three entries become
+// identical to the defaults they were supposed to override. So this file
+// adds nothing on its own, and is kept only as a correctly-shaped starting
+// point to EDIT: the header format, the `when` clause, and three real
+// command ids to copy. If you want genuinely different Windows/Linux keys,
+// change the `key` values below (and check `keybindings.showResolved` from
+// the command palette to confirm what actually took effect).
+[
+  // NOTE: these three restate editor-core's CURRENT defaults exactly, so
+  // copying this file as-is changes nothing. That is not an oversight —
+  // see the header above for why, and treat these as a starting point to
+  // EDIT rather than as bindings that add anything on their own.
+  //
+  // They must carry BOTH "alt" and "meta" to match at all. Alt+Arrow
+  // decodes through @opentui/core's modifier-bitmask branch, whose own
+  // logic sets `option` AND `meta` from the SAME Alt bit
+  // (`key.option = key.option || !!(modifier & 2); key.meta = key.meta ||
+  // !!(modifier & 2);`), so `keyEventToStroke` always emits both tokens
+  // together for an Alt-held arrow — never "alt" alone
+  // (`packages/builtin/editor-core/manifest.ts`'s "Alt+Arrow" TSDoc
+  // documents this as verified against the CSI `\x1b[1;{n}A` form, the
+  // double-ESC `\x1b\x1b[A` form, and both Kitty and legacy parsing).
+  // A plain "alt+up" entry can therefore never fire.
+  { "key": "alt+meta+up", "command": "editor.action.moveLinesUp", "when": "editorTextFocus" },
+  { "key": "alt+meta+down", "command": "editor.action.moveLinesDown", "when": "editorTextFocus" },
+  { "key": "shift+alt+meta+down", "command": "editor.action.duplicateLine", "when": "editorTextFocus" }
+]

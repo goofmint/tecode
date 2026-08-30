@@ -1,0 +1,105 @@
+// keybindings.emacs.json — a sample Emacs-flavored tecode user
+// keybindings file (Issue #115, replacing the removed "emacs"
+// keybindings.preset). Copy this WHOLE file to
+// ~/.config/tecode/keybindings.json (or %APPDATA%\tecode\keybindings.json
+// on Windows), overwriting whatever is there, or merge individual entries
+// into your own file — either way it's just plain JSONC in the same
+// `{ key, command, when? }` shape documented in samples/keybindings.json,
+// this repository's own highest-precedence `user` binding layer
+// (packages/core/src/keymap/bindingTable.ts). No restart needed after you
+// save.
+//
+// WHY nearly every entry below carries "when": "editorTextFocus" — this is
+// the part that's easy to get wrong hand-rolling an Emacs map yourself.
+// Without it, a binding here is UNCONDITIONAL: ctrl+f/ctrl+n/ctrl+p would
+// fire as cursor movement no matter what has focus, which breaks them the
+// moment you're anywhere else in the UI — ctrl+f inside the explorer tree
+// or the command palette's filter box would move a cursor that isn't
+// there instead of doing what those widgets normally do with ctrl+f;
+// ctrl+n/ctrl+p inside the find widget or a quick-pick list would fight
+// with that widget's own up/down navigation. Scoping every cursor-motion
+// entry to "editorTextFocus" confines the Emacs remap to an actual editor
+// text buffer, exactly like the old bundled "emacs" preset did, and
+// leaves ctrl+f/ctrl+n/ctrl+p alone everywhere else.
+[
+  // --- Cursor motion (Emacs: forward-char/backward-char/next-line/
+  // previous-line/move-beginning-of-line/move-end-of-line/forward-word/
+  // backward-word), all confined to an editor text buffer (see the header
+  // above for why "when" is load-bearing here, not decorative) ---
+  { "key": "ctrl+a", "command": "editor.action.cursorHome", "when": "editorTextFocus" },
+  { "key": "ctrl+e", "command": "editor.action.cursorEnd", "when": "editorTextFocus" },
+  { "key": "ctrl+f", "command": "editor.action.cursorRight", "when": "editorTextFocus" },
+  { "key": "ctrl+b", "command": "editor.action.cursorLeft", "when": "editorTextFocus" },
+  { "key": "ctrl+n", "command": "editor.action.cursorDown", "when": "editorTextFocus" },
+  { "key": "ctrl+p", "command": "editor.action.cursorUp", "when": "editorTextFocus" },
+  { "key": "alt+f", "command": "editor.action.cursorWordRight", "when": "editorTextFocus" },
+  { "key": "alt+b", "command": "editor.action.cursorWordLeft", "when": "editorTextFocus" },
+
+  // Emacs's kill-line (ctrl+k), approximated as "delete the whole line" —
+  // there's no kill-ring/yank concept in this editor to model a true
+  // "kill" with, so this is the closest available command.
+  { "key": "ctrl+k", "command": "editor.action.deleteLine", "when": "editorTextFocus" },
+
+  // Emacs's isearch-forward (ctrl+s), approximated as this editor's own
+  // find (the closest existing command) — this INTENTIONALLY overrides
+  // editor-core's default ctrl+s (save file); save moves to ctrl+x ctrl+s
+  // below, matching real Emacs.
+  { "key": "ctrl+s", "command": "editor.action.find", "when": "editorTextFocus" },
+
+  // Emacs's save-buffer, on its own real chord (ctrl+x ctrl+s).
+  //
+  // READ THIS BEFORE KEEPING THE LINE BELOW — it has a side effect on
+  // ctrl+x. editor-core's defaults DO bind plain ctrl+x to Cut
+  // (editor.action.clipboardCut, when editorTextFocus). Adding a chord
+  // that starts with ctrl+x makes ctrl+x a chord PREFIX, and a prefix
+  // always wins over a same-key exact match — chords.ts's
+  // handleIdleStroke checks hasSequencePrefix FIRST, unconditionally,
+  // before ever calling lookup. So with this entry active, pressing
+  // ctrl+x in an editor no longer cuts: it sits pending, waiting to see
+  // whether ctrl+s follows, and times out after 3 seconds. This is the
+  // exact same hazard the ctrl+k entry below documents, just on a
+  // different key.
+  //
+  // That is faithful to real Emacs, where C-x IS a prefix key and cut is
+  // C-w (kill-region), not C-x — which is why the ctrl+w entry further
+  // down restores cut rather than this file simply dropping it. If you
+  // would rather keep plain ctrl+x as Cut, delete BOTH this line and the
+  // ctrl+w entry, and leave save on its editor-core default (ctrl+s) by
+  // also deleting the ctrl+s isearch remap above.
+  { "key": "ctrl+x ctrl+s", "command": "editor.action.save", "when": "editorTextFocus" },
+
+  // Cut on ctrl+w (Emacs's kill-region), restoring the Cut that the
+  // ctrl+x chord above just displaced. Scoped to editorTextFocus, which
+  // means it TAKES OVER ctrl+w from tabCommands.ts's default "close tab"
+  // (TAB_CLOSE_COMMAND, bound with no "when", so it is otherwise active
+  // everywhere) for as long as an editor text buffer has focus — close
+  // tab still works from anywhere else, and ctrl+f4 is unaffected. Delete
+  // this line if you would rather keep ctrl+w as close-tab inside the
+  // editor too and reach Cut from the command palette instead.
+  { "key": "ctrl+w", "command": "editor.action.clipboardCut", "when": "editorTextFocus" },
+
+  // REQUIRED companion to the ctrl+k binding above, not an optional extra:
+  // keybindings-editor's own default binds "ctrl+k ctrl+s" -> Open
+  // Keyboard Shortcuts (JSON) with NO "when" clause (always visible), and
+  // a chord's prefix always wins over a same-key exact match
+  // (packages/core/src/keymap/chords.ts — "prefix wins"). Left in place,
+  // EVERY ctrl+k press above would sit in a pending state waiting to see
+  // whether ctrl+s follows, instead of ever reaching the kill-line binding
+  // this file just added — you'd see a "(ctrl+k)" pending indicator
+  // that times out after 3 seconds on every single kill-line attempt.
+  // Removing this chord (a removal has no "when" of its own — see
+  // samples/keybindings.json for that rule) is what makes plain ctrl+k
+  // resolve directly again. If you'd rather keep "Open Keyboard Shortcuts"
+  // on ctrl+k ctrl+s, delete this line and drop the ctrl+k entry above
+  // instead (or rebind kill-line to a key that isn't a chord prefix of
+  // anything else).
+  { "key": "ctrl+k ctrl+s", "command": "-keybindings.open" }
+
+  // Deliberately NOT bound, matching the old bundled preset's own choices:
+  // undo (Emacs's ctrl+/ / ctrl+x u would either collide with this
+  // codebase's toggleLineComment on ctrl+/, or introduce a second ctrl+x
+  // chord family for one binding) and yank/kill-ring navigation (no
+  // backing command exists to bind it to) — fewer, correct bindings over
+  // a large half-right set. Add your own if you have a real command in
+  // mind for either.
+]

@@ -300,8 +300,11 @@ contributes: {
 },
 ```
 
-`key` is a canonical key or two-stroke chord string (Req 4.4, e.g.
-`"ctrl+k ctrl+s"`); `command` is any registered command ID, or `"-<id>"` to
+`key` is a canonical key, or a chord string of two OR MORE space-separated
+strokes (Req 4.4, e.g. `"ctrl+k ctrl+s"`; three-stroke sequences resolve too
+— `keymap/chords.ts`'s pending state re-queries the table's general prefix
+index after every stroke, so nothing caps a sequence at two). `command` is
+any registered command ID, or `"-<id>"` to
 *remove* a default binding for `<id>` on this key (Req 4.3) rather than add
 one. There is no `extensionId` field to set here yourself — the host stamps
 that on during registration (`@tecode/api`'s `manifest.ts`'s

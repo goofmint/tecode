@@ -16,7 +16,6 @@ function layersOf(partial: Partial<KeymapLayers>): KeymapLayers {
     defaults: partial.defaults ?? [],
     fallback: partial.fallback ?? [],
     extension: partial.extension ?? [],
-    preset: partial.preset ?? [],
     user: partial.user ?? [],
   };
 }
@@ -400,7 +399,6 @@ test("non-string key or command entries are skipped with a warning, never thrown
       defaults: malformed,
       fallback: [],
       extension: [],
-      preset: [],
       user: [{ key: "ctrl+p", command: "quickOpen.show" }],
     },
     { log },
@@ -530,7 +528,6 @@ test("a removal entry with a when clause is skipped with a warning, leaving lowe
       defaults: [{ key: "ctrl+p", command: "quickOpen.show" }],
       fallback: [],
       extension: [],
-      preset: [],
       user: [
         { key: "ctrl+p", command: "-quickOpen.show", when: "editorFocus" },
       ],

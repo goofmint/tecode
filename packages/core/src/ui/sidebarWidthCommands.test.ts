@@ -7,6 +7,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { createHostLog } from "../host/errors";
+import { createBindingTable } from "../keymap/bindingTable";
+import { createChordStateMachine } from "../keymap/chords";
+import { createContextService } from "../keymap/context";
 import { MIN_SIDEBAR_WIDTH } from "./sidebarWidth";
 import {
   createSidebarWidthStepHandler,
@@ -97,6 +101,100 @@ describe("SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS (Issue #105)", () => {
       { key: "ctrl+k [", command: DECREASE_SIDEBAR_WIDTH_COMMAND_ID, when: SIDEBAR_WIDTH_FOCUS_WHEN },
       { key: "ctrl+k ]", command: INCREASE_SIDEBAR_WIDTH_COMMAND_ID, when: SIDEBAR_WIDTH_FOCUS_WHEN },
     ]);
+  });
+});
+
+// --- The ctrl+k chord-shadowing hazard (Issue #105, ported from Issue
+// #115's now-removed `keybindingPresets.test.ts`, which originally proved
+// this against the bundled Emacs preset's own `ctrl+k` -> deleteLine
+// binding). The guarantee outlives the presets: `SIDEBAR_WIDTH_
+// DEFAULT_KEYBINDINGS`'s `when` clause (`SIDEBAR_WIDTH_FOCUS_WHEN`) is
+// what lets ANY hand-bound `ctrl+k` in a user's own `keybindings.json` —
+// an Emacs-style kill-line binding being the obvious example,
+// `samples/keybindings.emacs.json` — resolve directly instead of getting
+// stuck waiting for `[`/`]` to complete the sidebar-resize chord. This
+// describe block presses the REAL `BindingTable`/`ChordStateMachine`
+// pair, not just a table lookup, so a regression here would show up as an
+// actual stuck keystroke.
+describe("the ctrl+k chord-shadowing hazard (Issue #105's own SIDEBAR_WIDTH_FOCUS_WHEN)", () => {
+  function contextOf(values: Record<string, unknown>) {
+    return (key: string) => values[key];
+  }
+
+  /** A minimal layered table with only `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS`
+   * in `defaults` plus whatever `user` entries the test supplies — no
+   * `builtin` manifests needed (`core` may not import `builtin`), since
+   * this hazard is entirely about `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS`'s
+   * own `when` clause, not about any particular extension's chord. */
+  function buildTable(userEntries: Parameters<typeof createBindingTable>[0]["user"]) {
+    return createBindingTable(
+      { defaults: SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS, fallback: [], extension: [], user: userEntries },
+      { log: createHostLog() },
+    );
+  }
+
+  test("ctrl+k IS a live chord prefix while the sidebar/explorer is focused — the positive half of SIDEBAR_WIDTH_FOCUS_WHEN", () => {
+    const table = buildTable([]);
+    expect(table.hasSequencePrefix("ctrl+k", contextOf({ sidebarFocus: true }))).toBe(true);
+    expect(table.hasSequencePrefix("ctrl+k", contextOf({ explorerFocus: true }))).toBe(true);
+  });
+
+  test("ctrl+k is NOT a live chord prefix under editorTextFocus — this is what keeps a hand-bound ctrl+k reachable", () => {
+    const table = buildTable([]);
+    expect(table.hasSequencePrefix("ctrl+k", contextOf({ editorTextFocus: true }))).toBe(false);
+  });
+
+  test("a user's own ctrl+k binding (e.g. an Emacs-style kill-line entry in keybindings.json) resolves DIRECTLY under editorTextFocus — not a pending chord", () => {
+    const table = buildTable([
+      { key: "ctrl+k", command: "editor.action.deleteLine", when: "editorTextFocus" },
+    ]);
+    const context = createContextService();
+    context.set("editorTextFocus", true);
+
+    const executed: string[] = [];
+    const pendingStates: Array<string | undefined> = [];
+    const machine = createChordStateMachine({
+      table,
+      execute: (id) => {
+        executed.push(id);
+      },
+      getContext: (key) => context.get(key),
+      log: createHostLog(),
+    });
+    machine.onDidChangePending((prefix) => pendingStates.push(prefix));
+
+    const result = machine.handleStroke("ctrl+k");
+
+    expect(result).toBe("consumed");
+    expect(executed).toEqual(["editor.action.deleteLine"]);
+    // Never entered pending state at all — a regression here (e.g.
+    // dropping SIDEBAR_WIDTH_FOCUS_WHEN from SIDEBAR_WIDTH_DEFAULT_
+    // KEYBINDINGS) would show up as a `"ctrl+k"` entry in this array
+    // (chord-pending, waiting for `[` or `]`) instead of a direct
+    // execution.
+    expect(pendingStates).toEqual([]);
+  });
+
+  test("the sidebar-resize chord is still reachable via ctrl+k [ / ctrl+k ] while the sidebar is focused, even with a user ctrl+k binding present", () => {
+    const table = buildTable([
+      { key: "ctrl+k", command: "user.killLine", when: "editorTextFocus" },
+    ]);
+    const context = createContextService();
+    context.set("sidebarFocus", true);
+
+    const executed: string[] = [];
+    const machine = createChordStateMachine({
+      table,
+      execute: (id) => {
+        executed.push(id);
+      },
+      getContext: (key) => context.get(key),
+      log: createHostLog(),
+    });
+
+    expect(machine.handleStroke("ctrl+k")).toBe("consumed");
+    expect(machine.handleStroke("[")).toBe("consumed");
+    expect(executed).toEqual([DECREASE_SIDEBAR_WIDTH_COMMAND_ID]);
   });
 });
 

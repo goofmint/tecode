@@ -19,8 +19,14 @@
 //
 //   { "key": "<chord>", "command": "<commandId>", "when"?: "<expression>" }
 //
-//   - key      A single stroke (e.g. "ctrl+s") or a two-stroke chord,
-//              its strokes space-separated (e.g. "ctrl+k ctrl+s").
+//   - key      A single stroke (e.g. "ctrl+s") or a multi-stroke chord of
+//              two or more strokes, space-separated (e.g.
+//              "ctrl+k ctrl+s", or a longer "ctrl+k ctrl+a b" if you need
+//              it). Each stroke accepts the modifiers ctrl/shift/alt/meta
+//              in any order and case, plus the aliases cmd and command
+//              (-> meta), option (-> alt), and control (-> ctrl) — e.g.
+//              "Cmd+Shift+K" and "meta+shift+k" both normalize to the
+//              same canonical key.
 //   - command  The command id to run. Prefix it with "-" to REMOVE a
 //              default binding instead of adding one — for example
 //              "-editor.action.deleteLine" unbinds whatever key that

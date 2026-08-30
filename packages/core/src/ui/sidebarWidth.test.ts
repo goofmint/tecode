@@ -49,8 +49,10 @@ describe("clampSidebarWidth (Issue #105)", () => {
     // (this module's own TSDoc: `shell.tsx` already imports
     // `clampSidebarWidth` from here, so the reverse edge would be
     // circular) — this is the drift guard that duplication promises,
-    // mirroring `keybindingPresets.test.ts`'s identical two-literal sync
-    // assertion. If the internal, private duplicate ever drifted from the
+    // mirroring `coreDefaults.test.ts`'s identical
+    // `DEFAULT_SIDEBAR_WIDTH`/`DEFAULT_LAYOUT_STATE.sidebarWidth`
+    // two-literal sync assertion. If the internal, private duplicate ever
+    // drifted from the
     // real export, this computed cap would stop landing exactly on 42.
     const terminalWidth = ACTIVITY_BAR_WIDTH + MIN_EDITOR_WIDTH + 42;
     expect(clampSidebarWidth(500, terminalWidth)).toBe(42);

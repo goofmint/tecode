@@ -105,7 +105,6 @@ describe("handleKeyEvent (Task 2.2, design.md §6.1's full pipeline)", () => {
       defaults: [],
       fallback: [],
       extension: editorCoreManifest.contributes.keybindings ?? [],
-      preset: [],
       user: [],
     };
     const table = createBindingTable(layers, { log });
@@ -161,7 +160,6 @@ describe("handleKeyEvent (Task 2.2, design.md §6.1's full pipeline)", () => {
       defaults: [],
       fallback: [],
       extension: editorCoreManifest.contributes.keybindings ?? [],
-      preset: [],
       user: [],
     };
     const table = createBindingTable(layers, { log });
@@ -212,7 +210,6 @@ describe("editor-core's Task 2.4 keybindings — verified strokes (manifest.ts's
       defaults: [],
       fallback: [],
       extension: editorCoreManifest.contributes.keybindings ?? [],
-      preset: [],
       user: [],
     };
     const table = createBindingTable(layers, { log });
@@ -329,7 +326,6 @@ describe("editor-core's Task 2.5 find/replace keybindings (Req 11.1, manifest.ts
       defaults: [],
       fallback: [],
       extension: editorCoreManifest.contributes.keybindings ?? [],
-      preset: [],
       user: [],
     };
     const table = createBindingTable(layers, { log });
@@ -625,7 +621,6 @@ describe("handleKeyEvent — end to end against real keymap + editor services", 
       defaults: partial.defaults ?? [],
       fallback: partial.fallback ?? [],
       extension: partial.extension ?? [],
-      preset: partial.preset ?? [],
       user: partial.user ?? [],
     };
   }
