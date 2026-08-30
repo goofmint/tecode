@@ -8,6 +8,7 @@ import type {
   Tecode,
 } from "@tecode/api";
 import {
+  applyConfiguredSidebarWidth,
   applyConfiguredTheme,
   BASE_THEME_ID,
   createAssetResolver,
@@ -29,6 +30,7 @@ import {
   createLanguageRegistry,
   createLayoutStateService,
   createModalService,
+  createSidebarWidthSettingsWriter,
   createSlotRegistry,
   createTecodeApi,
   createThemeRegistry,
@@ -46,12 +48,15 @@ import {
   registerModalCommands,
   registerOpenFileCommand,
   registerShowPanelCommand,
+  registerSidebarWidthCommands,
   registerTabCommands,
   registerTecodeAlias,
   registerThemeSelectCommand,
   createTerminalService,
+  SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
   TAB_DEFAULT_KEYBINDINGS,
   wireEditorLangIdContext,
+  wireSidebarWidthConfigSync,
   wireThemeConfigSync,
   type BindingTable,
   type ChordScheduler,
@@ -74,6 +79,7 @@ import {
   type LoadExtensionsResult,
   type ModalService,
   type PendingThemeContribution,
+  type SidebarWidthSettingsWriter,
   type SlotRegistry,
   type StatusSink,
   type TerminalService,
@@ -216,6 +222,13 @@ export interface AssemblyRoot {
    * must share the exact same instance. */
   slotRegistry: SlotRegistry;
   layoutState: LayoutStateService;
+  /** Persists a sidebar-resize COMMIT to `workbench.sidebarWidth` in
+   * `settings.json` (Issue #105, `ui/sidebarWidthSettingsWriter.ts`) — fed
+   * to `renderShell`'s `onSidebarWidthCommit` (a drag-end) and
+   * {@link sidebarWidthCommands}' two handlers (a keypress) below. Its own
+   * debounce is what makes it safe to call on every commit without
+   * thrashing `settings.json` (that module's TSDoc). */
+  sidebarWidthSettingsWriter: Pick<SidebarWidthSettingsWriter, "write" | "flush">;
   /** The sync-phase FIRST-FRAME theme (Req 7.4, design.md §3): a snapshot
    * of `themeRegistry`'s always-present base theme, already quantized for
    * the detected color depth — `renderShell.tsx`'s `ShellRenderDeps.theme`
@@ -262,6 +275,13 @@ export interface AssemblyRoot {
    * alongside every other startup-owned subscription in
    * {@link wireProcessExit}. */
   themeConfigSync: Disposable;
+  /** Live `workbench.sidebarWidth` config-change subscription (Issue #105,
+   * `ui/sidebarWidthConfigSync.ts`'s `wireSidebarWidthConfigSync`) — mirrors
+   * {@link themeConfigSync}'s own shape, just for
+   * `LayoutState.sidebarWidth` instead of the active theme. Disposed
+   * alongside every other startup-owned subscription in
+   * {@link wireProcessExit}. */
+  sidebarWidthConfigSync: Disposable;
   /** The `theme.select` command registration (Req 7.5, `ui/
    * themeSelectCommand.ts`) — registered directly on `commands`, not
    * through `tecode.commands` (that module's TSDoc on the privilege
@@ -299,6 +319,16 @@ export interface AssemblyRoot {
    * Disposed alongside every other startup-owned subscription in
    * {@link wireProcessExit}. */
   keybindingsCommands: Disposable;
+  /** The `workbench.action.increase/decreaseSidebarWidth` commands'
+   * registration (Issue #105, `ui/sidebarWidthCommands.ts`) — registered
+   * directly on `commands` for the same privilege-boundary reason as
+   * `openFileCommand`/`themeSelectCommand`/`tabCommands`/
+   * `extensionsReloadCommand`/`keybindingsCommands` above. Their default
+   * keybindings (`ctrl+k [`/`ctrl+k ]`) were already fed into `keymap`'s
+   * `defaults` layer alongside `MODAL_DEFAULT_KEYBINDINGS`/
+   * `TAB_DEFAULT_KEYBINDINGS`. Disposed alongside every other startup-owned
+   * subscription in {@link wireProcessExit}. */
+  sidebarWidthCommands: Disposable;
   /** The resolved workspace root this root was built for. */
   workspaceRoot: string;
   /** The layered keybinding table, kept up to date across every startup
@@ -705,8 +735,13 @@ export function buildAssemblyRoot(
   // codebase's first real occupant of the `defaults` layer
   // (`keymapState.ts`'s TSDoc) — core-owned bindings, not an extension
   // manifest's. `TAB_DEFAULT_KEYBINDINGS` (Task 3.5, `ui/tabCommands.ts`)
-  // joins it here, same layer, same reasoning.
-  const keymap = createKeymapState(log, [...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS]);
+  // and `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS` (Issue #105, `ui/
+  // sidebarWidthCommands.ts`) join it here, same layer, same reasoning.
+  const keymap = createKeymapState(log, [
+    ...MODAL_DEFAULT_KEYBINDINGS,
+    ...TAB_DEFAULT_KEYBINDINGS,
+    ...SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
+  ]);
 
   // Task 4.2's fallback-keymap loader (Req 4.7, design.md §6.5): defaults
   // to the real `@tecode/core` loader (bundled asset or the user's
@@ -780,6 +815,22 @@ export function buildAssemblyRoot(
   const keybindingsPath = deps.configDir
     ? joinPath(deps.configDir, "keybindings.json")
     : undefined;
+  // `state.json` is derived from the SAME `--config <dir>` (Issue #105,
+  // CodeRabbit PR #111): persisted layout state lives in the user config
+  // directory alongside `settings.json`/`keybindings.json`
+  // (`host/paths.ts`'s `getUserLayoutStatePath` is literally
+  // `join(getUserConfigDir(), "state.json")`), so a flag that redirects
+  // that directory has to redirect all three or it redirects none of them
+  // coherently. Leaving this one out is not merely inconsistent, it is
+  // OBSERVABLY wrong in both directions: a `--config` user's sidebar
+  // width would round-trip through the override's `settings.json` but
+  // persist to the DEFAULT `state.json`, and — the way this was actually
+  // found — any test that builds an `AssemblyRoot` under a temp
+  // `configDir` and lets a `workbench.sidebarWidth` change reach
+  // `sidebarWidthConfigSync` writes into the developer's REAL
+  // `~/.config/tecode/state.json`, where it survives to break unrelated
+  // rendering assertions on the next run.
+  const layoutStatePath = deps.configDir ? joinPath(deps.configDir, "state.json") : undefined;
   const config = createConfigService({
     log,
     sink,
@@ -830,7 +881,18 @@ export function buildAssemblyRoot(
 
   const context = createContextService();
 
-  const layoutState = createLayoutStateService({ log, sink });
+  const layoutState = createLayoutStateService({ log, sink, path: layoutStatePath });
+  // Persists a sidebar-resize COMMIT to `workbench.sidebarWidth` (Issue
+  // #105, `ui/sidebarWidthSettingsWriter.ts`'s TSDoc) — built here,
+  // alongside `layoutState`, since both back the same feature and neither
+  // depends on the other. `path: settingsPath` mirrors `createConfigService`
+  // above: under `--config <dir>`, `ConfigService` already reads the USER
+  // settings layer from that directory (`settingsPath`, computed above), so
+  // the writer must target the SAME file — otherwise a `--config` user's
+  // resize commit would read from the override but write to the default
+  // `getUserSettingsPath()` (this writer's own fallback), and the width
+  // would never survive a restart.
+  const sidebarWidthSettingsWriter = createSidebarWidthSettingsWriter({ log, sink, path: settingsPath });
 
   // `workbench.action.showPanel` (Issue #98 Phase 3, `ui/panelCommands.ts`'s
   // TSDoc): another PRIVILEGED registration straight on `commands`, same
@@ -838,6 +900,16 @@ export function buildAssemblyRoot(
   // `tecode.terminal`'s `terminal.focus`/`terminal.new` are this command's
   // only callers today, reaching it purely through `tecode.commands.execute`.
   const showPanelCommand = registerShowPanelCommand(commands, { layoutState });
+
+  // `workbench.action.increase/decreaseSidebarWidth` (Issue #105, `ui/
+  // sidebarWidthCommands.ts`'s TSDoc): another PRIVILEGED registration
+  // straight on `commands`, same privilege-boundary reasoning as
+  // `showPanelCommand` above — their default keybindings were already fed
+  // into `keymap`'s `defaults` layer above.
+  const sidebarWidthCommands = registerSidebarWidthCommands(commands, {
+    layoutState,
+    settingsWriter: sidebarWidthSettingsWriter,
+  });
 
   // Sync-phase theme construction (Req 7.4, 11.4, design.md §3, §9):
   // color-depth detection is synchronous env-var sniffing
@@ -1020,6 +1092,12 @@ export function buildAssemblyRoot(
   // `runTecode` after `config.ready` settles, not here (same TSDoc).
   const themeConfigSync = wireThemeConfigSync({ config, themeService });
 
+  // Live `workbench.sidebarWidth` config-change subscription (Issue #105,
+  // `ui/sidebarWidthConfigSync.ts`'s TSDoc) — same "INITIAL value applied by
+  // `runTecode` after `config.ready`, not here" shape as `themeConfigSync`
+  // above.
+  const sidebarWidthConfigSync = wireSidebarWidthConfigSync({ config, layoutState });
+
   // The live keymap table view (this function's TSDoc) — a thin forwarding
   // object, not a snapshot, so `chordMachine` below always resolves
   // against whichever `BindingTable` `keymap` currently holds.
@@ -1061,16 +1139,19 @@ export function buildAssemblyRoot(
     api,
     slotRegistry,
     layoutState,
+    sidebarWidthSettingsWriter,
     theme,
     themeRegistry,
     themesReadyPromise,
     themeService,
     themeConfigSync,
+    sidebarWidthConfigSync,
     themeSelectCommand,
     openFileCommand,
     tabCommands,
     extensionsReloadCommand,
     keybindingsCommands,
+    sidebarWidthCommands,
     workspaceRoot,
     keymap,
     applyKittyKeyboardVerdict,
@@ -1309,6 +1390,11 @@ function createDefaultShutdownScheduler(): ChordScheduler {
 export interface ShutdownRoot {
   log: Pick<HostLog, "append">;
   layoutState: Pick<LayoutStateService, "flush">;
+  /** Flushes any still-pending debounced `workbench.sidebarWidth` write
+   * (Issue #105, `ui/sidebarWidthSettingsWriter.ts`'s `flush()`) — same
+   * "cancel the pending timer, write now" shutdown reasoning as
+   * `layoutState.flush()` above. */
+  sidebarWidthSettingsWriter: Pick<SidebarWidthSettingsWriter, "flush">;
   config: Pick<Disposable, "dispose">;
   chordPendingIndicator: Pick<Disposable, "dispose">;
   chordMachine: Pick<Disposable, "dispose">;
@@ -1322,12 +1408,14 @@ export interface ShutdownRoot {
   editorSession: Pick<Disposable, "dispose">;
   editorLangIdSync: Pick<Disposable, "dispose">;
   themeConfigSync: Pick<Disposable, "dispose">;
+  sidebarWidthConfigSync: Pick<Disposable, "dispose">;
   keybindingPresetConfigSync: Pick<Disposable, "dispose">;
   themeSelectCommand: Pick<Disposable, "dispose">;
   openFileCommand: Pick<Disposable, "dispose">;
   tabCommands: Pick<Disposable, "dispose">;
   extensionsReloadCommand: Pick<Disposable, "dispose">;
   keybindingsCommands: Pick<Disposable, "dispose">;
+  sidebarWidthCommands: Pick<Disposable, "dispose">;
   modalCommands: Pick<Disposable, "dispose">;
   modalService: Pick<Disposable, "dispose">;
   windowMessageService: Pick<Disposable, "dispose">;
@@ -1405,6 +1493,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
   async function performShutdown(): Promise<void> {
     try {
       await root.layoutState.flush();
+      await root.sidebarWidthSettingsWriter.flush();
       root.config.dispose();
       root.chordPendingIndicator.dispose();
       root.chordMachine.dispose();
@@ -1412,6 +1501,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.editorSession.dispose();
       root.editorLangIdSync.dispose();
       root.themeConfigSync.dispose();
+      root.sidebarWidthConfigSync.dispose();
       root.keybindingPresetConfigSync.dispose();
       root.clipboardConfigSync.dispose();
       // Issue #98 Phase 5: the pty service owns a REAL child process
@@ -1428,6 +1518,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.tabCommands.dispose();
       root.extensionsReloadCommand.dispose();
       root.keybindingsCommands.dispose();
+      root.sidebarWidthCommands.dispose();
       root.modalCommands.dispose();
       root.modalService.dispose();
       root.windowMessageService.dispose();
@@ -1621,6 +1712,14 @@ export async function runTecode(
   // initial application.
   root.applyConfiguredKeybindingPreset();
 
+  // Apply the ACTUAL configured `workbench.sidebarWidth` now that
+  // `config.ready` has settled (Issue #105) — same "schema default only,
+  // until ready" reasoning as `keybindings.preset` above
+  // (`ui/sidebarWidthConfigSync.ts`'s TSDoc), and likewise no
+  // `themesReadyPromise`-equivalent second call needed: a sidebar width
+  // never depends on anything `loadExtensions`/discovery resolves.
+  applyConfiguredSidebarWidth(root.config, root.layoutState);
+
   // Apply the ACTUAL configured `clipboard.useSystemClipboard` now that
   // `config.ready` has settled (Issue #91) — same "schema default only,
   // until ready" reasoning as `keybindings.preset` above
@@ -1669,6 +1768,15 @@ export async function runTecode(
     terminal: terminalKeyRoutingDeps,
     onEditorFocusHandleChange: (focus) => {
       focusEditorHandle = focus;
+    },
+    // Issue #105: a sidebar border-drag COMMIT (drag-end) reaches here as a
+    // final, already-clamped width (`shell.tsx`'s `Shell`'s
+    // `onSidebarWidthCommit` TSDoc) — persisted the same way a
+    // `workbench.action.increase/decreaseSidebarWidth` keypress is
+    // (`sidebarWidthCommands.ts`'s handlers), through the SAME writer, so
+    // both paths share its debounce/serialization.
+    onSidebarWidthCommit: (width) => {
+      root.sidebarWidthSettingsWriter.write(width);
     },
     modalService: root.modalService,
     // Issue #91: the terminal's OSC 52 write function is handed to

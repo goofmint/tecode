@@ -56,6 +56,22 @@ export const DEFAULT_COLOR_THEME_ID = "tecode.dark-modern";
  */
 export const DEFAULT_KEYBINDING_PRESET = "default";
 
+/**
+ * `workbench.sidebarWidth`'s default value (Issue #105) — DUPLICATED here
+ * as a literal number for the SAME reason {@link DEFAULT_COLOR_THEME_ID}
+ * above duplicates `themes-default`'s theme id: `layoutState.ts`'s
+ * `DEFAULT_LAYOUT_STATE.sidebarWidth` is the real source of truth (`ui/` has
+ * no existing import edge into `config/`, and introducing one for a single
+ * literal number is not worth it, matching `DEFAULT_KEYBINDING_PRESET`'s
+ * identical "no new cross-module edge for one literal" reasoning one
+ * paragraph up). Kept in sync by hand;
+ * `sidebarWidthCommands.test.ts`/`coreDefaults.test.ts` assert this literal
+ * equals `layoutState.ts`'s real `DEFAULT_LAYOUT_STATE.sidebarWidth`, so a
+ * drift between the two fails a test rather than silently resolving to the
+ * wrong default.
+ */
+export const DEFAULT_SIDEBAR_WIDTH = 30;
+
 /** The narrow slice of `ConfigService` {@link registerCoreConfiguration}
  * needs — the same shape as `host/registration.ts`'s `ConfigRegistrar`,
  * duplicated locally rather than imported so `config/` never depends on
@@ -90,7 +106,18 @@ export interface CoreConfigRegistrar {
  * (`ui/themeConfigSync.ts`'s wiring pattern). An unrecognized value
  * degrades to no preset with a logged warning
  * (`resolveKeybindingPreset`'s own TSDoc) rather than throwing or
- * crashing startup. */
+ * crashing startup; `workbench.sidebarWidth` (Issue #105, Req 6.4)
+ * duplicates `layoutState.ts`'s own `sidebarWidth` persistence as a
+ * user-editable setting — a hand-edited number here is floor-clamped
+ * (`sidebarWidth.ts`'s `clampSidebarWidth`) and applied to
+ * `LayoutStateService` by `ui/sidebarWidthConfigSync.ts`'s
+ * `applyConfiguredSidebarWidth`/`wireSidebarWidthConfigSync`, wired at
+ * `main.ts`'s composition root exactly like `workbench.colorTheme`; a
+ * resize commit (a border drag's end, or the
+ * `workbench.action.increase/decreaseSidebarWidth` commands,
+ * `ui/sidebarWidthCommands.ts`) writes the result back here via
+ * `ui/sidebarWidthSettingsWriter.ts`, so the two stay in sync in both
+ * directions. */
 export const CORE_CONFIGURATION: ConfigurationContribution = {
   title: "Editor",
   properties: {
@@ -119,6 +146,12 @@ export const CORE_CONFIGURATION: ConfigurationContribution = {
       default: DEFAULT_KEYBINDING_PRESET,
       description:
         'A bundled keybinding scheme to layer over the defaults: "default" (none), "emacs", or "windows".',
+    },
+    "workbench.sidebarWidth": {
+      type: "number",
+      default: DEFAULT_SIDEBAR_WIDTH,
+      description:
+        "The sidebar's width in columns. Also adjustable by dragging the sidebar's right border, or the workbench.action.increase/decreaseSidebarWidth commands (Issue #105).",
     },
   },
 };

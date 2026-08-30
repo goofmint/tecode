@@ -75,9 +75,9 @@ function createFakeScheduler(): ChordScheduler & { fire(): void } {
 function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {}): {
   root: ShutdownRoot;
   log: ReturnType<typeof createHostLog>;
-  calls: { flush: number; dispose: number; disposeAll: number };
+  calls: { flush: number; sidebarWidthFlush: number; dispose: number; disposeAll: number };
 } {
-  const calls = { flush: 0, dispose: 0, disposeAll: 0 };
+  const calls = { flush: 0, sidebarWidthFlush: 0, dispose: 0, disposeAll: 0 };
   const log = createHostLog();
   const disposable = (): { dispose: () => void } => ({
     dispose: () => {
@@ -93,6 +93,11 @@ function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {})
           calls.flush++;
         }),
     },
+    sidebarWidthSettingsWriter: {
+      flush: async () => {
+        calls.sidebarWidthFlush++;
+      },
+    },
     config: disposable(),
     chordPendingIndicator: disposable(),
     chordMachine: disposable(),
@@ -100,6 +105,7 @@ function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {})
     editorSession: disposable(),
     editorLangIdSync: disposable(),
     themeConfigSync: disposable(),
+    sidebarWidthConfigSync: disposable(),
     keybindingPresetConfigSync: disposable(),
     clipboardConfigSync: disposable(),
     terminal: disposable(),
@@ -109,6 +115,7 @@ function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {})
     tabCommands: disposable(),
     extensionsReloadCommand: disposable(),
     keybindingsCommands: disposable(),
+    sidebarWidthCommands: disposable(),
     modalCommands: disposable(),
     modalService: disposable(),
     windowMessageService: disposable(),
@@ -374,7 +381,8 @@ test("createShutdown's returned function is idempotent: destroy-then-signal runs
   await Promise.all([destroyCall, signalCall]);
 
   expect(calls.flush).toBe(1);
-  expect(calls.dispose).toBe(22); // one per disposable field in ShutdownRoot
+  expect(calls.sidebarWidthFlush).toBe(1);
+  expect(calls.dispose).toBe(24); // one per disposable field in ShutdownRoot
   expect(calls.disposeAll).toBe(1);
 });
 
@@ -390,7 +398,8 @@ test("createShutdown's returned function is idempotent: signal-then-destroy runs
   await Promise.all([signalCall, destroyCall]);
 
   expect(calls.flush).toBe(1);
-  expect(calls.dispose).toBe(22);
+  expect(calls.sidebarWidthFlush).toBe(1);
+  expect(calls.dispose).toBe(24);
   expect(calls.disposeAll).toBe(1);
 
   // A THIRD call, after the sequence has already fully settled, is still
@@ -398,7 +407,8 @@ test("createShutdown's returned function is idempotent: signal-then-destroy runs
   // from as many quit paths as ever call it).
   await shutdown();
   expect(calls.flush).toBe(1);
-  expect(calls.dispose).toBe(22);
+  expect(calls.sidebarWidthFlush).toBe(1);
+  expect(calls.dispose).toBe(24);
   expect(calls.disposeAll).toBe(1);
 });
 

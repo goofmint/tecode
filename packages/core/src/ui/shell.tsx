@@ -53,7 +53,7 @@
 
 import { basename } from "node:path";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
-import { CliRenderEvents } from "@opentui/core";
+import { CliRenderEvents, type MouseEvent as OpenTuiMouseEvent } from "@opentui/core";
 import { useAppContext } from "@opentui/react";
 import type { Disposable, SlotId, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
@@ -72,6 +72,7 @@ import type { FocusableNode } from "./focus";
 import { useFocusContextService, useFocusTracking } from "./focus";
 import type { LayoutState, LayoutStateService } from "./layoutState";
 import { INPUT_BOX_FOCUS_CONTEXT_KEY, QUICK_PICK_FOCUS_CONTEXT_KEY } from "./modalCommands";
+import { clampSidebarWidth } from "./sidebarWidth";
 import type { SidebarPair, SlotRegistry, SlotViewEntry } from "./slotRegistry";
 import { toColorInput, useTheme } from "./theme";
 import { computeEditorViewportHeight, type EditorAreaChrome } from "./viewport";
@@ -250,6 +251,16 @@ export interface ActivityBarProps {
   onSelectView: (id: string) => void;
 }
 
+/** Columns `ActivityBar` occupies — fixed, never configurable (Req 6.1,
+ * 6.2). Exported (Issue #105) so `sidebarWidth.ts`'s own hand-kept-in-sync
+ * duplicate (`ACTIVITY_BAR_WIDTH_FOR_CAP`, that module's TSDoc explains why
+ * it cannot import this directly) has something real to be tested against,
+ * and so `Sidebar`'s own drag-resize math below (its own TSDoc) can anchor
+ * global mouse-event coordinates to "the sidebar's own left edge" without
+ * re-deriving the activity bar's width as a second literal in this same
+ * file. */
+export const ACTIVITY_BAR_WIDTH = 4;
+
 /** The activity bar (Req 6.1, 6.2): one icon per `activityBar.item` ↔
  * `sidebar.view` pair, highlighting the active one. */
 export function ActivityBar(props: ActivityBarProps): ReactNode {
@@ -258,7 +269,7 @@ export function ActivityBar(props: ActivityBarProps): ReactNode {
 
   return (
     <box
-      style={{ flexDirection: "column", width: 4 }}
+      style={{ flexDirection: "column", width: ACTIVITY_BAR_WIDTH }}
       backgroundColor={toColorInput(theme.colors["activityBar.background"])}
     >
       {pairs.map((pair) => {
@@ -300,6 +311,22 @@ export interface SidebarProps {
   visible: boolean;
   width: number;
   activeView: string | undefined;
+  /** Called on every `onMouseDrag` tick while the user drags the sidebar's
+   * own right border (Issue #105, this component's TSDoc's "Drag-resizing
+   * the right border") — NOT a commit. Receives the RAW, unclamped desired
+   * width computed from the drag's global x; `Shell` is the one call site
+   * with a live terminal width to clamp against (`sidebarWidth.ts`'s
+   * TSDoc), so this component never clamps anything itself. Omitted:
+   * dragging the border does nothing, matching every other
+   * optional-callback fallback in this module. */
+  onWidthDrag?: (desiredWidth: number) => void;
+  /** Called exactly once when a border drag ends (`onMouseDragEnd`) — the
+   * COMMIT point (`sidebarWidthSettingsWriter.ts`'s "debounced, commit-only"
+   * contract): unlike every {@link onWidthDrag} tick during the drag, this
+   * one is expected to also persist the final width to
+   * `workbench.sidebarWidth`'s `settings.json`. Same raw-width contract as
+   * {@link onWidthDrag}. */
+  onWidthDragEnd?: (desiredWidth: number) => void;
 }
 
 /** Columns `Sidebar`'s own `border={["right"]}` occupies (Issue #104 Phase
@@ -327,11 +354,43 @@ const SIDEBAR_BORDER_WIDTH = 1;
  * #104's root cause) — and since `layout.sidebarWidth` flows through React
  * state, a live width change re-renders `Sidebar` and this `viewProps`
  * reaches `Tree` on the very next render, the live-reflow path Issue #105
- * needs. */
+ * needs.
+ *
+ * **Drag-resizing the right border (Issue #105)**: `@opentui/core`'s
+ * `MouseEvent.x`/`.y` are GLOBAL terminal columns/rows, not
+ * renderable-relative ones — verified directly against the vendored
+ * `@opentui/core@0.1.107` bundle's own `ScrollBar` drag handling (its
+ * `calculateDragOffsetVirtual`/`updateValueFromMouseDirect` both compare
+ * `event.x`/`.y` straight against `this.x`/`.y`, the renderable's OWN
+ * absolute position, with no translation step), so this component can
+ * compute "which column is being dragged to" with pure arithmetic instead
+ * of a ref-measured offset. This box spans columns
+ * `[ACTIVITY_BAR_WIDTH, ACTIVITY_BAR_WIDTH + props.width)`, so its own
+ * `border={["right"]}` — the resize handle — is drawn on column
+ * `ACTIVITY_BAR_WIDTH + props.width - 1`, the box's last column;
+ * `onMouseDown` records whether the press landed exactly there
+ * (`draggingBorderRef`), and only then do subsequent `onMouseDrag`/
+ * `onMouseDragEnd` calls translate the drag's current global x back into a
+ * desired width (`event.x - ACTIVITY_BAR_WIDTH + 1`, the inverse of the
+ * border-column formula) and forward it to `props.onWidthDrag`/
+ * `onWidthDragEnd` — RAW and unclamped; `Shell` owns the actual clamp
+ * (`sidebarWidth.ts`'s TSDoc) since it is the one caller with a live
+ * terminal width to clamp against. A press that starts anywhere else in
+ * the sidebar (a tree row, its title) leaves `draggingBorderRef` `false`,
+ * so an ordinary click/drag over the sidebar's own content never resizes
+ * anything. `onMouseDragEnd` is the COMMIT signal
+ * (`sidebarWidthSettingsWriter.ts`'s "debounced, commit-only" contract) —
+ * `Shell`'s own `onWidthDragEnd` handler both applies the final clamped
+ * width AND persists it, unlike every intermediate `onWidthDrag` tick. */
 export function Sidebar(props: SidebarProps): ReactNode {
   const theme = useTheme();
   const pairs = useSidebarPairs(props.slotRegistry);
   const focusRef = useFocusTracking("sidebarFocus");
+  // Whether the CURRENTLY in-progress mouse gesture started exactly on the
+  // right border column (this component's TSDoc) — a plain ref, not state:
+  // it is read/written only from mouse-event callbacks, never rendered, so
+  // there is nothing for a re-render to reflect.
+  const draggingBorderRef = useRef(false);
 
   if (!props.visible) return null;
 
@@ -349,6 +408,26 @@ export function Sidebar(props: SidebarProps): ReactNode {
   const contentWidth = Math.max(0, props.width - SIDEBAR_BORDER_WIDTH);
   const viewProps = { width: contentWidth };
 
+  // This component's own TSDoc's "Drag-resizing the right border" — the
+  // border column this render draws on, and the raw-width formula every
+  // drag callback below inverts it with.
+  const borderColumn = ACTIVITY_BAR_WIDTH + props.width - 1;
+
+  function handleMouseDown(event: OpenTuiMouseEvent): void {
+    draggingBorderRef.current = event.x === borderColumn;
+  }
+
+  function handleMouseDrag(event: OpenTuiMouseEvent): void {
+    if (!draggingBorderRef.current) return;
+    props.onWidthDrag?.(event.x - ACTIVITY_BAR_WIDTH + 1);
+  }
+
+  function handleMouseDragEnd(event: OpenTuiMouseEvent): void {
+    if (!draggingBorderRef.current) return;
+    draggingBorderRef.current = false;
+    props.onWidthDragEnd?.(event.x - ACTIVITY_BAR_WIDTH + 1);
+  }
+
   return (
     <box
       ref={focusRef}
@@ -357,6 +436,9 @@ export function Sidebar(props: SidebarProps): ReactNode {
       backgroundColor={toColorInput(theme.colors["sideBar.background"])}
       border={["right"]}
       borderColor={toColorInput(theme.colors["sideBar.border"])}
+      onMouseDown={handleMouseDown}
+      onMouseDrag={handleMouseDrag}
+      onMouseDragEnd={handleMouseDragEnd}
     >
       {view?.title ? (
         <text fg={toColorInput(theme.colors["sideBarTitle.foreground"])}>{view.title}</text>
@@ -1009,6 +1091,18 @@ export interface ShellProps {
   /** Threaded straight through to `EditorArea` (Issue #98 Phase 3) — see
    * `EditorAreaProps.onEditorFocusHandleChange`'s TSDoc. */
   onEditorFocusHandleChange?: (focus: () => void) => void;
+  /** Called with the final, already-clamped width once a `Sidebar` border
+   * drag COMMITS (`Sidebar`'s own `onWidthDragEnd`, Issue #105) — the hook
+   * `main.ts`'s composition root uses to persist the drag's result to
+   * `workbench.sidebarWidth`'s `settings.json` via
+   * `sidebarWidthSettingsWriter.ts`, mirroring
+   * `renderShell.tsx`'s/`themeService.ts`'s "hand over a callback, not the
+   * service" convention for a core UI component reaching a composition-root
+   * concern it must never import directly. Optional: a caller/test that
+   * omits it still gets live, in-memory resizing via `updateLayout` — only
+   * the settings.json persistence step is skipped, matching every other
+   * optional-dependency fallback in this module. */
+  onSidebarWidthCommit?: (width: number) => void;
 }
 
 /** Re-renders the calling component whenever any currently-open document's
@@ -1085,6 +1179,44 @@ export function Shell(props: ShellProps): ReactNode {
   const pairs = useSidebarPairs(props.slotRegistry);
   const editorSession = props.editorSession;
   useEditorSessionVersion(editorSession);
+
+  // Issue #105 — the live terminal width, the one thing `coerceLayoutState`
+  // (`layoutState.ts`) never has available at load time (`sidebarWidth.ts`'s
+  // TSDoc's "Two independent floors/ceilings"): reused from `EditorArea`'s
+  // own `useLiveTerminalDimensions` above rather than a second, parallel
+  // subscription. `renderedSidebarWidth` is what actually reaches
+  // `<Sidebar>`'s `width` prop below — the render-site half of the clamp,
+  // independent of whatever `layout.sidebarWidth` itself currently holds
+  // (which may still be wider than the terminal, e.g. right after a resize
+  // shrank the terminal but before any new `update()` call has landed).
+  const terminalWidth = useLiveTerminalDimensions()?.width;
+  const renderedSidebarWidth = clampSidebarWidth(layout.sidebarWidth, terminalWidth);
+
+  // `Sidebar`'s own drag-resize callbacks (Issue #105, `Sidebar`'s TSDoc):
+  // both receive the RAW, unclamped desired width and apply
+  // `clampSidebarWidth` here, where `terminalWidth` is actually known.
+  // `onWidthDrag` (every intermediate tick) only updates in-memory layout
+  // state for live visual feedback; `onWidthDragEnd` (the drag's COMMIT)
+  // additionally calls `props.onSidebarWidthCommit` so the composition
+  // root's `sidebarWidthSettingsWriter` persists the final value —
+  // `sidebarWidthSettingsWriter.ts`'s "debounced, commit-only" contract is
+  // what makes it safe to call this on every drag-end without thrashing
+  // `settings.json`, but the important thing HERE is that it is never
+  // called from `onWidthDrag`.
+  const handleSidebarWidthDrag = useCallback(
+    (desiredWidth: number) => {
+      updateLayout({ sidebarWidth: clampSidebarWidth(desiredWidth, terminalWidth) });
+    },
+    [terminalWidth, updateLayout],
+  );
+  const handleSidebarWidthDragEnd = useCallback(
+    (desiredWidth: number) => {
+      const clamped = clampSidebarWidth(desiredWidth, terminalWidth);
+      updateLayout({ sidebarWidth: clamped });
+      props.onSidebarWidthCommit?.(clamped);
+    },
+    [terminalWidth, updateLayout, props.onSidebarWidthCommit],
+  );
 
   // Req 6.5, 6.6, design.md §8.1: tabs/active-tab/EditorState derived from
   // `props.documents` once it's given — see ShellProps' TSDoc for the
@@ -1199,8 +1331,10 @@ export function Shell(props: ShellProps): ReactNode {
         <Sidebar
           slotRegistry={props.slotRegistry}
           visible={layout.sidebarVisible}
-          width={layout.sidebarWidth}
+          width={renderedSidebarWidth}
           activeView={layout.activeView}
+          onWidthDrag={handleSidebarWidthDrag}
+          onWidthDragEnd={handleSidebarWidthDragEnd}
         />
         <EditorArea
           tabs={editorTabs}

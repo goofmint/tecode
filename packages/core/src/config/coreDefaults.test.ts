@@ -7,11 +7,13 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHostLog } from "../host/errors";
+import { DEFAULT_LAYOUT_STATE } from "../ui/layoutState";
 import { createConfigService, type ConfigServiceFs } from "./service";
 import {
   CORE_CONFIGURATION,
   DEFAULT_COLOR_THEME_ID,
   DEFAULT_KEYBINDING_PRESET,
+  DEFAULT_SIDEBAR_WIDTH,
   registerCoreConfiguration,
 } from "./coreDefaults";
 
@@ -43,15 +45,17 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     expect(config.get<boolean>("editor.insertSpaces")).toBe(true);
     expect(config.get<string>("workbench.colorTheme")).toBe(DEFAULT_COLOR_THEME_ID);
     expect(config.get<string>("keybindings.preset")).toBe(DEFAULT_KEYBINDING_PRESET);
+    expect(config.get<number>("workbench.sidebarWidth")).toBe(DEFAULT_SIDEBAR_WIDTH);
   });
 
-  test("CORE_CONFIGURATION declares exactly the five documented keys", () => {
+  test("CORE_CONFIGURATION declares exactly the six documented keys", () => {
     expect(Object.keys(CORE_CONFIGURATION.properties).sort()).toEqual([
       "editor.insertSpaces",
       "editor.lineNumbers",
       "editor.tabSize",
       "keybindings.preset",
       "workbench.colorTheme",
+      "workbench.sidebarWidth",
     ]);
     expect(CORE_CONFIGURATION.properties["editor.lineNumbers"]).toMatchObject({
       type: "boolean",
@@ -73,6 +77,19 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
       type: "string",
       default: DEFAULT_KEYBINDING_PRESET,
     });
+    expect(CORE_CONFIGURATION.properties["workbench.sidebarWidth"]).toMatchObject({
+      type: "number",
+      default: DEFAULT_SIDEBAR_WIDTH,
+    });
+  });
+
+  test("DEFAULT_SIDEBAR_WIDTH stays in sync with layoutState.ts's real DEFAULT_LAYOUT_STATE.sidebarWidth (Issue #105)", () => {
+    // These two constants are intentionally duplicated (no `config ->
+    // ui` import edge exists for one literal number, `coreDefaults.ts`'s
+    // own TSDoc) — this is the drift guard that duplication's TSDoc
+    // promises, mirroring `keybindingPresets.test.ts`'s identical
+    // `DEFAULT_KEYBINDING_PRESET`/`DEFAULT_KEYBINDING_PRESET_NAME` check.
+    expect(DEFAULT_SIDEBAR_WIDTH).toBe(DEFAULT_LAYOUT_STATE.sidebarWidth);
   });
 
   test("disposing the registration removes the defaults", async () => {

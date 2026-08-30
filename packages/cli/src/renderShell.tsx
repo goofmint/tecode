@@ -68,6 +68,16 @@ export interface ShellRenderDeps {
   themeService?: Pick<ThemeService, "get" | "onDidChange">;
   documents?: DocumentManager;
   config?: ConfigService;
+  /** Threaded straight through to `Shell`'s own `onSidebarWidthCommit` prop
+   * (Issue #105) — called with the final, already-clamped width once a
+   * sidebar border drag ends; `main.ts` wires this to
+   * `sidebarWidthSettingsWriter.write`, the same writer a
+   * `workbench.action.increase/decreaseSidebarWidth` keypress uses
+   * (`shell.tsx`'s `ShellProps.onSidebarWidthCommit` TSDoc). Optional: a
+   * caller/test that omits it keeps live, in-memory resizing working —
+   * only the `settings.json` persistence step is skipped, matching every
+   * other optional-dependency fallback in this module. */
+  onSidebarWidthCommit?: (width: number) => void;
   /** Owns the active document/`EditorState` from outside `Shell` (Task
    * 2.2, `ui/editorSession.ts`) — threaded straight through to `Shell`'s
    * own `editorSession` prop. Optional, matching `documents`/`config`
@@ -287,6 +297,7 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
           commands={deps.commands}
           documents={deps.documents}
           config={deps.config}
+          onSidebarWidthCommit={deps.onSidebarWidthCommit}
           editorSession={deps.editorSession}
           findService={deps.findService}
           highlightService={deps.highlightService}

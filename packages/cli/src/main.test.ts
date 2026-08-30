@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -124,8 +125,10 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     // extension/user layer. Task 3.5 adds `tab.*`'s own 5 default keys
     // (`ctrl+tab`, `ctrl+pagedown`, `ctrl+shift+tab`, `ctrl+pageup`,
     // `ctrl+w` — `ui/tabCommands.ts`'s `TAB_DEFAULT_KEYBINDINGS`) to the
-    // same layer: 4 + 5 = 9 distinct keys.
-    expect(root.keymap.getTable().entries().size).toBe(9);
+    // same layer, and Issue #105 adds `sidebarWidth`'s own 2 default keys
+    // (`ctrl+k [`, `ctrl+k ]` — `ui/sidebarWidthCommands.ts`'s
+    // `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS`): 4 + 5 + 2 = 11 distinct keys.
+    expect(root.keymap.getTable().entries().size).toBe(11);
     const resolvedModalClose = root.keymap
       .getTable()
       .lookup("escape", (key) => key === "quickPickFocus" || key === "inputBoxFocus");
@@ -242,6 +245,100 @@ test("buildAssemblyRoot's configDir makes a --config directory's keybindings.jso
     root!.themeSelectCommand.dispose();
     await rm(workspaceDir, { recursive: true, force: true });
     await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test("buildAssemblyRoot's configDir makes sidebarWidthSettingsWriter target the --config directory's settings.json (CodeRabbit PR #111 Finding 2)", async () => {
+  // Regression test: `sidebarWidthSettingsWriter` used to be built with no
+  // `path` at all, so it always fell back to `getUserSettingsPath()`
+  // regardless of `--config` — reads came from the override (via
+  // `ConfigService`'s own `settingsPath`) but writes went to the default
+  // user file, so a resize commit never survived a restart under
+  // `--config`. This proves the writer's actual disk write lands in
+  // `configDir`, not the real user settings path.
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const configDir = await mkdtemp(join(tmpdir(), "tecode-cli-config-"));
+  await writeFile(join(configDir, "settings.json"), JSON.stringify({ "editor.tabSize": 2 }), "utf8");
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { configDir });
+    await root.config.ready;
+
+    root.sidebarWidthSettingsWriter.write(77);
+    await root.sidebarWidthSettingsWriter.flush();
+
+    const written = JSON.parse(await readFile(join(configDir, "settings.json"), "utf8"));
+    expect(written["workbench.sidebarWidth"]).toBe(77);
+    // The pre-existing key from configDir's settings.json survived the
+    // text-splice, and the real user settings path was never touched.
+    expect(written["editor.tabSize"]).toBe(2);
+  } finally {
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test("buildAssemblyRoot's configDir makes layoutState persist to the --config directory's state.json (CodeRabbit PR #111)", async () => {
+  // Regression test for the sibling of the Finding 2 bug above:
+  // `layoutState` used to be built with no `path` at all, so it always
+  // fell back to `getUserLayoutStatePath()` regardless of `--config`.
+  //
+  // That is not a hypothetical. The chain that exposed it runs entirely
+  // through production wiring: a resize commit writes
+  // `workbench.sidebarWidth` into `configDir/settings.json`, `ConfigService`
+  // picks the edit up, `sidebarWidthConfigSync` turns it into a
+  // `layoutState.update({ sidebarWidth })`, and that update persisted into
+  // the developer's REAL `~/.config/tecode/state.json` — where it outlived
+  // the test run and made later, unrelated frame assertions render a
+  // ~77-column sidebar. So this test asserts BOTH halves: the override is
+  // written, and the default user path is left untouched.
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const configDir = await mkdtemp(join(tmpdir(), "tecode-cli-config-"));
+  // `getUserLayoutStatePath()` resolves against HOME/APPDATA, so point
+  // those at a scratch directory too: were the fix absent, the write would
+  // land there instead of in the real user config directory, and this test
+  // could still observe its absence from `configDir` without ever touching
+  // the machine running it.
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { configDir });
+    await root.config.ready;
+    await root.layoutState.ready;
+
+    root.layoutState.update({ sidebarWidth: 41 });
+    await root.layoutState.flush();
+
+    const persisted = JSON.parse(await readFile(join(configDir, "state.json"), "utf8"));
+    expect(persisted["sidebarWidth"]).toBe(41);
+    // The default user layout-state path was never written.
+    expect(existsSync(join(homeDir, ".config", "tecode", "state.json"))).toBe(false);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
   }
 });
 
@@ -845,7 +942,7 @@ test("applyKittyKeyboardVerdict(false) never throws even when the loader itself 
 
   try {
     await expect(root.applyKittyKeyboardVerdict(false)).resolves.toBeUndefined();
-    expect(root.keymap.getTable().entries().size).toBe(9); // unchanged: modal + tab defaults only
+    expect(root.keymap.getTable().entries().size).toBe(11); // unchanged: modal + tab + sidebarWidth defaults only
     expect(root.log.entries().some((e) => e.level === "error")).toBe(true);
   } finally {
     root.config.dispose();
