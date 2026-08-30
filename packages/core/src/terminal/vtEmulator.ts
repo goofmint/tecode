@@ -281,6 +281,16 @@ export function createVtEmulator(deps: VtEmulatorDeps): VtEmulator {
     // Re-read on every call rather than cached: `write`/`resize` both move
     // it.
     const buffer = term.buffer.active;
+    // Bounds-check `y` against the GRID, before the offset is applied.
+    // Without this, offsetting turns an out-of-range row into a valid
+    // buffer index: `getCell(x, -1)` would read the scrollback line just
+    // above the viewport, and (once scrollback navigation exists, putting
+    // `viewportY` below `baseY`) `y >= rows` would read one below it —
+    // both off-screen, both contradicting this method's documented
+    // "`undefined` when `(x, y)` is out of bounds". A bare `getLine(y)`
+    // used to get this right by accident, since a negative index is never
+    // a real buffer row.
+    if (y < 0 || y >= term.rows) return undefined;
     const line = buffer.getLine(buffer.viewportY + y);
     if (!line) return undefined;
     const cell = line.getCell(x, scratchCell);

@@ -191,3 +191,28 @@ test("after the child scrolls past the screen height, getCell reads the CURRENT 
 
   emulator.dispose();
 });
+
+test("getCell is bounds-checked against the grid, so an out-of-range row never leaks an off-screen scrollback line (Issue #102)", async () => {
+  // The viewport offset makes this a real hazard rather than a
+  // hypothetical: `getLine(viewportY + y)` turns a negative `y` into a
+  // perfectly valid buffer index pointing at the scrollback ABOVE the
+  // viewport. A bare `getLine(y)` returned `undefined` for it by accident.
+  const cols = 20;
+  const rows = 5;
+  const emulator = createVtEmulator({ cols, rows });
+  for (let i = 1; i <= 12; i++) await emulator.write(`LINE${i}\r\n`);
+
+  // Row -1 sits one line above the viewport — it holds "LINE8", which is
+  // exactly what must NOT come back.
+  expect(emulator.getCell(0, -1)).toBeUndefined();
+  expect(emulator.getCell(0, -100)).toBeUndefined();
+  // Row `rows` is one below the last on-screen row.
+  expect(emulator.getCell(0, rows)).toBeUndefined();
+  expect(emulator.getCell(0, 999)).toBeUndefined();
+
+  // The in-range rows still resolve, so the guard did not over-reach.
+  expect(emulator.getCell(0, 0)?.chars).toBe("L");
+  expect(emulator.getCell(0, rows - 1)).toBeDefined();
+
+  emulator.dispose();
+});
