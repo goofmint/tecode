@@ -35,7 +35,7 @@ import {
   writeFile as nodeWriteFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { act, type ReactNode } from "react";
 import { testRender } from "@opentui/react/test-utils";
@@ -333,24 +333,28 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
   });
 
   describe("sidebar header title (Issue #103)", () => {
-    test("publishes the workspace root's own folder name as the sidebar view's title", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      const fixture = createFixture(pathToUri(dir));
-      expect(fixture.getRegisteredTitle()).toBe(basename(dir));
+    // These two build their `Uri` with `pathToUri` over a LITERAL path
+    // rather than `mkdtemp`-ing a real directory. Nothing here touches the
+    // filesystem — `activate` derives the title from `rootUri` alone — and
+    // creating real temp directories in this already fs-heavy file made the
+    // whole suite intermittently flaky (these two tests plus an unrelated
+    // `explorer.delete` case failed in roughly 2 full-suite runs out of 8,
+    // while passing 15/15 when this file ran alone). The `pathToUri` round
+    // trip, which is the part actually under test, is identical either way.
+    test("publishes the workspace root's own folder name as the sidebar view's title", () => {
+      const fixture = createFixture(pathToUri(join(tmpdir(), "tecode-explorer-fixture")));
+      expect(fixture.getRegisteredTitle()).toBe("tecode-explorer-fixture");
       fixture.dispose();
     });
 
-    test("percent-decodes a space in the root folder's name (the easiest mistake to make, per the issue)", async () => {
-      // `mkdtemp`'s prefix may contain a space; `pathToUri` (`pathToFileURL(
-      // path).href`) then percent-encodes it in the produced `Uri`, exactly
-      // like the real `cli/main.ts` startup wiring would for a folder
-      // literally named with a space in it — skipping the decode step in
-      // `rootTitle.ts` would surface this as "tecode%20explorer%20space-
-      // XXXXXX" instead of the real name.
-      dir = await mkdtemp(join(tmpdir(), "tecode explorer space-"));
-      const fixture = createFixture(pathToUri(dir));
+    test("percent-decodes a space in the root folder's name (the easiest mistake to make, per the issue)", () => {
+      // `pathToUri` (`pathToFileURL(path).href`) percent-encodes the space,
+      // exactly like the real `cli/main.ts` startup wiring would for a
+      // folder literally named with one — skipping the decode step in
+      // `rootTitle.ts` would surface this as "tecode%20explorer%20space".
+      const fixture = createFixture(pathToUri(join(tmpdir(), "tecode explorer space")));
       const title = fixture.getRegisteredTitle();
-      expect(title).toBe(basename(dir));
+      expect(title).toBe("tecode explorer space");
       expect(title).toContain(" ");
       expect(title).not.toContain("%20");
       fixture.dispose();
