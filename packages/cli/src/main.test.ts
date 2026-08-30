@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -281,6 +282,63 @@ test("buildAssemblyRoot's configDir makes sidebarWidthSettingsWriter target the 
     root!.themeSelectCommand.dispose();
     await rm(workspaceDir, { recursive: true, force: true });
     await rm(configDir, { recursive: true, force: true });
+  }
+});
+
+test("buildAssemblyRoot's configDir makes layoutState persist to the --config directory's state.json (CodeRabbit PR #111)", async () => {
+  // Regression test for the sibling of the Finding 2 bug above:
+  // `layoutState` used to be built with no `path` at all, so it always
+  // fell back to `getUserLayoutStatePath()` regardless of `--config`.
+  //
+  // That is not a hypothetical. The chain that exposed it runs entirely
+  // through production wiring: a resize commit writes
+  // `workbench.sidebarWidth` into `configDir/settings.json`, `ConfigService`
+  // picks the edit up, `sidebarWidthConfigSync` turns it into a
+  // `layoutState.update({ sidebarWidth })`, and that update persisted into
+  // the developer's REAL `~/.config/tecode/state.json` — where it outlived
+  // the test run and made later, unrelated frame assertions render a
+  // ~77-column sidebar. So this test asserts BOTH halves: the override is
+  // written, and the default user path is left untouched.
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const configDir = await mkdtemp(join(tmpdir(), "tecode-cli-config-"));
+  // `getUserLayoutStatePath()` resolves against HOME/APPDATA, so point
+  // those at a scratch directory too: were the fix absent, the write would
+  // land there instead of in the real user config directory, and this test
+  // could still observe its absence from `configDir` without ever touching
+  // the machine running it.
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { configDir });
+    await root.config.ready;
+    await root.layoutState.ready;
+
+    root.layoutState.update({ sidebarWidth: 41 });
+    await root.layoutState.flush();
+
+    const persisted = JSON.parse(await readFile(join(configDir, "state.json"), "utf8"));
+    expect(persisted["sidebarWidth"]).toBe(41);
+    // The default user layout-state path was never written.
+    expect(existsSync(join(homeDir, ".config", "tecode", "state.json"))).toBe(false);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
   }
 });
 

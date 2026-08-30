@@ -262,3 +262,24 @@ describe("createSidebarWidthSettingsWriter (Issue #105)", () => {
     expect(messages).toHaveLength(1);
   });
 });
+
+test("appending into an EMPTY object emits no trailing comma — a fresh install's first resize must not write invalid JSON", () => {
+  // Found by the real thing happening: a mutation run wrote into an empty
+  // `~/.config/tecode/settings.json` and produced
+  // `{"workbench.sidebarWidth": 77,}`. `parseJsonc` tolerates a trailing
+  // comma, so every round trip through this codebase's own reader looked
+  // fine — but `JSON.parse`, an editor, or any stricter tool does not, and
+  // this is exactly the path a first-ever resize takes on a fresh install.
+  for (const input of ["{}\n", "{}", "{\n}\n", "{\n  // only a comment\n}\n"]) {
+    const out = applySidebarWidthSetting(input, 77);
+    expect(out).not.toContain(",}");
+    expect(out).not.toContain(",\n}");
+    // Strict JSON, once comments are stripped the way a reader would.
+    expect(() => JSON.parse(out.replace(/^\s*\/\/.*$/gm, ""))).not.toThrow();
+    expect(JSON.parse(out.replace(/^\s*\/\/.*$/gm, ""))).toEqual({ "workbench.sidebarWidth": 77 });
+  }
+
+  // A non-empty object still gets its separating comma.
+  const withSibling = applySidebarWidthSetting('{\n  "editor.tabSize": 2\n}\n', 77);
+  expect(JSON.parse(withSibling)).toEqual({ "workbench.sidebarWidth": 77, "editor.tabSize": 2 });
+});

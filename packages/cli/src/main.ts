@@ -815,6 +815,22 @@ export function buildAssemblyRoot(
   const keybindingsPath = deps.configDir
     ? joinPath(deps.configDir, "keybindings.json")
     : undefined;
+  // `state.json` is derived from the SAME `--config <dir>` (Issue #105,
+  // CodeRabbit PR #111): persisted layout state lives in the user config
+  // directory alongside `settings.json`/`keybindings.json`
+  // (`host/paths.ts`'s `getUserLayoutStatePath` is literally
+  // `join(getUserConfigDir(), "state.json")`), so a flag that redirects
+  // that directory has to redirect all three or it redirects none of them
+  // coherently. Leaving this one out is not merely inconsistent, it is
+  // OBSERVABLY wrong in both directions: a `--config` user's sidebar
+  // width would round-trip through the override's `settings.json` but
+  // persist to the DEFAULT `state.json`, and — the way this was actually
+  // found — any test that builds an `AssemblyRoot` under a temp
+  // `configDir` and lets a `workbench.sidebarWidth` change reach
+  // `sidebarWidthConfigSync` writes into the developer's REAL
+  // `~/.config/tecode/state.json`, where it survives to break unrelated
+  // rendering assertions on the next run.
+  const layoutStatePath = deps.configDir ? joinPath(deps.configDir, "state.json") : undefined;
   const config = createConfigService({
     log,
     sink,
@@ -865,7 +881,7 @@ export function buildAssemblyRoot(
 
   const context = createContextService();
 
-  const layoutState = createLayoutStateService({ log, sink });
+  const layoutState = createLayoutStateService({ log, sink, path: layoutStatePath });
   // Persists a sidebar-resize COMMIT to `workbench.sidebarWidth` (Issue
   // #105, `ui/sidebarWidthSettingsWriter.ts`'s TSDoc) — built here,
   // alongside `layoutState`, since both back the same feature and neither

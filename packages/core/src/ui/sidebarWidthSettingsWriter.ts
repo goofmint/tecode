@@ -211,9 +211,20 @@ export function applySidebarWidthSetting(text: string, width: number): string {
   if (openBrace === -1) {
     return `{\n  "workbench.sidebarWidth": ${encodedWidth}\n}\n`;
   }
+  // The trailing comma is only correct when a property actually FOLLOWS
+  // the inserted one. An empty object (`{}`, or `{}` with only whitespace/
+  // comments inside — the shape a fresh install's `settings.json` has, or
+  // no file at all) would otherwise become `{"workbench.sidebarWidth": 30,}`
+  // — invalid JSON, written into the user's settings by their very first
+  // resize. `parseJsonc` happens to tolerate it, so this stayed invisible
+  // to every round trip through this codebase's own reader; anything
+  // stricter (an editor, a linter, `JSON.parse`) does not.
+  const rest = stripComments(text.slice(openBrace + 1));
+  const objectIsEmpty = rest.trimStart().startsWith("}");
+  const separator = objectIsEmpty ? "" : ",";
   return (
     text.slice(0, openBrace + 1) +
-    `\n  "workbench.sidebarWidth": ${encodedWidth},` +
+    `\n  "workbench.sidebarWidth": ${encodedWidth}${separator}` +
     text.slice(openBrace + 1)
   );
 }
