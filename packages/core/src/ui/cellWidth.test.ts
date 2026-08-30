@@ -219,3 +219,30 @@ describe("truncateToWidth (Issue #104: Tree row wrapping)", () => {
     }
   });
 });
+
+test("truncateToWidth: a tab-bearing ellipsis is measured where it lands, so the result never overflows (Issue #104 review)", () => {
+  // The reviewer's counterexample. `"xx\t"` is 3 cells at column 0 but 5 at
+  // column 3, so measuring the ellipsis once up front understated it and the
+  // result came back 8 cells wide against a maxWidth of 6.
+  const out = truncateToWidth("abcdefg", 6, "xx\t");
+  expect(cellWidth(out)).toBeLessThanOrEqual(6);
+});
+
+test("truncateToWidth: startColumn shifts tab stops, so a label after an indent is not over-measured (Issue #104 review)", () => {
+  // A tab at column 0 advances 4 cells (to stop 4); the same tab at column 3
+  // advances only 1 (to the same stop). Measuring a label from column 0 when
+  // it actually renders at column 3 therefore over-measures it and truncates
+  // a label that would have fitted.
+  // At column 0 the tab advances 3 cells (1 -> stop 4); starting at column 3
+  // the same tab advances 4 (4 -> stop 8), so LESS of the label fits — the
+  // direction depends on where the tab lands, which is exactly why the start
+  // column has to be threaded through rather than assumed to be 0.
+  expect(truncateToWidth("a\tbcdef", 8, "…", 4, 0)).toBe("a\tbcd…");
+  expect(truncateToWidth("a\tbcdef", 8, "…", 4, 3)).toBe("a\tbc…");
+});
+
+test("truncateToWidth: an ellipsis that cannot fit at all yields the empty string, never a partial one", () => {
+  expect(truncateToWidth("abc", 1, "..")).toBe("");
+  expect(truncateToWidth("abc", 2, "..")).toBe("..");
+});
+

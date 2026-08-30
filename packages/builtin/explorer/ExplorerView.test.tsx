@@ -187,6 +187,29 @@ describe("ExplorerView (Task 3.3, Req 11.2)", () => {
     expect(lastProps()?.["width"]).toBeUndefined();
   });
 
+  test("a registration-time width survives a render that carries none, and a render-time width still wins (Issue #104 review)", async () => {
+    // `ExplorerViewProps.width` is optional but real, so a caller MAY fix a
+    // width at `activate()` time. The wrapper spreads `props` and then sets
+    // `width` explicitly — writing `width={width}` there would overwrite the
+    // registered value with `undefined` on every render that carries none,
+    // silently discarding it.
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const component = createExplorerViewComponent({ store, Tree, onOpenFile: () => {}, width: 12 });
+    const Component = component as unknown as (p: Record<string, unknown>) => ReactNode;
+
+    const bare = await testRender(<Component />, { width: 30, height: 5 });
+    await bare.renderOnce();
+    expect(lastProps()?.["width"]).toBe(12);
+
+    // A live width from Sidebar's viewProps still takes precedence — it is
+    // the one that tracks the sidebar's actual size.
+    const live = await testRender(<Component width={20} />, { width: 30, height: 5 });
+    await live.renderOnce();
+    expect(lastProps()?.["width"]).toBe(20);
+  });
+
   test("onActivate on a DIRECTORY node does NOT call onOpenFile", async () => {
     const store = createStore({ src: { "a.ts": null } }, ROOT);
     await store.reload(ROOT);

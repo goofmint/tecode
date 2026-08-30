@@ -68,6 +68,7 @@ export type {
   EditorNamespace,
   SlotId,
   ComponentType,
+  RegisterViewOptions,
   UiNamespace,
   ConfigChangeEvent,
   ConfigNamespace,
@@ -93,5 +94,13 @@ export type {
  * requested minor version (an omitted minor is treated as `0`). An
  * incompatible extension is skipped at registration with a surfaced error
  * rather than crashing the host.
+ *
+ * **1.0 -> 1.1** (Issue #103): `UiNamespace.registerView` grew a 4th,
+ * optional `options?: RegisterViewOptions` parameter (a view publishing
+ * its own live title). Purely additive — every extension manifest still
+ * declaring `apiVersion: "1.0"` stays compatible (`checkApiVersionCompatibility`
+ * only requires the HOST's minor to be `>=` the requested one) and every
+ * existing 3-argument `registerView` call keeps compiling and behaving
+ * exactly as before; only a minor bump, not a major one.
  */
-export const API_VERSION = "1.0";
+export const API_VERSION = "1.1";

@@ -171,6 +171,53 @@ describe("Shell — registering a view re-renders its region (Req 6.3, design.md
     expect(captureCharFrame()).toContain("Explorer Panel Content");
   });
 
+  test("re-registering a sidebar.view with a new title updates the header without a restart (Issue #103, Req 6.2)", async () => {
+    // The generic mechanism `explorer`'s "show the open folder's name"
+    // (Issue #103) is built on: a view publishes a live title via
+    // `registerView`'s `options.title`, and `Sidebar` (this module) picks
+    // it up reactively — through the SAME `SlotRegistry.onDidChange`
+    // subscription `useSidebarPairs` already holds, no separate channel,
+    // no remounting the Shell or the view's own component.
+    const { slotRegistry, layoutState, context, commands } = createHarness();
+    await layoutState.ready;
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} commands={commands} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => { await renderOnce(); });
+
+    act(() => {
+      slotRegistry.registerView("activityBar.item", "explorer", noopComponent, {
+        title: "Explorer",
+        icon: "E",
+      });
+      slotRegistry.registerView("sidebar.view", "explorer", noopComponent, { title: "Explorer" });
+    });
+    await act(async () => {
+      await commands.execute("workbench.view.explorer");
+    });
+    await act(async () => { await renderOnce(); });
+
+    expect(captureCharFrame()).toContain("Explorer");
+    expect(captureCharFrame()).not.toContain("my-project");
+
+    // Same (slot, id) pair, a new title, no unregister/re-register of the
+    // component itself — exactly the "call registerView again" update path
+    // `@tecode/api`'s `RegisterViewOptions.title` TSDoc documents.
+    act(() => {
+      slotRegistry.registerView("sidebar.view", "explorer", noopComponent, { title: "my-project" });
+    });
+    await act(async () => { await renderOnce(); });
+
+    expect(captureCharFrame()).toContain("my-project");
+    expect(captureCharFrame()).not.toContain("Explorer");
+  });
+
   test("registering a statusBar.item re-renders the StatusBar", async () => {
     const { slotRegistry, layoutState, context } = createHarness();
     await layoutState.ready;

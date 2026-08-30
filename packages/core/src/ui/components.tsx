@@ -468,9 +468,16 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
         // (TreeProps.width's own TSDoc) — `props.width` absent keeps the
         // pre-#104 behavior of handing the whole row string to `<text>`
         // unbounded, wrapping exactly as before.
+        // The prefix the label is drawn after: `"  ".repeat(depth)` plus the
+        // 2-column glyph. Subtracted from the row width for the budget AND
+        // passed as the label's start column, so a tab inside a label
+        // advances to the stop it will really land on rather than one
+        // measured from column 0 (which would over-measure it and truncate
+        // a label that fits).
+        const prefixWidth = 2 * node.depth + 2;
         const label =
           props.width !== undefined
-            ? truncateToWidth(node.label, props.width - 2 * node.depth - 2)
+            ? truncateToWidth(node.label, props.width - prefixWidth, "…", undefined, prefixWidth)
             : node.label;
         return (
           <text

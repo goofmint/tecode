@@ -160,7 +160,12 @@ export function ExplorerView(props: ExplorerViewProps): ReactNode {
  */
 export function createExplorerViewComponent(props: ExplorerViewProps): ComponentType {
   return (rawProps: Record<string, unknown>) => {
+    // `?? props.width`, not a bare `width={width}`: the spread above already
+    // carries a registration-time `width` if the caller supplied one, and
+    // overwriting it with `undefined` on every render where `rawProps` has
+    // none would silently discard it. A real render-time width still wins —
+    // it is the live one.
     const width = typeof rawProps["width"] === "number" ? rawProps["width"] : undefined;
-    return <ExplorerView {...props} width={width} />;
+    return <ExplorerView {...props} width={width ?? props.width} />;
   };
 }
