@@ -237,6 +237,129 @@ describe("createEditorInputRouter (Task 2.2, Req 4.6, 6.6, design.md §6.1, §8.
     expect(document.getLine(0)).toBe("abc");
   });
 
+  test("a single-code-point Japanese character inserts (Issue #110 regression guard)", () => {
+    // Guards against a regression in the OPPOSITE direction: an
+    // over-eager fix for Issue #110 that special-cased "more than one code
+    // point" without preserving the single-code-point case.
+    const document = createTestDocument("ac");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "あ", sequence: "あ" }))).toBe(true);
+    expect(document.getLine(0)).toBe("aあc");
+    expect(session.currentSelections()).toEqual([cursorAt(0, 2)]);
+  });
+
+  test("Issue #110: a multi-code-point IME commit inserts as text, with the cursor after it", () => {
+    const document = createTestDocument("ac");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "日本語", sequence: "日本語" }))).toBe(true);
+    expect(document.getLine(0)).toBe("a日本語c");
+    expect(session.currentSelections()).toEqual([cursorAt(0, 4)]);
+  });
+
+  test("Issue #110: an IME commit is applied as ONE document.applyEdits call (one undo entry)", () => {
+    const document = createTestDocument("ac");
+    let applyEditsCallCount = 0;
+    const originalApplyEdits = document.applyEdits.bind(document);
+    document.applyEdits = (edits, opts) => {
+      applyEditsCallCount++;
+      originalApplyEdits(edits, opts);
+    };
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    router.routeKeyEvent(keyOf({ name: "日本語", sequence: "日本語" }));
+
+    expect(applyEditsCallCount).toBe(1);
+    expect(document.getLine(0)).toBe("a日本語c");
+
+    const restoredSelections = document.undo();
+    expect(document.getLine(0)).toBe("ac");
+    expect(restoredSelections).toEqual([cursorAt(0, 1)]);
+    // A second undo has nothing left to do — the whole IME commit really
+    // was ONE undo entry, not one per code point.
+    expect(document.undo()).toBeUndefined();
+  });
+
+  test("Issue #110: an IME commit at two cursors lands correctly at both", () => {
+    const document = createTestDocument("a\nc");
+    const session = createFakeSession(document, [cursorAt(0, 1), cursorAt(1, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "日本語", sequence: "日本語" }))).toBe(true);
+    expect(document.getLine(0)).toBe("a日本語");
+    expect(document.getLine(1)).toBe("c日本語");
+    expect(session.currentSelections()).toEqual([cursorAt(0, 4), cursorAt(1, 4)]);
+  });
+
+  test("Issue #110: an IME commit in the shape @opentui/core actually produces (name: \"\") inserts", () => {
+    // The other Issue #110 tests pass `name: "日本語"`, which is convenient
+    // but is NOT what a terminal delivers. Verified against
+    // `@opentui/core`'s bundled `parse.keypress.ts`: its `parseKeypress`
+    // seeds `{ name: "", sequence: s, raw: s, source: "raw" }` and then
+    // assigns `name` only in branches that require a control character, an
+    // ESC prefix, or `s.length === 1` (plus a surrogate-pair case). A
+    // multi-code-point IME commit matches NONE of them, so it arrives with
+    // `name` still the empty string and the whole committed string in
+    // `sequence`. That is the exact event the iPad bug report is about, so
+    // assert on it directly — otherwise a future guard keyed on `name`
+    // (say, requiring a non-empty or single-character name) could reject
+    // real IME input while every other test here still passed.
+    const document = createTestDocument("ac");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "", sequence: "日本語" }))).toBe(true);
+    expect(document.getLine(0)).toBe("a日本語c");
+    expect(session.currentSelections()).toEqual([cursorAt(0, 4)]);
+  });
+
+  test("Issue #110: an arrow key's escape sequence does not insert", () => {
+    const document = createTestDocument("abc");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "down", sequence: "\x1b[B" }))).toBe(false);
+    expect(document.getLine(0)).toBe("abc");
+    expect(session.setStateCallCount()).toBe(0);
+  });
+
+  test("Issue #110: a named control key from the blocklist does not insert", () => {
+    const document = createTestDocument("abc");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    // "pageup"'s sequence is already ESC-prefixed and so is already
+    // rejected by `isPrintableSequence` alone; this test's real target is
+    // the `NON_INSERT_KEY_NAMES` guard, so it fabricates a `sequence` that
+    // WOULD otherwise look printable to prove the guard — not
+    // `isPrintableSequence` — is what stops it.
+    expect(router.routeKeyEvent(keyOf({ name: "pageup", sequence: "P" }))).toBe(false);
+    expect(document.getLine(0)).toBe("abc");
+    expect(session.setStateCallCount()).toBe(0);
+  });
+
+  test("Issue #110: an emoji outside the BMP inserts as one code point", () => {
+    // "😀" is one Unicode code point but two UTF-16 code units — exercises
+    // `isPrintableSequence`'s `Array.from` code-point iteration rather than
+    // `.length`/indexing, which would see two (unpaired-surrogate) units.
+    const document = createTestDocument("ac");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "😀", sequence: "😀" }))).toBe(true);
+    expect(document.getLine(0)).toBe("a😀c");
+    // "😀" is one code point but TWO UTF-16 code units, and `Position.
+    // character`/`newText.length` (`positionTransform.ts`) are UTF-16-unit
+    // based, so the cursor advances by 2 from its start at character 1, not
+    // by 1 — this is what distinguishes "counted as one code point" from
+    // "counted as one JS string unit" for THIS assertion.
+    expect(session.currentSelections()).toEqual([cursorAt(0, 3)]);
+  });
+
   test("one keystroke across N cursors is a single undo entry", () => {
     const document = createTestDocument("a\nc");
     const original = [cursorAt(0, 1), cursorAt(1, 1)];

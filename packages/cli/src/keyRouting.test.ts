@@ -480,6 +480,23 @@ describe("handleKeyEvent — terminal focus routing (Issue #98 Phase 3)", () => 
     expect(terminal.written).toEqual(["a"]);
   });
 
+  test("Issue #110 regression guard: while focused, a multi-character IME sequence is STILL forwarded to the pty unchanged, never reaching editorInputRouter", () => {
+    // This is the terminal-focus branch's existing behavior (`event.raw ??
+    // event.sequence`, unconditional) — the Issue #110 fix lives entirely
+    // in `@tecode/core`'s `inputRouter.ts`'s `isPrintableSequence`, which
+    // this branch never calls at all (`forbiddenPipeline` would throw if it
+    // did). Proves widening what `isPrintableSequence` accepts did not
+    // change what reaches the terminal panel.
+    const terminal = fakeTerminal(true);
+    const event = keyOf({ name: "日本語", sequence: "日本語" });
+    (event as RoutableKeyEvent).raw = "日本語";
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["日本語"]);
+    expect(terminal.escaped).toBe(0);
+  });
+
   test("Ctrl+C reaching this function while focused is still forwarded like any other key — OpenTUI's own exitOnCtrlC intercepts it earlier in production, this function has no special case for it", () => {
     const terminal = fakeTerminal(true);
     const event = keyOf({ name: "c", ctrl: true, sequence: "\x03" });
@@ -690,6 +707,55 @@ describe("handleKeyEvent — end to end against real keymap + editor services", 
     expect(document.getLine(0)).toBe("bxyz");
     expect(sawSelections).toEqual([
       { start: { line: 0, character: 1 }, end: { line: 0, character: 1 }, anchor: { line: 0, character: 1 }, active: { line: 0, character: 1 } },
+    ]);
+  });
+
+  test("Issue #110: with the editor focused, a multi-character IME commit with no binding reaches editorInputRouter and inserts whole", () => {
+    // Same shape as the single-character test above, but with a
+    // `KeyEventLike.sequence` holding a whole IME-committed string —
+    // proves `handleKeyEvent`'s own pipeline (chord machine → passthrough →
+    // `editorInputRouter.routeKeyEvent`) needed NO change for Issue #110:
+    // the fix is entirely `isPrintableSequence`'s, in `@tecode/core`.
+    const log = createHostLog();
+    const context = createContextService();
+    context.set("editorTextFocus", true);
+    const document = createDocument({
+      uri: "file:///test.txt",
+      languageId: "plaintext",
+      text: "xyz",
+      sink: createNoopStatusSink(),
+      log,
+    });
+
+    const table = createBindingTable(layersOf({}), { log });
+    const chordMachine = createChordStateMachine({
+      table,
+      execute: () => {},
+      getContext: (key) => context.get(key),
+      log,
+    });
+    let sawSelections: unknown;
+    const editorInputRouter = createEditorInputRouter({
+      context,
+      editorSession: {
+        getActiveDocument: () => document,
+        getState: () => ({ documentUri: document.uri, selections: [
+          { start: { line: 0, character: 0 }, end: { line: 0, character: 0 }, anchor: { line: 0, character: 0 }, active: { line: 0, character: 0 } },
+        ], scrollTop: 0 }),
+        setState: (_uri, state) => {
+          sawSelections = state.selections;
+        },
+      },
+    });
+
+    handleKeyEvent(
+      { chordMachine, editorInputRouter },
+      keyOf({ name: "日本語", sequence: "日本語" }),
+    );
+
+    expect(document.getLine(0)).toBe("日本語xyz");
+    expect(sawSelections).toEqual([
+      { start: { line: 0, character: 3 }, end: { line: 0, character: 3 }, anchor: { line: 0, character: 3 }, active: { line: 0, character: 3 } },
     ]);
   });
 });
