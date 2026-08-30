@@ -317,6 +317,50 @@ describe("createEditorInputRouter (Task 2.2, Req 4.6, 6.6, design.md §6.1, §8.
     expect(session.currentSelections()).toEqual([cursorAt(0, 4)]);
   });
 
+  test("an 8-bit C1 control sequence does not insert (CodeRabbit PR #112 review)", () => {
+    // U+009B is CSI, the single-code-point 8-bit form of the `ESC [` that
+    // introduces a cursor-key escape, so "\u009b[A" is an 8-bit cursor-up.
+    // `@opentui/core`'s `parseKeypress` only recognizes the 7-bit
+    // `\x1b`-prefixed forms, so a terminal emitting the 8-bit form matches
+    // none of its branches and this arrives with `name` still empty —
+    // exactly the shape a real IME commit has, which is why `name` cannot
+    // be what distinguishes them and `isPrintableSequence` must reject the
+    // C1 range itself.
+    const document = createTestDocument("abc");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "", sequence: "\u009b[A" }))).toBe(false);
+    expect(document.getLine(0)).toBe("abc");
+    expect(session.setStateCallCount()).toBe(0);
+  });
+
+  test("a lone C1 control character does not insert (CodeRabbit PR #112 review)", () => {
+    // Guards the range check independently of the multi-code-point path
+    // above: a single C1 code point passed the SUPERSEDED single-code-point
+    // rule too (it is >= 0x20 and not 0x7f), so this one is a genuinely
+    // pre-existing hole that the same fix closes.
+    const document = createTestDocument("abc");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "", sequence: "\u0085" }))).toBe(false);
+    expect(document.getLine(0)).toBe("abc");
+    expect(session.setStateCallCount()).toBe(0);
+  });
+
+  test("U+00A0 and other characters just past the C1 range still insert", () => {
+    // Boundary guard: the C1 rejection must stop at 0x9f. U+00A0 (no-break
+    // space) and U+00E9 ("é", reachable on many layouts via a dead key or
+    // Option) are ordinary printable text and must survive it.
+    const document = createTestDocument("ac");
+    const session = createFakeSession(document, [cursorAt(0, 1)]);
+    const router = buildRouter({ editorSession: session });
+
+    expect(router.routeKeyEvent(keyOf({ name: "", sequence: "\u00a0é" }))).toBe(true);
+    expect(document.getLine(0)).toBe("a\u00a0éc");
+  });
+
   test("Issue #110: an arrow key's escape sequence does not insert", () => {
     const document = createTestDocument("abc");
     const session = createFakeSession(document, [cursorAt(0, 1)]);

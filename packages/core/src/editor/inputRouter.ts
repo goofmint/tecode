@@ -96,6 +96,22 @@ function isPrintableSequence(sequence: string): boolean {
   const codepoints = Array.from(sequence);
   return codepoints.every((codepoint) => {
     const codePoint = codepoint.codePointAt(0) ?? 0;
+    // Every control range, not just C0/DEL: `< 0x20` is C0, `0x7f` is DEL,
+    // and `0x80`-`0x9f` is C1 — the 8-bit control range, which includes
+    // U+009B CSI, the single-code-point equivalent of the `ESC [` that
+    // introduces a cursor/function-key escape (CodeRabbit PR #112 review).
+    //
+    // C1 has to be excluded EXPLICITLY here, and it is this change that
+    // makes it load-bearing. `@opentui/core`'s `parseKeypress` recognizes
+    // only the 7-bit `\x1b`-prefixed forms of these escapes, so a terminal
+    // emitting the 8-bit form matches none of its branches and the event
+    // arrives as `{ name: "", sequence: "\u009b[A" }` — three code points,
+    // every one of which passes a bare `>= 0x20 && !== 0x7f` test. The
+    // superseded single-code-point rule rejected that on length alone; now
+    // that length is no longer the gate, an 8-bit CSI cursor-up would
+    // otherwise be spliced into the document as the literal text "\u009b[A"
+    // instead of being ignored as the control sequence it is.
+    if (codePoint >= 0x80 && codePoint <= 0x9f) return false;
     return codePoint >= 0x20 && codePoint !== 0x7f;
   });
 }
