@@ -10,8 +10,10 @@
  *
  * **Scope** (deliberately narrow, matching tasks.md's Task 2.2 line item
  * "Keymap fall-through to the focused editor becomes insert/delete
- * `applyEdits` at all cursors"): only plain single-character insert,
- * backspace, and forward-delete. Arrow keys, Enter/auto-indent, Tab
+ * `applyEdits` at all cursors"): only plain printable insert (one code
+ * point from an ordinary keystroke, or several at once from an IME commit —
+ * Issue #110, `isPrintableSequence`'s TSDoc), backspace, and forward-delete.
+ * Arrow keys, Enter/auto-indent, Tab
  * indentation, and replacing a non-collapsed selection when typing are all
  * out of scope here — they are editor-core commands (Task 2.3's
  * "movement... insert/delete with auto-indent, tab/shift-tab indentation")
@@ -52,14 +54,91 @@ type EditOp = "insert" | "backspace" | "delete";
  * `KeyEvent.sequence` for backspace/delete/tab/enter/escape is always one of
  * these, so this check alone would already reject them; `name` is checked
  * first anyway (below) for clarity and to stay correct even if some
- * terminal ever reports a different `sequence` for a named key. */
+ * terminal ever reports a different `sequence` for a named key.
+ *
+ * **Deliberately NOT restricted to a single code point** (Issue #110: "IME
+ * text (Japanese) cannot be entered"). An IME delivers its whole composed
+ * string — e.g. "日本語" — as ONE `KeyEvent` whose `sequence` holds several
+ * code points at once; it is not one keystroke per character the way ASCII
+ * typing is. A prior version of this function rejected any `sequence` with
+ * `Array.from(sequence).length !== 1`, which classified every such commit
+ * as non-printable and made `classifyKeyEvent` return `undefined` —
+ * `routeKeyEvent` then silently dropped the entire input. The fix is to
+ * require every code point in `sequence` to individually be printable,
+ * rather than requiring there be exactly one. This is safe to do without
+ * any change to how the edit is built or applied:
+ * {@link buildEditBatch} already threads whatever `insertText` string it is
+ * given straight into one `TextEdit` per cursor, and `positionTransform.ts`'s
+ * `transformPosition` (which computes each cursor's post-edit position) is
+ * already fully general over multi-character and multi-line `newText` — its
+ * own TSDoc documents the multi-line case at length. So an N-character IME
+ * commit already lands correctly as one `applyEdits` call (one undo entry)
+ * with no further changes needed here.
+ *
+ * This intentionally does NOT route multi-code-point input through
+ * `insertText`/{@link buildInsertTextBatch} instead (the paste path) even
+ * though that function already handles arbitrary-length `text`: that
+ * function replaces each selection's whole `[start, end)` range, whereas
+ * the `"insert"` case below (via {@link buildEditForCursor}) inserts at a
+ * zero-width `[active, active)` and never replaces a selection. Branching
+ * IME/multi-char input to the paste path would make typing "日本語" over an
+ * active selection replace it while typing "a" over the same selection
+ * would not — an inconsistency this fix does not introduce. (Whether
+ * printable insertion should ever replace a selection is a separate
+ * question, out of this module's current "Scope".)
+ *
+ * Iterates with `Array.from` rather than indexing or comparing `.length`
+ * against a byte/UTF-16-unit count, so a single character outside the BMP
+ * (e.g. an emoji like "😀", a UTF-16 surrogate pair) is correctly counted
+ * and checked as ONE code point, not two. */
 function isPrintableSequence(sequence: string): boolean {
   if (!sequence) return false;
   const codepoints = Array.from(sequence);
-  if (codepoints.length !== 1) return false;
-  const codePoint = codepoints[0]!.codePointAt(0) ?? 0;
-  return codePoint >= 0x20 && codePoint !== 0x7f;
+  return codepoints.every((codepoint) => {
+    const codePoint = codepoint.codePointAt(0) ?? 0;
+    // Every control range, not just C0/DEL: `< 0x20` is C0, `0x7f` is DEL,
+    // and `0x80`-`0x9f` is C1 — the 8-bit control range, which includes
+    // U+009B CSI, the single-code-point equivalent of the `ESC [` that
+    // introduces a cursor/function-key escape (CodeRabbit PR #112 review).
+    //
+    // C1 has to be excluded EXPLICITLY here, and it is this change that
+    // makes it load-bearing. `@opentui/core`'s `parseKeypress` recognizes
+    // only the 7-bit `\x1b`-prefixed forms of these escapes, so a terminal
+    // emitting the 8-bit form matches none of its branches and the event
+    // arrives as `{ name: "", sequence: "\u009b[A" }` — three code points,
+    // every one of which passes a bare `>= 0x20 && !== 0x7f` test. The
+    // superseded single-code-point rule rejected that on length alone; now
+    // that length is no longer the gate, an 8-bit CSI cursor-up would
+    // otherwise be spliced into the document as the literal text "\u009b[A"
+    // instead of being ignored as the control sequence it is.
+    if (codePoint >= 0x80 && codePoint <= 0x9f) return false;
+    return codePoint >= 0x20 && codePoint !== 0x7f;
+  });
 }
+
+/**
+ * Named keys {@link classifyKeyEvent} must never classify as `"insert"`.
+ * This is defence in depth, added alongside the Issue #110 fix above, and
+ * NOT load-bearing for most of these names today: verified against
+ * `@opentui/core`'s `lib/parse.keypress.ts` keypress tables, every key
+ * named here already reports a `sequence` that is either a single C0 byte
+ * (`"\t"`, `"\r"`, `"\x1b"`, `"\x7f"`) or an ESC-prefixed (`"\x1b["`/`"\x1bO"`)
+ * CSI/SS3 escape — {@link isPrintableSequence} above already rejects all of
+ * those on their own, with or without this list. Kept anyway in case some
+ * terminal or a future OpenTUI version ever reports a different `sequence`
+ * for one of these names, per Issue #110's fix plan's Design Choice 2.
+ *
+ * Deliberately does NOT include ordinary printable keys that happen to
+ * carry a `name` matching their character (e.g. `name: "a"`, or `name:
+ * "space"` for the space bar) — blocking those on `name` would break
+ * ordinary typing. `backspace`/`delete` keep their own explicit checks in
+ * {@link classifyKeyEvent} rather than living in this set. */
+const NON_INSERT_KEY_NAMES: ReadonlySet<string> = new Set([
+  "up", "down", "left", "right",
+  "escape", "tab", "return", "enter",
+  "home", "end", "pageup", "pagedown", "insert",
+  "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+]);
 
 /**
  * Classify `event` (this module's TSDoc's "Scope"). `ctrl`/`meta` combos
@@ -74,6 +153,7 @@ function classifyKeyEvent(event: KeyEventLike): EditOp | undefined {
   if (event.name === "backspace") return "backspace";
   if (event.name === "delete") return "delete";
   if (event.ctrl || event.meta) return undefined;
+  if (NON_INSERT_KEY_NAMES.has(event.name)) return undefined;
   return isPrintableSequence(event.sequence) ? "insert" : undefined;
 }
 
@@ -212,12 +292,16 @@ function buildEditBatch(
  * duplicated here rather than imported: `editor-core` is a `builtin`
  * extension and this module lives in `@tecode/core` — the ESLint layering
  * rule (`no-restricted-imports`) only allows the reverse direction. Unlike
- * {@link buildEditForCursor}'s `"insert"` case (a single code point at a
- * collapsed cursor, `classifyKeyEvent`'s domain), `text` here is arbitrary —
- * one or many lines, from a paste — which is exactly why `insertText` is a
- * SEPARATE public method rather than a new `EditOp` value: routing it
- * through `classifyKeyEvent`/`isPrintableSequence` would reject anything
- * longer than one code point outright (this module's TSDoc's "Scope"). */
+ * {@link buildEditForCursor}'s `"insert"` case (always at a collapsed,
+ * zero-width `[active, active)` — a keystroke, including a multi-code-point
+ * IME commit (Issue #110), never replaces a selection), `text` here
+ * replaces the selection's whole `[start, end)` range and can itself be
+ * arbitrary — one or many lines, from a paste. That "replace the
+ * selection" behavior, not code-point count, is why `insertText` stays a
+ * SEPARATE public method rather than a new `EditOp` value: routing paste
+ * text through `classifyKeyEvent`'s `"insert"` case would replace an active
+ * selection when typing a single character too, which is not this editor's
+ * behavior (this module's TSDoc's "Scope"). */
 function buildInsertTextEdit(selection: Selection, text: string): TextEdit {
   return { range: { start: selection.start, end: selection.end }, newText: text };
 }
@@ -302,11 +386,13 @@ export interface EditorInputRouter {
    * buildInsertTextBatch}'s TSDoc, Req 6.6) — never one call per line or
    * per cursor — so a multi-line paste is a single undo step, matching
    * `routeKeyEvent`'s own one-`applyEdits`-per-invocation contract.
-   * Deliberately bypasses `classifyKeyEvent`/`isPrintableSequence`'s
-   * single-code-point restriction entirely: `text` is not run through
-   * either at all, so an arbitrary-length (and multi-line) paste is never
-   * rejected the way a `KeyEventLike` with a multi-character `sequence`
-   * would be.
+   * Deliberately bypasses `classifyKeyEvent`/`isPrintableSequence` entirely
+   * — `text` is not run through either, and unlike `routeKeyEvent`'s
+   * `"insert"` case (always a zero-width insert at `active`, whatever the
+   * length of the printable text involved — including a multi-code-point
+   * IME commit, Issue #110), this method replaces each selection's whole
+   * range, which is why it stays a separate method rather than something
+   * `classifyKeyEvent` could also produce (`buildInsertTextEdit`'s TSDoc).
    *
    * No-ops exactly like `routeKeyEvent` does (same guards, same order): no
    * `editorTextFocus`, no active document, or a readonly document (Req
