@@ -5,22 +5,51 @@
 // into your own file — same plain JSONC `{ key, command, when? }` shape
 // documented in samples/keybindings.json.
 //
-// Deliberately small: this codebase's defaults are already
-// VS-Code-on-Windows/Linux-shaped throughout (ctrl-based shortcuts
-// everywhere), so there is little left to change. The one real divergence
-// in the shipped defaults is editor-core's move/duplicate-line bindings,
-// which use alt+meta+up / alt+meta+down / shift+alt+meta+down — a
-// macOS idiom (meta = Cmd; see packages/builtin/editor-core/manifest.ts's
-// own TSDoc for why an Alt-held arrow always carries BOTH the alt and
-// meta tokens on this terminal input pipeline). VS Code's real
-// Windows/Linux defaults for the same three actions omit the Cmd/meta
-// modifier entirely: alt+up / alt+down / shift+alt+down. The three
-// entries below ADD those keys for the same three commands — the
-// meta-flavored defaults stay bound too, harmlessly unreachable on a real
-// Windows/Linux terminal since there's no meta key to hold — rather than
-// removing anything, so nothing else needs to change.
+// Deliberately small — and, as shipped, deliberately a NO-OP. Read this
+// before assuming the entries below change anything.
+//
+// This codebase's defaults are already VS-Code-on-Windows/Linux-shaped
+// throughout (ctrl-based shortcuts everywhere), so there was little left
+// for a "windows" scheme to change. The removed bundled preset claimed
+// one difference: editor-core binds move/duplicate-line to alt+meta+up /
+// alt+meta+down / shift+alt+meta+down, which LOOKS like a macOS idiom
+// (meta = Cmd), so the preset added alt+up / alt+down / shift+alt+down as
+// the "Windows/Linux-native equivalents".
+//
+// That premise was wrong, and those three bindings never fired. The meta
+// token there is not a Cmd key at all: Alt+Arrow decodes through
+// @opentui/core's modifier-bitmask branch, which sets `option` AND `meta`
+// from the SAME Alt bit, so keyEventToStroke always emits BOTH tokens for
+// an Alt-held arrow on EVERY platform — a bare alt+up stroke is never
+// produced for anyone, on Windows or anywhere else, and an entry bound to
+// it is unreachable (packages/builtin/editor-core/manifest.ts's "Alt+Arrow"
+// TSDoc documents the decoding, verified against the CSI \x1b[1;{n}A form,
+// the double-ESC \x1b\x1b[A form, and both Kitty and legacy parsing).
+//
+// Corrected to the strokes that actually arrive, the three entries become
+// identical to the defaults they were supposed to override. So this file
+// adds nothing on its own, and is kept only as a correctly-shaped starting
+// point to EDIT: the header format, the `when` clause, and three real
+// command ids to copy. If you want genuinely different Windows/Linux keys,
+// change the `key` values below (and check `keybindings.showResolved` from
+// the command palette to confirm what actually took effect).
 [
-  { "key": "alt+up", "command": "editor.action.moveLinesUp", "when": "editorTextFocus" },
-  { "key": "alt+down", "command": "editor.action.moveLinesDown", "when": "editorTextFocus" },
-  { "key": "shift+alt+down", "command": "editor.action.duplicateLine", "when": "editorTextFocus" }
+  // NOTE: these three restate editor-core's CURRENT defaults exactly, so
+  // copying this file as-is changes nothing. That is not an oversight —
+  // see the header above for why, and treat these as a starting point to
+  // EDIT rather than as bindings that add anything on their own.
+  //
+  // They must carry BOTH "alt" and "meta" to match at all. Alt+Arrow
+  // decodes through @opentui/core's modifier-bitmask branch, whose own
+  // logic sets `option` AND `meta` from the SAME Alt bit
+  // (`key.option = key.option || !!(modifier & 2); key.meta = key.meta ||
+  // !!(modifier & 2);`), so `keyEventToStroke` always emits both tokens
+  // together for an Alt-held arrow — never "alt" alone
+  // (`packages/builtin/editor-core/manifest.ts`'s "Alt+Arrow" TSDoc
+  // documents this as verified against the CSI `\x1b[1;{n}A` form, the
+  // double-ESC `\x1b\x1b[A` form, and both Kitty and legacy parsing).
+  // A plain "alt+up" entry can therefore never fire.
+  { "key": "alt+meta+up", "command": "editor.action.moveLinesUp", "when": "editorTextFocus" },
+  { "key": "alt+meta+down", "command": "editor.action.moveLinesDown", "when": "editorTextFocus" },
+  { "key": "shift+alt+meta+down", "command": "editor.action.duplicateLine", "when": "editorTextFocus" }
 ]

@@ -370,6 +370,46 @@ test("samples/keybindings.emacs.json keeps Cut reachable despite making ctrl+x a
   expect(table.lookup("ctrl+x ctrl+s", inEditor)?.command).toBe("editor.action.save");
 });
 
+/**
+ * Guards a defect class the removed "windows" preset shipped for its whole
+ * life: a binding whose key string is a stroke this input pipeline never
+ * actually emits, so the entry is silently unreachable.
+ *
+ * The concrete case is Alt+Arrow. `@opentui/core`'s modifier-bitmask branch
+ * sets `option` AND `meta` from the SAME Alt bit, so `keyEventToStroke`
+ * always emits BOTH tokens for an Alt-held arrow, on every platform — a
+ * bare `alt+up` stroke is never produced for anyone
+ * (`packages/builtin/editor-core/manifest.ts`'s "Alt+Arrow" TSDoc documents
+ * the decoding). The old preset bound `alt+up`/`alt+down`/`shift+alt+down`
+ * believing they were "the Windows/Linux-native equivalents"; they could
+ * never fire. Nothing caught it, because a sample that parses and names
+ * real command ids looks fine to every other check here.
+ *
+ * So assert the rule directly on every sample: an arrow-key binding that
+ * carries `alt` must also carry `meta`.
+ */
+test("no sample binds an Alt+Arrow stroke this input pipeline never emits", async () => {
+  const ARROWS = ["up", "down", "left", "right"];
+  for (const samplePath of [KEYBINDINGS_SAMPLE_PATH, EMACS_SAMPLE_PATH, WINDOWS_SAMPLE_PATH]) {
+    const raw = await readFile(samplePath, "utf8");
+    const parsed = parseJsonc<KeybindingContribution[]>(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) continue;
+
+    for (const entry of parsed.value) {
+      for (const stroke of String(entry.key ?? "").split(/\s+/)) {
+        const tokens = stroke.split("+");
+        const keyName = tokens[tokens.length - 1] ?? "";
+        if (!ARROWS.includes(keyName)) continue;
+        if (!tokens.includes("alt")) continue;
+        // Named so a failure says which sample and which stroke to fix.
+        const where = `${samplePath.split("/").pop()}: "${stroke}"`;
+        expect([where, tokens.includes("meta")]).toEqual([where, true]);
+      }
+    }
+  }
+});
+
 function testKeybindingSamplePresetReplacement(samplePath: string): void {
   test("parses as a JSONC array via the repo's real parser", async () => {
     const raw = await readFile(samplePath, "utf8");

@@ -241,7 +241,15 @@ Default keybindings, VS Code-compatible (`{ key, command, when? }`, Req
 `packages/core/src/keymap/bindingTable.ts`): **core defaults** → the
 **terminal-capability fallback keymap** (see "Fallback keymap" below) →
 **extension-contributed** bindings → the **user's own `keybindings.json`**,
-which always wins. Every key string below is already in this codebase's
+which has the highest LAYER precedence. That is precedence between layers,
+not an unconditional win on every keystroke: a chord PREFIX still beats a
+same-key exact match regardless of which layer each came from
+(`keymap/chords.ts`'s `handleIdleStroke` queries `hasSequencePrefix` first,
+unconditionally, before `lookup`). So a user entry binding `ctrl+k` does not
+fire immediately while any live `ctrl+k <something>` chord still exists —
+`ctrl+k` goes pending instead. `samples/keybindings.emacs.json` shows both
+sides of this: it removes `ctrl+k ctrl+s` so its own `ctrl+k` resolves, and
+its `ctrl+x ctrl+s` deliberately turns `ctrl+x` into a prefix. Every key string below is already in this codebase's
 canonical lowercase `mod+...+key` form (`keymap/normalize.ts`); `return`
 is Enter's real key name, not `enter`. A chord can be two OR MORE
 strokes — `"ctrl+k ctrl+a b"` is just as valid a `key` as `"ctrl+k
@@ -357,8 +365,10 @@ room, regardless of which of the three ways it was changed
 
 There is no bundled `keybindings.preset` setting — Issue #115 removed it.
 Instead, copy one of these sample files (in this repository) straight to
-`~/.config/tecode/keybindings.json` (or merge individual entries into your
-own file); the `user` layer above is already the highest-precedence layer,
+`~/.config/tecode/keybindings.json` — `%APPDATA%\tecode\keybindings.json` on
+Windows, the same split `getUserKeybindingsPath` applies to `settings.json`
+(`packages/core/src/host/paths.ts`) — or merge individual entries into your
+own file; the `user` layer above is already the highest-precedence layer,
 so a plain `keybindings.json` entry does everything a bundled preset used
 to, with no dedicated setting or machinery needed. Changes take effect
 immediately, no restart.
