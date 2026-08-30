@@ -53,7 +53,6 @@ describe("command-palette's default keybindings (Task 3.2, Req 11.3)", () => {
       defaults: [],
       fallback: [],
       extension: commandPaletteManifest.contributes.keybindings ?? [],
-      preset: [],
       user: [],
     };
     const table = createBindingTable(layers, { log });
@@ -78,7 +77,6 @@ describe("command-palette's default keybindings (Task 3.2, Req 11.3)", () => {
       defaults: [],
       fallback: [],
       extension: commandPaletteManifest.contributes.keybindings ?? [],
-      preset: [],
       user: [],
     };
     createBindingTable(layers, { log });

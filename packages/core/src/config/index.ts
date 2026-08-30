@@ -17,7 +17,6 @@ export {
 export {
   CORE_CONFIGURATION,
   DEFAULT_COLOR_THEME_ID,
-  DEFAULT_KEYBINDING_PRESET,
   registerCoreConfiguration,
   type CoreConfigRegistrar,
 } from "./coreDefaults";

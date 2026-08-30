@@ -237,14 +237,17 @@ currently code-sign or notarize release binaries.
 ## Keybindings reference
 
 Default keybindings, VS Code-compatible (`{ key, command, when? }`, Req
-4.1-4.2) and resolved in this precedence, lowest to highest (Req 4.1, 4.8,
+4.1-4.2) and resolved in this precedence, lowest to highest (Req 4.1,
 `packages/core/src/keymap/bindingTable.ts`): **core defaults** → the
 **terminal-capability fallback keymap** (see "Fallback keymap" below) →
-**extension-contributed** bindings → the active **bundled keybinding
-preset** (see "Bundled keybinding presets" below) → the **user's own
-`keybindings.json`**, which always wins. Every key string below is
-already in this codebase's canonical lowercase `mod+...+key` form
-(`keymap/normalize.ts`); `return` is Enter's real key name, not `enter`.
+**extension-contributed** bindings → the **user's own `keybindings.json`**,
+which always wins. Every key string below is already in this codebase's
+canonical lowercase `mod+...+key` form (`keymap/normalize.ts`); `return`
+is Enter's real key name, not `enter`. A chord can be two OR MORE
+strokes — `"ctrl+k ctrl+a b"` is just as valid a `key` as `"ctrl+k
+ctrl+s"` — and each stroke accepts `ctrl`/`shift`/`alt`/`meta` in any
+order and case, plus the aliases `cmd`/`command` (→ `meta`), `option`
+(→ `alt`), and `control` (→ `ctrl`).
 
 This table includes two default-binding sources beyond the four built-in
 extension manifests: `MODAL_DEFAULT_KEYBINDINGS` and
@@ -350,20 +353,18 @@ room, regardless of which of the three ways it was changed
 |---|---|
 | `ctrl+k ctrl+s` | Open Keyboard Shortcuts (JSON) — a two-stroke chord (Req 4.4) |
 
-### Bundled keybinding presets (Req 4.8)
+### Emacs- or Windows-style keybindings: copy a sample
 
-Set `keybindings.preset` in `settings.json` to layer a bundled keybinding
-scheme over the defaults above, without hand-editing `keybindings.json`
-yourself. Valid values: `"default"` (none — the schema default), `"emacs"`,
-`"windows"`. Changing the setting takes effect immediately, no restart.
-There is deliberately no `"vim"` preset: every `when` context in this
-codebase (`editorTextFocus`, `editorFocus`, `quickPickFocus`,
-`inputBoxFocus`, `findWidgetFocus`, `explorerFocus`, `editorLangId`) is
-purely focus-based, with no mode concept a non-modal `"vim"` preset could
-honestly model.
+There is no bundled `keybindings.preset` setting — Issue #115 removed it.
+Instead, copy one of these sample files (in this repository) straight to
+`~/.config/tecode/keybindings.json` (or merge individual entries into your
+own file); the `user` layer above is already the highest-precedence layer,
+so a plain `keybindings.json` entry does everything a bundled preset used
+to, with no dedicated setting or machinery needed. Changes take effect
+immediately, no restart.
 
-**`"emacs"`** (`packages/core/src/keymap/presets/emacs.json`), while an
-editor text buffer is focused:
+**`samples/keybindings.emacs.json`**, while an editor text buffer is
+focused:
 
 | Key | Command | Note |
 |---|---|---|
@@ -375,23 +376,27 @@ editor text buffer is focused:
 | `ctrl+s` | Open find (isearch-forward) | Overrides the default `ctrl+s` (save) |
 | `ctrl+x ctrl+s` | Save file | Emacs's own save-buffer chord, replacing `ctrl+s` above |
 
-Pressing plain `ctrl+k` under this preset deletes the line directly — it
-does **not** wait for a second stroke. Making that true takes one more
+Nearly every entry above carries `"when": "editorTextFocus"` — without it,
+`ctrl+f`/`ctrl+n`/`ctrl+p` would fire as cursor movement unconditionally,
+breaking them the moment the explorer, command palette, or find widget has
+focus instead. Pressing plain `ctrl+k` resolves directly to delete-line —
+it does **not** wait for a second stroke. Making that true takes one more
 entry the table above doesn't show: `keybindings-editor`'s own
 `ctrl+k ctrl+s` chord (see "Keybindings editor" above) is removed via
 `{ "key": "ctrl+k ctrl+s", "command": "-keybindings.open" }`, because a
 chord's prefix always wins over a same-key exact match
 (`packages/core/src/keymap/chords.ts`) — left in place, it would make
 every `ctrl+k` press sit in a pending state waiting for `ctrl+s` instead
-of ever reaching this preset's own kill-line binding.
+of ever reaching the kill-line binding above. `samples/keybindings.emacs.json`'s
+own comments walk through both of these in more detail.
 
-**`"windows"`** (`packages/core/src/keymap/presets/windows.json`) is
-intentionally small: this codebase's defaults are already
-VS-Code-on-Windows/Linux-shaped throughout, so there is little left to
-change. The one real difference is that the default line-move/duplicate
-bindings above (`alt+meta+up` / `alt+meta+down` / `shift+alt+meta+down`)
-carry a macOS-only `meta` (Cmd) modifier; this preset adds the
-Windows/Linux-native equivalents alongside them:
+**`samples/keybindings.windows.json`** is intentionally small: this
+codebase's defaults are already VS-Code-on-Windows/Linux-shaped
+throughout, so there is little left to change. The one real difference is
+that the default line-move/duplicate bindings above (`alt+meta+up` /
+`alt+meta+down` / `shift+alt+meta+down`) carry a macOS-only `meta` (Cmd)
+modifier; this file adds the Windows/Linux-native equivalents alongside
+them:
 
 | Key | Command |
 |---|---|
@@ -412,10 +417,13 @@ Active only while the command palette, quick-open, or an input box (e.g.
 
 Rebind or remove any of the above in your own `keybindings.json` —
 `samples/keybindings.json` (in this repository) is a working, commented
-starting point, and `packages/core/src/ui/keybindingsCommands.ts`'s
-`KEYBINDINGS_TEMPLATE` is what a running tecode writes to
-`~/.config/tecode/keybindings.json` the first time you run "Open Keyboard
-Shortcuts (JSON)" (`ctrl+k ctrl+s`) if that file doesn't exist yet.
+starting point, `samples/keybindings.emacs.json`/`samples/keybindings.windows.json`
+are Emacs- or Windows-flavored starting points (see "Emacs- or
+Windows-style keybindings" above), and
+`packages/core/src/ui/keybindingsCommands.ts`'s `KEYBINDINGS_TEMPLATE` is
+what a running tecode writes to `~/.config/tecode/keybindings.json` the
+first time you run "Open Keyboard Shortcuts (JSON)" (`ctrl+k ctrl+s`) if
+that file doesn't exist yet.
 
 ## Settings reference
 
@@ -452,7 +460,6 @@ exist yet:
 | `editor.tabSize` | number | `4` | core | The number of spaces a tab is equal to. |
 | `editor.insertSpaces` | boolean | `true` | core | Insert spaces (up to the next tab stop) instead of a literal tab when pressing Tab. |
 | `explorer.showHidden` | boolean | `false` | `explorer` built-in extension (`builtin/explorer/manifest.ts`) | Show hidden (dot-prefixed) and `.gitignore`-ignored files in the explorer sidebar. |
-| `keybindings.preset` | string | `"default"` | core (`config/coreDefaults.ts`) | A bundled keybinding scheme layered over the defaults — `"default"` (none), `"emacs"`, or `"windows"` (Req 4.8). See "Bundled keybinding presets" above. |
 | `workbench.sidebarWidth` | number | `30` | core (`config/coreDefaults.ts`) | The sidebar's width in columns (Issue #105). Also adjustable by dragging the sidebar's right border, or the Increase/Decrease Sidebar Width commands — see "Sidebar width" above. |
 | `editor.wordWrap` | — | — | **not implemented** | Named by Req 9.5. No `contributes.configuration` schema registers this key, and nothing in `packages/` reads `config.get("editor.wordWrap")` outside of test fixtures exercising the config-merge machinery in the abstract (`packages/core/src/config/service.test.ts`, `themeSettingsWriter.test.ts`) — those tests use the string purely as a generic example key, not as evidence of a real word-wrap feature. Verified by grepping the whole `packages/` tree for both the key string and any wrap-related rendering logic in `EditorView`; there is none. |
 | `files.autoSave` | — | — | **not implemented** | Named by Req 9.5. No schema registers it, and no reader ever calls `config.get("files.autoSave")` anywhere in `packages/` (verified the same way as `editor.wordWrap` above — a plain grep for the key string found zero matches at all, not even in a test fixture). |

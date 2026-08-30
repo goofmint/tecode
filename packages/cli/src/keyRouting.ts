@@ -57,7 +57,7 @@ export interface RoutableKeyEvent extends KeyEventLike {
  * non-Kitty terminal, this key must work identically everywhere with no
  * protocol dependency at all, so the choice is confined to plain
  * `ctrl+<letter>` combos from the start). Already spoken for, checked
- * across every manifest AND the base fallback/preset layers (not just
+ * across every manifest AND the base fallback layer (not just
  * `packages/builtin`): `ctrl+c` (quit, intercepted by OpenTUI itself,
  * `editor-core/manifest.ts`), `ctrl+d` (multi-cursor), `ctrl+e`
  * (`explorer.focus`, `keymap/keybindings.fallback.json` — a DEFAULT

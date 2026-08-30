@@ -5,12 +5,23 @@
  * `keybindings.json`"). Task 1.5 adds a fourth layer ahead of defaults —
  * the terminal-capability fallback keymap (Req 4.7, design.md §6.5),
  * populated starting Task 4.2 but already part of the shape here so
- * callers don't need to migrate later. Issue #81 Phase 2 (Req 4.8, design.md
- * §6.6) adds a fifth layer, `preset` — a bundled keybinding scheme
- * (Emacs/Windows) selected via `keybindings.preset` — sitting ABOVE
- * `extension`; see {@link KeymapLayers}'s own TSDoc for why that specific
- * position (not between `defaults` and `fallback`, where an earlier plan
- * placed it) is load-bearing.
+ * callers don't need to migrate later.
+ *
+ * **A fifth layer, `preset` (Issue #81 Phase 2), existed here between
+ * `extension` and `user` and was REMOVED by Issue #115**: the bundled
+ * Emacs/Windows keybinding schemes it carried shipped ~950 lines of
+ * machinery (this module's own layering, `keymap/presetKeybindings.ts`,
+ * `cli/keybindingPresetConfigSync.ts`, `cli/keymapState.ts`'s preset
+ * setter, a dedicated config key) for 19 lines of JSON that
+ * `~/.config/tecode/keybindings.json` — already the highest-precedence
+ * layer below — can express just as well. `samples/keybindings.emacs.json`/
+ * `samples/keybindings.windows.json` (in this repository) are the same
+ * content as plain, copyable `user`-layer files now; nothing about a
+ * hand-authored `keybindings.json` entry needed a dedicated layer to work.
+ * A leftover `keybindings.preset` in someone's `settings.json` is now
+ * simply inert — no schema registers it any more, and (there being no
+ * existing users to migrate) nothing warns about it either; it is just
+ * dead JSON sitting in the file.
  *
  * `when` clauses are compiled once at build time via {@link compileWhen}
  * (design.md §6.2, §6.4: "Clauses are parsed once at registration into an
@@ -35,37 +46,21 @@ import type { HostLog } from "../host/errors";
 import { normalizeKeySequence } from "./normalize";
 import { compileWhen, WhenParseError, type CompiledWhen, type WhenContextGetter } from "./when";
 
-/** The five binding layers, in ascending precedence order (design.md §6.2,
- * §6.5, §6.6 — Issue #81 Phase 2's `preset` layer): defaults < fallback <
- * extension < preset < user. `fallback` is the terminal-capability overlay
- * (Req 4.7) — legitimately empty until it is populated in Task 4.2, so
- * every layer is required here rather than optional, keeping precedence
- * order a fact about array position, not about which fields happen to be
- * present.
+/** The four binding layers, in ascending precedence order (design.md §6.2,
+ * §6.5): defaults < fallback < extension < user. `fallback` is the
+ * terminal-capability overlay (Req 4.7) — legitimately empty until it is
+ * populated in Task 4.2, so every layer is required here rather than
+ * optional, keeping precedence order a fact about array position, not
+ * about which fields happen to be present.
  *
- * **`preset` sits ABOVE `extension`, not below it** (Req 4.8, design.md
- * §6.6) — deliberately corrected from an earlier plan that placed it
- * between `defaults` and `fallback`. A bundled keybinding preset (Emacs,
- * Windows — `keymap/presets/`) exists specifically to override an
- * extension's own default bindings on keys the user opted into remapping
- * (e.g. Emacs's `ctrl+f`/`ctrl+s` overriding `editor-core`'s
- * find/save) — that only works if `preset`'s entries have a HIGHER
- * `order` than `extension`'s in {@link createBindingTable}'s build loop,
- * since both `lookup`'s "last, when-passing entry wins" rule and
- * `visibleEntries`'s removal-masking rule ("a removal masks only
- * STRICTLY LOWER `order` bindings of the same command" — that function's
- * own TSDoc) only let a LATER layer override or remove an EARLIER one,
- * never the reverse. Concretely, this is what lets the Emacs preset's `-`
- * removal of `keybindings-editor`'s unconditional `ctrl+k ctrl+s`
- * binding (`presets/emacs.json`'s own TSDoc) actually take effect — with
- * `preset` below `extension`, that removal would be silently inert (its
- * `order` would be lower than the binding it's trying to mask), and
- * `hasSequencePrefix("ctrl+k", ...)` would keep reporting `true` forever,
- * making the preset's own `ctrl+k` → delete-line binding unreachable
- * (`chords.ts`'s `handleIdleStroke`: prefix-wins is checked
- * unconditionally, before the exact match). Still below `user`: a user's
- * own `keybindings.json` always wins over a bundled preset, exactly like
- * every other layer. */
+ * A fifth layer, `preset`, sat between `extension` and `user` here until
+ * Issue #115 removed it (this module's own TSDoc above) — a preset's
+ * entries needed a HIGHER `order` than `extension`'s specifically so its
+ * overrides and `-command` removals could win against an extension's own
+ * default binding; a plain `user`-layer entry in
+ * `~/.config/tecode/keybindings.json` already sits at the HIGHEST
+ * precedence, so it inherits that same override power for free with no
+ * dedicated layer needed. */
 export interface KeymapLayers {
   /** Core default bindings. */
   defaults: KeybindingContribution[];
@@ -75,20 +70,12 @@ export interface KeymapLayers {
   fallback: KeybindingContribution[];
   /** Bindings contributed by extension manifests (`contributes.keybindings`). */
   extension: KeybindingContribution[];
-  /** The active bundled keybinding preset's entries (Req 4.8, design.md
-   * §6.6, Issue #81 Phase 2) — resolved from the `keybindings.preset`
-   * setting via `keymap/presetKeybindings.ts`'s `resolveKeybindingPreset`,
-   * empty for `"default"` (this module's own TSDoc explains why this
-   * layer sits ABOVE `extension`). Kept up to date across a live
-   * `keybindings.preset` config change by `cli/keymapState.ts`'s
-   * `setPresetEntries`, exactly like `fallback`/`extension`/`user`. */
-  preset: KeybindingContribution[];
   /** The user's `keybindings.json` entries — highest precedence. */
   user: KeybindingContribution[];
 }
 
 /** The layer a resolved binding (or `entries()` row) came from. */
-export type BindingLayer = "defaults" | "fallback" | "extension" | "preset" | "user";
+export type BindingLayer = "defaults" | "fallback" | "extension" | "user";
 
 /** Dependencies {@link createBindingTable} reports through rather than
  * owning directly (design.md §5, §14) — a structured log for skipped,
@@ -116,7 +103,7 @@ export interface ResolvedBinding {
    * extension id / user) per binding") — copied straight through from
    * `KeybindingContribution.extensionId` (`@tecode/api`'s `manifest.ts`),
    * which `host/registration.ts`'s `registerExtension` is the only thing
-   * that ever sets. Always `undefined` for `defaults`/`fallback`/`preset`/`user`
+   * that ever sets. Always `undefined` for `defaults`/`fallback`/`user`
    * entries — those layers have no notion of an "owning extension" at
    * all. */
   extensionId?: string;
@@ -199,7 +186,7 @@ function logSafely(log: HostLog, level: "error" | "warning", message: string): v
   }
 }
 
-const LAYER_ORDER: readonly BindingLayer[] = ["defaults", "fallback", "extension", "preset", "user"];
+const LAYER_ORDER: readonly BindingLayer[] = ["defaults", "fallback", "extension", "user"];
 
 /**
  * Build the layered keybinding table (Req 4.1-4.3, design.md §6.2).
@@ -395,7 +382,7 @@ function compileEntry(
     // Only ever meaningful on the extension layer (`ResolvedBinding.
     // extensionId`'s TSDoc) — deliberately gated on `layer === "extension"`
     // rather than just forwarding `contribution.extensionId` unconditionally,
-    // so a `defaults`/`fallback`/`preset`/`user` entry can never surface an
+    // so a `defaults`/`fallback`/`user` entry can never surface an
     // `extensionId` here even if its raw JSON happened to carry a stray
     // one (`keybindings.json` is user-authored, untyped input).
     extensionId: layer === "extension" ? contribution.extensionId : undefined,

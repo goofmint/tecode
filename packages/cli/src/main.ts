@@ -96,10 +96,6 @@ import {
 import { join as joinPath } from "node:path";
 import { resolveConfigDirOverride, resolveStartupTarget, type StartupTarget } from "./argv";
 import { buildExtensionDirMap, buildExtensionRecords } from "./extensionRecords";
-import {
-  applyConfiguredKeybindingPreset as applyConfiguredKeybindingPresetImpl,
-  wireKeybindingPresetConfigSync,
-} from "./keybindingPresetConfigSync";
 import { handlePasteEvent } from "./keyRouting";
 import { createKeymapState, type KeymapState } from "./keymapState";
 import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
@@ -359,32 +355,6 @@ export interface AssemblyRoot {
    */
   applyKittyKeyboardVerdict(isKittyCapable: boolean): Promise<void>;
   /**
-   * Re-resolve the `keybindings.preset` setting (Req 4.8, design.md
-   * §6.6, Issue #81 Phase 2) via `@tecode/core`'s `resolveKeybindingPreset`
-   * and feed the result into `keymap`'s `preset` layer via
-   * `keymap.setPresetEntries` — the SAME two-call-site pattern
-   * `ui/themeConfigSync.ts`'s `applyConfiguredTheme` uses for
-   * `workbench.colorTheme`: `runTecode` calls this once, explicitly, after
-   * `config.ready` settles (reading `config.get(...)` any earlier would
-   * only ever see the schema default, `"default"` — `ThemeConfigSync`'s own
-   * TSDoc explains why), and {@link keybindingPresetConfigSync} below calls
-   * it again on every live `keybindings.preset` change. A non-string or
-   * missing config value falls back to `"default"`
-   * (`config/coreDefaults.ts`'s `DEFAULT_KEYBINDING_PRESET`).
-   * Synchronous and never throws: `resolveKeybindingPreset` itself never
-   * throws (that function's own TSDoc), and any other unexpected failure
-   * is caught and logged rather than propagated, degrading to an empty
-   * preset layer — matching {@link applyKittyKeyboardVerdict}'s own
-   * defensive posture for the sibling `fallback` layer.
-   */
-  applyConfiguredKeybindingPreset(): void;
-  /** Live `keybindings.preset` config-change subscription (Req 4.8,
-   * design.md §6.6) — mirrors {@link themeConfigSync}'s
-   * `workbench.colorTheme` wiring, just for the `preset` layer instead of
-   * the active theme. Disposed alongside every other startup-owned
-   * subscription in {@link wireProcessExit}. */
-  keybindingPresetConfigSync: Disposable;
-  /**
    * Apply the CURRENT `clipboard.useSystemClipboard` setting (Issue #91)
    * to {@link clipboard}'s system-clipboard-sync flag. Lives here, in the
    * composition root, rather than in `editor-core` (the extension that
@@ -393,12 +363,9 @@ export interface AssemblyRoot {
    * `read`/`write`, never the host-only `setSystemClipboardEnabled` this
    * needs (`create.ts`'s "narrowing, not re-implementing" boundary
    * extended to this one setting): only `main.ts` holds the real
-   * `Clipboard` instance. Mirrors `applyConfiguredKeybindingPreset`'s own
-   * shape (a core-owned setting wired to a core-owned service) even though
-   * THIS setting's schema is extension-owned, not `config/coreDefaults.
-   * ts`'s. `runTecode` calls this once after `config.ready` settles;
-   * {@link clipboardConfigSync} (below) calls it again on every live
-   * change to that one key. Falls back to `true` — matching both this
+   * `Clipboard` instance. `runTecode` calls this once after `config.ready`
+   * settles; {@link clipboardConfigSync} (below) calls it again on every
+   * live change to that one key. Falls back to `true` — matching both this
    * setting's own schema default and {@link Clipboard}'s own internal
    * default — when `config.get(...)` reports nothing yet (e.g. before
    * `editor-core`'s manifest has been discovered/registered; an explicit
@@ -410,9 +377,9 @@ export interface AssemblyRoot {
    */
   applyClipboardSystemSetting(): void;
   /** Live `clipboard.useSystemClipboard` config-change subscription (Issue
-   * #91) — mirrors {@link keybindingPresetConfigSync}'s own shape, just for
-   * {@link applyClipboardSystemSetting} instead of the keybinding preset
-   * layer. Disposed alongside every other startup-owned subscription in
+   * #91) — mirrors {@link themeConfigSync}'s own shape, just for
+   * {@link applyClipboardSystemSetting} instead of the active theme.
+   * Disposed alongside every other startup-owned subscription in
    * {@link wireProcessExit}. */
   clipboardConfigSync: Disposable;
   /** The live two-stroke chord state machine (Req 4.4, design.md §6.1,
@@ -848,15 +815,6 @@ export function buildAssemblyRoot(
   // registration (`config/coreDefaults.ts`'s TSDoc).
   registerCoreConfiguration(config);
 
-  // `AssemblyRoot.applyConfiguredKeybindingPreset`/`keybindingPresetConfigSync`
-  // — see those fields' TSDoc. `keybindingPresetConfigSync.ts`'s own TSDoc
-  // explains why this pair lives in a dedicated `cli`-local module (mirroring
-  // `ui/themeConfigSync.ts`'s `applyConfiguredTheme`/`wireThemeConfigSync`)
-  // rather than being defined inline here.
-  const applyConfiguredKeybindingPreset = () =>
-    applyConfiguredKeybindingPresetImpl({ config, keymap, log });
-  const keybindingPresetConfigSync = wireKeybindingPresetConfigSync({ config, keymap, log });
-
   // `AssemblyRoot.applyClipboardSystemSetting`/`clipboardConfigSync` (Issue
   // #91) — see that field's TSDoc for why this wiring lives here rather
   // than in `editor-core`, despite that extension owning the setting's
@@ -1155,8 +1113,6 @@ export function buildAssemblyRoot(
     workspaceRoot,
     keymap,
     applyKittyKeyboardVerdict,
-    applyConfiguredKeybindingPreset,
-    keybindingPresetConfigSync,
     applyClipboardSystemSetting,
     clipboardConfigSync,
     chordMachine,
@@ -1409,7 +1365,6 @@ export interface ShutdownRoot {
   editorLangIdSync: Pick<Disposable, "dispose">;
   themeConfigSync: Pick<Disposable, "dispose">;
   sidebarWidthConfigSync: Pick<Disposable, "dispose">;
-  keybindingPresetConfigSync: Pick<Disposable, "dispose">;
   themeSelectCommand: Pick<Disposable, "dispose">;
   openFileCommand: Pick<Disposable, "dispose">;
   tabCommands: Pick<Disposable, "dispose">;
@@ -1502,7 +1457,6 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.editorLangIdSync.dispose();
       root.themeConfigSync.dispose();
       root.sidebarWidthConfigSync.dispose();
-      root.keybindingPresetConfigSync.dispose();
       root.clipboardConfigSync.dispose();
       // Issue #98 Phase 5: the pty service owns a REAL child process
       // (unlike `clipboard`, which owns nothing OS-level to release) —
@@ -1753,20 +1707,9 @@ export async function runTecode(
   // `loadContributions` settles).
   applyConfiguredTheme(root.config, root.themeService);
 
-  // Apply the ACTUAL configured `keybindings.preset` now that `config.ready`
-  // has settled (Req 4.8, design.md §6.6) — same "schema default only, until
-  // ready" reasoning as `workbench.colorTheme` above
-  // (`AssemblyRoot.applyConfiguredKeybindingPreset`'s TSDoc), but with no
-  // `themesReadyPromise`-equivalent second call needed: unlike a theme id, a
-  // preset name never depends on anything `loadExtensions`/discovery
-  // discovers (`keymap/presetKeybindings.ts`'s fixed, closed
-  // `KEYBINDING_PRESET_NAMES` set) — this one call is the whole of the
-  // initial application.
-  root.applyConfiguredKeybindingPreset();
-
   // Apply the ACTUAL configured `workbench.sidebarWidth` now that
   // `config.ready` has settled (Issue #105) — same "schema default only,
-  // until ready" reasoning as `keybindings.preset` above
+  // until ready" reasoning as `workbench.colorTheme` above
   // (`ui/sidebarWidthConfigSync.ts`'s TSDoc), and likewise no
   // `themesReadyPromise`-equivalent second call needed: a sidebar width
   // never depends on anything `loadExtensions`/discovery resolves.
@@ -1774,7 +1717,7 @@ export async function runTecode(
 
   // Apply the ACTUAL configured `clipboard.useSystemClipboard` now that
   // `config.ready` has settled (Issue #91) — same "schema default only,
-  // until ready" reasoning as `keybindings.preset` above
+  // until ready" reasoning as `workbench.colorTheme` above
   // (`AssemblyRoot.applyClipboardSystemSetting`'s TSDoc).
   root.applyClipboardSystemSetting();
 

@@ -59,6 +59,8 @@ import {
 const REPO_ROOT = resolve(import.meta.dir, "../../..");
 const SETTINGS_SAMPLE_PATH = resolve(REPO_ROOT, "samples/settings.json");
 const KEYBINDINGS_SAMPLE_PATH = resolve(REPO_ROOT, "samples/keybindings.json");
+const EMACS_SAMPLE_PATH = resolve(REPO_ROOT, "samples/keybindings.emacs.json");
+const WINDOWS_SAMPLE_PATH = resolve(REPO_ROOT, "samples/keybindings.windows.json");
 
 /** `@tecode/core`'s public surface exports `getUserConfigDir` but not the
  * two file-specific helpers (`getUserSettingsPath`/`getUserKeybindingsPath`
@@ -188,7 +190,6 @@ async function loadSamplesThroughRealPath(settingsText: string, keybindingsText:
       defaults: [...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS],
       fallback: BUNDLED_FALLBACK_KEYBINDINGS,
       extension: loadResult.extensionKeybindings,
-      preset: [],
       user: userKeybindingEntries as KeybindingContribution[],
     },
     { log: bindingTableLog },
@@ -288,4 +289,136 @@ describe("samples/keybindings.json (Issue #38)", () => {
     // nothing should resolve there any more.
     expect(table.lookup("ctrl+d", () => true)).toBeUndefined();
   });
+});
+
+/** Every real command id known to a full startup (`main.ts`'s own
+ * composition — same two core-defaults arrays plus every built-in
+ * manifest's `contributes.commands`, mirroring this file's own
+ * `loadSamplesThroughRealPath` composition and the now-removed
+ * `keybindingPresets.test.ts`'s identical "derive from the real sources,
+ * don't hand-copy a list" approach, Issue #115). */
+const ALL_COMMAND_IDS = new Set<string>([
+  ...MODAL_DEFAULT_KEYBINDINGS.map((e) => e.command),
+  ...TAB_DEFAULT_KEYBINDINGS.map((e) => e.command),
+  ...builtinManifests.flatMap((m) => (m.contributes.commands ?? []).map((c) => c.id)),
+]);
+
+/** The target command of a `KeybindingContribution.command`, stripping a
+ * leading `"-"` removal marker if present (`bindingTable.ts`'s
+ * `compileEntry` does the same before validating). */
+function targetCommand(raw: string): string {
+  return raw.startsWith("-") ? raw.slice(1) : raw;
+}
+
+/**
+ * Shared assertions for `samples/keybindings.emacs.json`/
+ * `samples/keybindings.windows.json` (Issue #115, replacing the removed
+ * `keybindings.preset` "emacs"/"windows" bundled schemes) — these are now
+ * just plain, copyable `keybindings.json` starting points, so they get
+ * the SAME "parses, loads cleanly, every command id is real" coverage as
+ * `samples/keybindings.json` above, house style (no `describe.each`
+ * precedent in this codebase) kept as two explicit `describe` blocks
+ * below rather than parameterized here. A sample that stops parsing, or
+ * that references a command id that no longer exists, fails CI instead of
+ * shipping silently broken. Loaded with an empty `settings.json` (`"{}"`)
+ * rather than the shared sample, since neither file has anything to do
+ * with settings — only the `user` keybinding layer is under test here.
+ */
+/**
+ * The Emacs sample's `ctrl+x ctrl+s` chord makes `ctrl+x` a chord PREFIX,
+ * and `chords.ts`'s `handleIdleStroke` checks `hasSequencePrefix` FIRST,
+ * unconditionally, before ever calling `lookup` — so editor-core's default
+ * `ctrl+x` -> Cut stops firing directly the moment that chord exists. That
+ * is faithful to real Emacs (C-x IS a prefix there, and cut is C-w), but it
+ * means the sample MUST carry its own `ctrl+w` -> Cut entry or it silently
+ * ships an editor with no working cut key. An earlier draft of this sample
+ * claimed ctrl+x was unclaimed and shipped without that entry; this test
+ * exists so that mistake cannot come back.
+ *
+ * Asserts against a REAL `BindingTable` built from the sample plus the two
+ * default layers that actually collide with it, rather than re-reading the
+ * file's text — the hazard is entirely about prefix-vs-exact resolution,
+ * which only the table can answer.
+ */
+test("samples/keybindings.emacs.json keeps Cut reachable despite making ctrl+x a chord prefix", async () => {
+  const raw = await readFile(EMACS_SAMPLE_PATH, "utf8");
+  const parsed = parseJsonc<KeybindingContribution[]>(raw);
+  expect(parsed.ok).toBe(true);
+
+  const table = createBindingTable(
+    {
+      defaults: TAB_DEFAULT_KEYBINDINGS,
+      fallback: [],
+      extension: [
+        { key: "ctrl+x", command: "editor.action.clipboardCut", when: "editorTextFocus" },
+      ],
+      user: parsed.ok ? parsed.value : [],
+    },
+    { log: createHostLog() },
+  );
+
+  const inEditor = (key: string) => (key === "editorTextFocus" ? true : undefined);
+  const elsewhere = () => undefined;
+
+  // ctrl+x really does become a prefix — the premise of the whole hazard.
+  expect(table.hasSequencePrefix("ctrl+x", inEditor)).toBe(true);
+  // ...so Cut has to live somewhere else, and the sample must provide it.
+  expect(table.lookup("ctrl+w", inEditor)?.command).toBe("editor.action.clipboardCut");
+  // The ctrl+w takeover is scoped: close-tab survives outside the editor.
+  expect(table.lookup("ctrl+w", elsewhere)?.command).toBe("tab.close");
+  // And the chord it all exists for still resolves.
+  expect(table.lookup("ctrl+x ctrl+s", inEditor)?.command).toBe("editor.action.save");
+});
+
+function testKeybindingSamplePresetReplacement(samplePath: string): void {
+  test("parses as a JSONC array via the repo's real parser", async () => {
+    const raw = await readFile(samplePath, "utf8");
+    const parsed = parseJsonc<unknown>(raw);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(Array.isArray(parsed.value)).toBe(true);
+  });
+
+  test("loads through a real BindingTable (defaults + fallback + every built-in's keybindings + this file as the user layer) with zero warnings", async () => {
+    const raw = await readFile(samplePath, "utf8");
+    const { bindingTableLog } = await loadSamplesThroughRealPath("{}", raw);
+
+    expect(bindingTableLog.entries()).toEqual([]);
+  });
+
+  test("every entry's command (or -removal target) is a real command id", async () => {
+    const raw = await readFile(samplePath, "utf8");
+    const parsed = parseJsonc<KeybindingContribution[]>(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    expect(ALL_COMMAND_IDS.size).toBeGreaterThan(10); // sanity: the set isn't vacuous
+    for (const entry of parsed.value) {
+      expect(ALL_COMMAND_IDS.has(targetCommand(entry.command))).toBe(true);
+    }
+  });
+
+  test("every non-removal entry actually wins at its own key, as the user layer (highest precedence)", async () => {
+    const raw = await readFile(samplePath, "utf8");
+    const parsed = parseJsonc<KeybindingContribution[]>(raw);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const { table } = await loadSamplesThroughRealPath("{}", raw);
+    const alwaysTrue = () => true;
+
+    for (const entry of parsed.value) {
+      if (entry.command.startsWith("-")) continue; // a removal has no resolved command of its own to check.
+      const resolved = table.lookup(entry.key, alwaysTrue);
+      expect(resolved?.command).toBe(entry.command);
+      expect(resolved?.layer).toBe("user");
+    }
+  });
+}
+
+describe("samples/keybindings.emacs.json (Issue #115)", () => {
+  testKeybindingSamplePresetReplacement(EMACS_SAMPLE_PATH);
+});
+
+describe("samples/keybindings.windows.json (Issue #115)", () => {
+  testKeybindingSamplePresetReplacement(WINDOWS_SAMPLE_PATH);
 });

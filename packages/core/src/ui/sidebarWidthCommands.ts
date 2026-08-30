@@ -29,20 +29,26 @@
  * candidate continuation's `when` clause before reporting a live chord
  * prefix (that function's own TSDoc: "A prefix whose only continuation's
  * `when` clause fails against `get` returns `false` here") — this is what
- * keeps the Emacs preset's bare `ctrl+k` -> `editor.action.deleteLine`
- * binding reachable directly (`presetKeybindings.ts`'s "ctrl+k ctrl+s
- * chord-shadowing hazard" TSDoc explains the general mechanism, and
- * `keybindingPresets.test.ts`'s regression test now includes THIS module's
- * bindings in the layered table it presses against the real chord machine):
- * under `editorTextFocus`, `sidebarFocus`/`explorerFocus` are both false, so
- * `hasSequencePrefix("ctrl+k", ...)` finds neither `ctrl+k [` nor
- * `ctrl+k ]` visible, and Emacs's own `ctrl+k` resolves directly rather than
- * entering chord-pending state. Dropping the `when` clause here would make
- * both bindings visible UNCONDITIONALLY, breaking that regression test —
+ * keeps a HAND-BOUND `ctrl+k` (e.g. an Emacs-style kill-line binding a
+ * user adds to their own `keybindings.json` — `samples/
+ * keybindings.emacs.json`'s own TSDoc-style header explains why) reachable
+ * directly: under `editorTextFocus`, `sidebarFocus`/`explorerFocus` are
+ * both false, so `hasSequencePrefix("ctrl+k", ...)` finds neither
+ * `ctrl+k [` nor `ctrl+k ]` visible, and the user's own `ctrl+k` resolves
+ * directly rather than entering chord-pending state.
+ * `sidebarWidthCommands.test.ts`'s "the ctrl+k chord-shadowing hazard"
+ * describe block proves exactly this against a real `BindingTable`/
+ * `ChordStateMachine` pair (originally proven — before Issue #115 removed
+ * the bundled keybinding presets — by `keybindingPresets.test.ts` pressing
+ * the Emacs preset's own `ctrl+k` binding through the same real chord
+ * machine; the guarantee this `when` clause provides outlives that
+ * removal, since a hand-authored `user`-layer `ctrl+k` binding depends on
+ * it exactly as much as a preset's did). Dropping the `when` clause here
+ * would make both bindings visible UNCONDITIONALLY, breaking that test —
  * this `when` clause is load-bearing, not decorative. No existing binding
- * anywhere in `keybindings.fallback.json`, either preset, or any builtin
- * manifest uses `[`/`]` as a stroke (verified by grep across
- * `packages/`), so both tails are free.
+ * anywhere in `keybindings.fallback.json` or any builtin manifest uses
+ * `[`/`]` as a stroke (verified by grep across `packages/`), so both
+ * tails are free.
  */
 
 import type { CommandHandler, CommandMeta, Disposable, KeybindingContribution } from "@tecode/api";
@@ -70,9 +76,9 @@ export const SIDEBAR_WIDTH_STEP = 5;
  * (`shell.tsx`'s `Sidebar`, `"sidebarFocus"`) or the explorer's tree
  * specifically (`builtin/explorer/ExplorerView.tsx`'s
  * `EXPLORER_FOCUS_CONTEXT_KEY`, `"explorerFocus"`) holds focus. Exported so
- * `keybindingPresets.test.ts`'s regression test can assert against the same
- * literal this module actually registers with, rather than a hand-copied
- * duplicate that could drift. */
+ * `sidebarWidthCommands.test.ts`'s own regression tests can assert against
+ * the same literal this module actually registers with, rather than a
+ * hand-copied duplicate that could drift. */
 export const SIDEBAR_WIDTH_FOCUS_WHEN = "sidebarFocus || explorerFocus";
 
 /** Default keybindings for both commands (this module's TSDoc) — fed into

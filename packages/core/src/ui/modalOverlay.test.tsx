@@ -175,7 +175,7 @@ describe("ModalOverlay — end-to-end keyboard accept/cancel through the real mo
     const modalService = createModalService();
     registerModalCommands(commands, modalService);
     const table = createBindingTable(
-      { defaults: MODAL_DEFAULT_KEYBINDINGS, fallback: [], extension: [], preset: [], user: [] },
+      { defaults: MODAL_DEFAULT_KEYBINDINGS, fallback: [], extension: [], user: [] },
       { log },
     );
     return { context, commands, modalService, table };

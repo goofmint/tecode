@@ -43,7 +43,7 @@
  * (duplicated here as {@link ACTIVITY_BAR_WIDTH_FOR_CAP} rather than
  * imported: `shell.tsx` already imports {@link clampSidebarWidth} from this
  * module, so the reverse edge would be circular — matches
- * `coreDefaults.ts`'s `DEFAULT_COLOR_THEME_ID`/`DEFAULT_KEYBINDING_PRESET`
+ * `coreDefaults.ts`'s `DEFAULT_COLOR_THEME_ID`/`DEFAULT_SIDEBAR_WIDTH`
  * precedent for this exact kind of small, hand-kept-in-sync duplication).
  * Wide enough to show a handful of characters of a tree label even at the
  * narrowest allowed width.

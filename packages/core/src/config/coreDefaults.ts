@@ -38,31 +38,12 @@ import type { ConfigurationContribution, Disposable } from "@tecode/api";
 export const DEFAULT_COLOR_THEME_ID = "tecode.dark-modern";
 
 /**
- * `keybindings.preset`'s default value (Req 4.8, design.md §6.6, Issue
- * #81 Phase 2) — the `keymap/presetKeybindings.ts`'s
- * `DEFAULT_KEYBINDING_PRESET_NAME` value, DUPLICATED here as a literal
- * string for the SAME reason {@link DEFAULT_COLOR_THEME_ID} above
- * duplicates `themes-default`'s theme id rather than importing it: unlike
- * that case this isn't a `core`/`builtin` layering constraint (both
- * `config/` and `keymap/` live inside `core`), but `config/` has no
- * EXISTING import from `keymap/` anywhere in this codebase today — only
- * the reverse (`keymap/fallbackKeybindings.ts`'s `../config/jsonc`) — and
- * introducing a brand-new `config -> keymap` edge for one literal string
- * is not worth it. Kept in sync by hand;
- * `packages/cli/src/keybindingPresets.test.ts` asserts this literal
- * equals the real `DEFAULT_KEYBINDING_PRESET_NAME` export, so a drift
- * between the two fails a test rather than silently resolving to the
- * wrong default.
- */
-export const DEFAULT_KEYBINDING_PRESET = "default";
-
-/**
  * `workbench.sidebarWidth`'s default value (Issue #105) — DUPLICATED here
  * as a literal number for the SAME reason {@link DEFAULT_COLOR_THEME_ID}
  * above duplicates `themes-default`'s theme id: `layoutState.ts`'s
  * `DEFAULT_LAYOUT_STATE.sidebarWidth` is the real source of truth (`ui/` has
  * no existing import edge into `config/`, and introducing one for a single
- * literal number is not worth it, matching `DEFAULT_KEYBINDING_PRESET`'s
+ * literal number is not worth it, matching {@link DEFAULT_COLOR_THEME_ID}'s
  * identical "no new cross-module edge for one literal" reasoning one
  * paragraph up). Kept in sync by hand;
  * `sidebarWidthCommands.test.ts`/`coreDefaults.test.ts` assert this literal
@@ -96,17 +77,17 @@ export interface CoreConfigRegistrar {
  * rather than `ThemeRegistry`'s bare `BASE_THEME_ID` fallback palette, so
  * a fresh install with no `settings.json` entry still resolves to a real,
  * always-present, VS-Code-equivalent theme (Req 11.4) from the very first
- * frame; `keybindings.preset` (Req 4.8, design.md §6.6, Issue #81
- * Phase 2) selects a bundled keybinding scheme by name
- * (`keymap/presetKeybindings.ts`'s `KEYBINDING_PRESET_NAMES` —
- * `"default"`/`"emacs"`/`"windows"`), defaulting to
- * {@link DEFAULT_KEYBINDING_PRESET} (no preset — the `preset` layer
- * resolves to `[]`), applied and live-reloaded by `packages/cli/src/
- * main.ts`'s `buildAssemblyRoot` exactly like `workbench.colorTheme`
- * (`ui/themeConfigSync.ts`'s wiring pattern). An unrecognized value
- * degrades to no preset with a logged warning
- * (`resolveKeybindingPreset`'s own TSDoc) rather than throwing or
- * crashing startup; `workbench.sidebarWidth` (Issue #105, Req 6.4)
+ * frame. **`keybindings.preset` (Req 4.8, design.md §6.6, Issue #81 Phase
+ * 2) is deliberately NOT registered here any more (Issue #115)** — the
+ * bundled Emacs/Windows keybinding schemes it selected were removed in
+ * favor of copyable sample `keybindings.json` files
+ * (`samples/keybindings.emacs.json`/`samples/keybindings.windows.json`),
+ * since the highest-precedence `user` binding layer already expresses
+ * everything a preset did. No migration path is provided for a
+ * `settings.json` that still sets this key — there are no existing users
+ * to migrate, so it is simply left inert, exactly like any other
+ * unrecognized key `ConfigService` was never asked to interpret.
+ * `workbench.sidebarWidth` (Issue #105, Req 6.4)
  * duplicates `layoutState.ts`'s own `sidebarWidth` persistence as a
  * user-editable setting — a hand-edited number here is floor-clamped
  * (`sidebarWidth.ts`'s `clampSidebarWidth`) and applied to
@@ -140,12 +121,6 @@ export const CORE_CONFIGURATION: ConfigurationContribution = {
       type: "string",
       default: DEFAULT_COLOR_THEME_ID,
       description: "The id of the active color theme.",
-    },
-    "keybindings.preset": {
-      type: "string",
-      default: DEFAULT_KEYBINDING_PRESET,
-      description:
-        'A bundled keybinding scheme to layer over the defaults: "default" (none), "emacs", or "windows".',
     },
     "workbench.sidebarWidth": {
       type: "number",

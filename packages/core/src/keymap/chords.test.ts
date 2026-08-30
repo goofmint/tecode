@@ -21,7 +21,6 @@ function layersOf(partial: Partial<KeymapLayers>): KeymapLayers {
     defaults: partial.defaults ?? [],
     fallback: partial.fallback ?? [],
     extension: partial.extension ?? [],
-    preset: partial.preset ?? [],
     user: partial.user ?? [],
   };
 }
@@ -405,7 +404,6 @@ test("a disposed machine passes strokes through and executes nothing", () => {
       defaults: [{ key: "ctrl+p", command: "quickOpen.show" }],
       fallback: [],
       extension: [],
-      preset: [],
       user: [],
     },
     { log: createHostLog() },
@@ -431,7 +429,6 @@ test("a scheduler whose set() throws does not break pending entry", () => {
       defaults: [{ key: "ctrl+k ctrl+s", command: "keybindings.open" }],
       fallback: [],
       extension: [],
-      preset: [],
       user: [],
     },
     { log: createHostLog() },
