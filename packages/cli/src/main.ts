@@ -1593,6 +1593,58 @@ function wireProcessExit(root: AssemblyRoot, deps: ShutdownDeps = {}): ProcessEx
   return { shutdown };
 }
 
+/**
+ * Keeps a live Ctrl+C-interception toggle (`renderShell.tsx`'s
+ * `ShellRenderDeps.onCtrlCInterceptControlReady`, whose own TSDoc covers
+ * why this needs to exist and why toggling `exitOnCtrlC` at runtime is
+ * safe at all) in sync with the `"terminalFocus"` context key (Issue
+ * #113): `setEnabled(false)` while the terminal panel has real OpenTUI
+ * focus (Ctrl+C should reach the pty, matching every other key —
+ * `keyRouting.ts`'s `isFocused` reads the exact same key), `setEnabled
+ * (true)` the instant it does not (an interactive Ctrl+C quits the editor,
+ * the default and every-other-case behavior).
+ *
+ * Called once, synchronously, to apply the CURRENT value immediately
+ * (covers the case where `"terminalFocus"` was already `true` by the time
+ * this wiring runs — not actually reachable at first-frame time today,
+ * since `Shell` has not even mounted yet, but cheap correctness insurance
+ * against that ever changing), then again on every SUBSEQUENT
+ * `"terminalFocus"` change — never per-keystroke: `@opentui/core`'s own
+ * `exitOnCtrlC`-reading keypress handler is registered once, at
+ * `CliRenderer` construction, and runs before this codebase's own key
+ * routing (`renderShell.tsx`'s `onCtrlCInterceptControlReady` TSDoc) — so
+ * the flag must already hold the right value by the time any keystroke
+ * arrives, not react to one after the fact.
+ *
+ * `context.onDidChange`'s return `Disposable` is intentionally NOT
+ * tracked/disposed by this function's one call site (`runTecode`, below):
+ * it lives for the whole process, exactly like `wireProcessExit`'s own
+ * permanent `process.once(signal, ...)` registrations just above it in
+ * this same file — there is no narrower lifetime to tie it to, and the
+ * process exits (via `onDestroy`/`SIGINT`/`SIGTERM`, all funneling through
+ * the same `shutdown()`) before it would ever need to stop firing.
+ *
+ * Exported and unit-tested directly against a real {@link
+ * createContextService} plus a captured `setEnabled` — a real interactive
+ * Ctrl+C needs a real TTY, which `bun test`'s sandboxed stdout never
+ * provides (`shutdownOnDestroy.test.ts`'s own TSDoc makes the identical
+ * argument for `onDestroy`), so this pure sync logic, pulled out of
+ * `runTecode`'s inline `renderShell({...})` call, is where the behavior
+ * this issue is actually about is assertable at all.
+ */
+export function wireCtrlCInterceptToTerminalFocus(
+  context: Pick<ContextService, "get" | "onDidChange">,
+  setEnabled: (enabled: boolean) => void,
+): Disposable {
+  function sync(): void {
+    setEnabled(context.get<boolean>("terminalFocus") !== true);
+  }
+  sync();
+  return context.onDidChange((key) => {
+    if (key === "terminalFocus") sync();
+  });
+}
+
 /** What {@link runTecode} produced, for a non-headless (real) run — a
  * headless run instead calls `process.exit(0)` itself once the deferred
  * phase completes and never returns this. */
@@ -1787,6 +1839,13 @@ export async function runTecode(
     // correct: there is no real terminal to write an OSC 52 escape
     // sequence to.
     onClipboardWriterReady: (write) => root.clipboard.setSystemWriter(write),
+    // Issue #113: keep OpenTUI's own `exitOnCtrlC` interception in sync
+    // with `"terminalFocus"` — see `wireCtrlCInterceptToTerminalFocus`'s
+    // own TSDoc (above) for the full reasoning; `renderShellHeadless`
+    // never calls this, matching every other terminal-seam callback here.
+    onCtrlCInterceptControlReady: (setEnabled) => {
+      wireCtrlCInterceptToTerminalFocus(root.context, setEnabled);
+    },
     // Issue #91: bracketed-paste text, already decoded to UTF-8 by
     // `renderShellToTerminal` (`ShellRenderDeps.onPaste`'s TSDoc), routed
     // through `keyRouting.ts`'s `handlePasteEvent` into

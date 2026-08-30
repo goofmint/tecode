@@ -104,7 +104,6 @@ export function TerminalView(props: TerminalViewProps): ReactNode {
       session={store.getSession()}
       cols={Math.max(1, props.width ?? DEFAULT_COLS)}
       rows={Math.max(1, props.height ?? DEFAULT_ROWS)}
-      autoFocus
       onFocusHandleChange={handleFocusHandleChange}
     />
   );
