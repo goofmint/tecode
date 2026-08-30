@@ -330,3 +330,159 @@ describe("createLayoutStateService — update()/debounce/flush (Req 6.4, design.
     expect(written.activeView).toBe("explorer");
   });
 });
+
+describe("createLayoutStateService — onDidChange (Issue #101)", () => {
+  test("a registered listener is called synchronously on update()", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let calls = 0;
+    service.onDidChange(() => {
+      calls += 1;
+      // Synchronous: get() already reflects the new value by the time the
+      // listener runs, with no microtask/timer in between.
+      expect(service.get().panelVisible).toBe(true);
+    });
+
+    service.update({ panelVisible: true });
+    expect(calls).toBe(1);
+  });
+
+  test("multiple listeners all fire", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let firstCalls = 0;
+    let secondCalls = 0;
+    service.onDidChange(() => {
+      firstCalls += 1;
+    });
+    service.onDidChange(() => {
+      secondCalls += 1;
+    });
+
+    service.update({ sidebarWidth: 50 });
+    expect(firstCalls).toBe(1);
+    expect(secondCalls).toBe(1);
+  });
+
+  test("a disposed listener stops firing; dispose() is idempotent", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let calls = 0;
+    const sub = service.onDidChange(() => {
+      calls += 1;
+    });
+
+    service.update({ sidebarWidth: 1 });
+    expect(calls).toBe(1);
+
+    sub.dispose();
+    service.update({ sidebarWidth: 2 });
+    expect(calls).toBe(1); // no further calls once disposed
+
+    // Idempotent — a second dispose() must not throw or double-remove
+    // some other listener.
+    expect(() => sub.dispose()).not.toThrow();
+  });
+
+  test("one listener throwing does not affect the others or the update() caller", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let secondCalls = 0;
+    service.onDidChange(() => {
+      throw new Error("boom");
+    });
+    service.onDidChange(() => {
+      secondCalls += 1;
+    });
+
+    expect(() => service.update({ sidebarWidth: 7 })).not.toThrow();
+    expect(secondCalls).toBe(1);
+    expect(log.entries().some((e) => e.level === "error" && e.error.message.includes("boom"))).toBe(true);
+  });
+
+  test("a no-op update (value unchanged) does not fire onDidChange", async () => {
+    const { fs } = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+    await service.ready;
+
+    let calls = 0;
+    service.onDidChange(() => {
+      calls += 1;
+    });
+
+    // DEFAULT_LAYOUT_STATE.panelVisible is already false.
+    service.update({ panelVisible: false });
+    expect(calls).toBe(0);
+
+    service.update({ panelVisible: true });
+    expect(calls).toBe(1);
+  });
+  test("a listener that re-enters update() during the initial load() does not have its value reverted (Issue #101 review)", async () => {
+    // `onDidChange` fires from inside `update()`, so a listener is free to
+    // call `update()` again re-entrantly. That inner (newer) call records
+    // its fields in `localOverrides` first; if the outer frame then
+    // recorded ITS older `partial` afterwards, `localOverrides` would end
+    // up stale while `state` was correct — and `load()` re-applies
+    // `localOverrides` on top of the persisted values, silently reverting
+    // the newest change once the read settled. Recording before firing is
+    // what keeps the two in step.
+    //
+    // 33/50 rather than 30/50 deliberately: `DEFAULT_LAYOUT_STATE`'s own
+    // `sidebarWidth` is 30, so an outer update to 30 changes nothing,
+    // `hasChanged` correctly skips the notification, and the listener
+    // never runs at all — the test would pass without exercising anything.
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    let resolveRead: (text: string) => void = () => {};
+    const fs = {
+      readFile: () => new Promise<string>((resolve) => { resolveRead = resolve; }),
+      mkdir: async () => {},
+      writeFile: async () => {},
+    };
+    const service = createLayoutStateService({
+      log,
+      sink,
+      path: "/state.json",
+      fs,
+      timer: { schedule: () => 1, cancel() {} },
+    });
+
+    let reentered = false;
+    service.onDidChange(() => {
+      if (reentered) return;
+      reentered = true;
+      service.update({ sidebarWidth: 50 });
+    });
+
+    service.update({ sidebarWidth: 33 });
+    expect(reentered).toBe(true);
+    // The re-entrant (newer) value wins immediately.
+    expect(service.get().sidebarWidth).toBe(50);
+
+    // The persisted file sets the same field — `localOverrides` is what
+    // must protect the in-flight value from it.
+    resolveRead(JSON.stringify({ sidebarWidth: 10 }));
+    await service.ready;
+
+    // Still 50. Before the fix this reverted to 33, the OUTER call's value.
+    expect(service.get().sidebarWidth).toBe(50);
+  });
+});

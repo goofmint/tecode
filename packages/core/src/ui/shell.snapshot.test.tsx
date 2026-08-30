@@ -861,6 +861,55 @@ describe("Shell — FindWidget wiring (Req 11.1, design.md §13)", () => {
   });
 });
 
+describe("Shell — layoutState.onDidChange keeps React in sync with external writers (Issue #101)", () => {
+  test("layoutState.update({ panelVisible: true }) called from outside Shell makes the panel visible immediately", async () => {
+    // This is the regression test for Issue #101: `useLayoutState` used to
+    // keep its own optimistic `useState` copy in sync only because the
+    // Shell was assumed to be `layoutState`'s one and only writer
+    // (`shell.tsx`'s TSDoc). `panelCommands.ts`'s `workbench.action.showPanel`
+    // handler (Issue #98) broke that assumption — it holds only
+    // `layoutState` and calls `update()` directly, with no Shell handler
+    // anywhere in the loop — so before this fix, running that command left
+    // `panelVisible: true` persisted to disk while the *running* Shell kept
+    // rendering the panel hidden until the next restart re-seeded
+    // `useState` from `ready`. This test drives exactly that shape: an
+    // `update()` call from outside `Shell` entirely, asserted against the
+    // real rendered frame rather than an internal prop.
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    slotRegistry.registerView(
+      "panel.tab",
+      "demo.terminal",
+      () => <text>Demo Terminal Content</text>,
+      { title: "Terminal" },
+    );
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => { await renderOnce(); });
+    // `panelVisible` defaults `false` (`DEFAULT_LAYOUT_STATE`) — the panel,
+    // and therefore its tab's content, is not rendered yet.
+    expect(captureCharFrame()).not.toContain("Demo Terminal Content");
+
+    // The external write — no Shell prop, handler, or command dispatch
+    // involved, exactly like `panelCommands.ts`'s handler.
+    act(() => {
+      layoutState.update({ panelVisible: true });
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(captureCharFrame()).toContain("Demo Terminal Content");
+  });
+});
+
 /** Depth-first collection of every `focusable` descendant, used only by the
  * focus test above to locate the Shell's region roots without Shell
  * exposing test-only refs on its public props. */
