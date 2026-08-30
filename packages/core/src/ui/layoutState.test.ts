@@ -8,6 +8,7 @@ import {
   type LayoutStateFs,
   type LayoutStateTimer,
 } from "./layoutState";
+import { MIN_SIDEBAR_WIDTH } from "./sidebarWidth";
 
 /** A `StatusSink` stub that records every error it receives (matches
  * `config/service.test.ts`'s `createRecordingSink`). */
@@ -130,6 +131,30 @@ describe("createLayoutStateService — load (Req 6.4)", () => {
     expect(service.get()).toEqual(DEFAULT_LAYOUT_STATE);
     expect(errors.some((e) => e.path === "/state.json")).toBe(true);
     expect(log.entries().some((e) => e.level === "error")).toBe(true);
+  });
+
+  test("a hand-edited state.json with a zero/negative sidebarWidth is clamped to MIN_SIDEBAR_WIDTH (Issue #105)", async () => {
+    const { fs } = createFakeFs({ "/state.json": JSON.stringify({ sidebarWidth: 0 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+
+    await service.ready;
+    expect(service.get().sidebarWidth).toBe(MIN_SIDEBAR_WIDTH);
+  });
+
+  test("a hand-edited state.json with an absurdly huge sidebarWidth is NOT capped here (no terminal width known yet, Issue #105)", async () => {
+    // `coerceLayoutState` only ever applies the floor half of the clamp
+    // (`layoutState.ts`'s own TSDoc) — the ceiling needs a live terminal
+    // width, which does not exist at load time. `shell.tsx`'s `Shell` is
+    // what caps this at render time instead.
+    const { fs } = createFakeFs({ "/state.json": JSON.stringify({ sidebarWidth: 99999 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+
+    await service.ready;
+    expect(service.get().sidebarWidth).toBe(99999);
   });
 
   test("a partially-typed file falls back per-field to defaults", async () => {

@@ -38,6 +38,18 @@
  * 5. No `"vim"` preset exists anywhere — Issue #81's author explicitly
  *    dropped it (this codebase's `when` contexts are purely focus-based,
  *    with no mode concept a non-modal "vim" preset could honestly claim).
+ *
+ * `buildRealTable`'s `defaults` layer additionally includes Issue #105's
+ * `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS` (`ui/sidebarWidthCommands.ts`,
+ * `ctrl+k [`/`ctrl+k ]`) alongside `MODAL_DEFAULT_KEYBINDINGS`/
+ * `TAB_DEFAULT_KEYBINDINGS` — a SECOND, independent reason `ctrl+k` could
+ * wrongly stay a live chord prefix under `editorTextFocus`, on top of
+ * `keybindings-editor`'s own `ctrl+k ctrl+s`. Point 4's chord-machine test
+ * therefore now also guards `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS`'s own
+ * `SIDEBAR_WIDTH_FOCUS_WHEN` clause, not just Emacs's `-keybindings.open`
+ * removal — see "the ctrl+k chord-shadowing hazard" describe block below
+ * for both halves (the `when` clause failing under `editorTextFocus`, and
+ * succeeding under `sidebarFocus`/`explorerFocus`).
  */
 
 import { describe, expect, test } from "bun:test";
@@ -57,6 +69,7 @@ import {
   MODAL_DEFAULT_KEYBINDINGS,
   parseJsonc,
   resolveKeybindingPreset,
+  SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
   TAB_DEFAULT_KEYBINDINGS,
   WINDOWS_KEYBINDING_PRESET,
   type BindingLayer,
@@ -93,7 +106,13 @@ function targetCommand(raw: string): string {
  * run only ever has one `keybindings.preset` value active at a time. */
 function buildRealTable(preset: KeybindingContribution[], log: HostLog) {
   const layers: KeymapLayers = {
-    defaults: [...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS],
+    // `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS` (Issue #105, `ui/
+    // sidebarWidthCommands.ts`) joins `main.ts`'s real `defaults` layer
+    // alongside `MODAL_DEFAULT_KEYBINDINGS`/`TAB_DEFAULT_KEYBINDINGS` — this
+    // table must match `main.ts`'s real composition exactly, since the
+    // whole point of this file is pressing the REAL layered table, not a
+    // hand-picked subset of it (this module's own TSDoc).
+    defaults: [...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS, ...SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS],
     fallback: BUNDLED_FALLBACK_KEYBINDINGS,
     extension: builtinManifests.flatMap((m) => m.contributes.keybindings ?? []),
     preset,
@@ -200,10 +219,27 @@ describe("the ctrl+k chord-shadowing hazard (THE reason preset must outrank exte
     expect(table.hasSequencePrefix("ctrl+k", contextOf({}))).toBe(true);
   });
 
-  test("WITH the emacs preset active, ctrl+k is no longer a live chord prefix", () => {
+  test("WITH the emacs preset active, ctrl+k is no longer a live chord prefix under editorTextFocus — this also proves Issue #105's own SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS `when` clause, not just Emacs's -keybindings.open removal", () => {
+    // `buildRealTable`'s `defaults` layer now includes
+    // `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS` (`ctrl+k [`/`ctrl+k ]`,
+    // `sidebarWidthCommands.ts`) alongside `keybindings-editor`'s
+    // `ctrl+k ctrl+s` — TWO independent reasons `ctrl+k` could wrongly stay
+    // a live chord prefix under `editorTextFocus` here. Emacs's own
+    // `-keybindings.open` removal (`presets/emacs.json`) handles the first;
+    // `SIDEBAR_WIDTH_FOCUS_WHEN` ("sidebarFocus || explorerFocus") failing
+    // against this context (neither is set) handles the second. Dropping
+    // EITHER `when` clause — Emacs's removal, or `sidebarWidthCommands.ts`'s
+    // own `SIDEBAR_WIDTH_FOCUS_WHEN` — would flip this assertion to `true`.
     const log = createHostLog();
     const table = buildRealTable(EMACS_KEYBINDING_PRESET, log);
     expect(table.hasSequencePrefix("ctrl+k", contextOf({ editorTextFocus: true }))).toBe(false);
+  });
+
+  test("ctrl+k IS a live chord prefix while the sidebar/explorer is focused, even with no preset active — the positive half of SIDEBAR_WIDTH_FOCUS_WHEN", () => {
+    const log = createHostLog();
+    const table = buildRealTable([], log);
+    expect(table.hasSequencePrefix("ctrl+k", contextOf({ sidebarFocus: true }))).toBe(true);
+    expect(table.hasSequencePrefix("ctrl+k", contextOf({ explorerFocus: true }))).toBe(true);
   });
 
   test("pressing plain ctrl+k under the Emacs preset resolves DIRECTLY to editor.action.deleteLine — not a pending chord (Req 4.8)", () => {

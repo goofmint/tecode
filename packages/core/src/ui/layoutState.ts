@@ -42,6 +42,12 @@
  * layout and have every subscriber find out immediately, not just on the
  * next launch. See {@link LayoutStateService.onDidChange}'s own TSDoc for
  * why this had to be added and why it does not also fire from `load()`.
+ *
+ * **`sidebarWidth` validation (Issue #105)**: {@link coerceLayoutState}
+ * additionally clamps a loaded `sidebarWidth` through `sidebarWidth.ts`'s
+ * `clampSidebarWidth` — see that function's own TSDoc for why only the
+ * floor half of the clamp applies here, and `shell.tsx`'s `Shell` for the
+ * terminal-width-aware other half.
  */
 
 import { readFile as nodeReadFile, writeFile as nodeWriteFile, mkdir as nodeMkdir } from "node:fs/promises";
@@ -49,6 +55,7 @@ import { dirname } from "node:path";
 import type { Disposable, Event, Listener } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserLayoutStatePath } from "../host/paths";
+import { clampSidebarWidth } from "./sidebarWidth";
 
 /** Persisted UI layout state (Req 6.4). */
 export interface LayoutState {
@@ -211,15 +218,26 @@ function hasChanged(prev: LayoutState, partial: Partial<LayoutState>): boolean {
 /** Best-effort field-by-field validation of a parsed `state.json` (mirrors
  * `config/service.ts`'s `matchesSchemaType` policy): a field with the wrong
  * runtime shape falls back to `fallback`'s value for that field rather than
- * failing the whole load. */
+ * failing the whole load.
+ *
+ * **`sidebarWidth` is additionally run through `sidebarWidth.ts`'s
+ * `clampSidebarWidth`** (Issue #105) — before this, ANY number here,
+ * however produced (a hand-edited `state.json`, a future writer bug), sailed
+ * straight through into `LayoutState` unchecked, with no writer ever having
+ * existed to validate it. `terminalWidth` is deliberately omitted from this
+ * call: it is unknowable at load time (no renderer exists yet), so only the
+ * floor half of the clamp applies here — `shell.tsx`'s `Shell` is what
+ * additionally caps against the live terminal width, once one exists
+ * (`sidebarWidth.ts`'s TSDoc). */
 function coerceLayoutState(value: unknown, fallback: LayoutState): LayoutState {
   if (typeof value !== "object" || value === null) return { ...fallback };
   const raw = value as Record<string, unknown>;
   return {
     sidebarVisible:
       typeof raw["sidebarVisible"] === "boolean" ? raw["sidebarVisible"] : fallback.sidebarVisible,
-    sidebarWidth:
+    sidebarWidth: clampSidebarWidth(
       typeof raw["sidebarWidth"] === "number" ? raw["sidebarWidth"] : fallback.sidebarWidth,
+    ),
     panelVisible:
       typeof raw["panelVisible"] === "boolean" ? raw["panelVisible"] : fallback.panelVisible,
     panelHeight:

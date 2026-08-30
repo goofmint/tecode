@@ -23,6 +23,35 @@ export {
   type LayoutStateTimer,
 } from "./layoutState";
 
+export { clampSidebarWidth, MIN_EDITOR_WIDTH, MIN_SIDEBAR_WIDTH } from "./sidebarWidth";
+
+export {
+  applyConfiguredSidebarWidth,
+  wireSidebarWidthConfigSync,
+  type WireSidebarWidthConfigSyncDeps,
+} from "./sidebarWidthConfigSync";
+
+export {
+  applySidebarWidthSetting,
+  createSidebarWidthSettingsWriter,
+  type SidebarWidthSettingsWriter,
+  type SidebarWidthSettingsWriterDeps,
+  type SidebarWidthSettingsWriterFs,
+  type SidebarWidthSettingsWriterTimer,
+} from "./sidebarWidthSettingsWriter";
+
+export {
+  createSidebarWidthStepHandler,
+  DECREASE_SIDEBAR_WIDTH_COMMAND_ID,
+  INCREASE_SIDEBAR_WIDTH_COMMAND_ID,
+  registerSidebarWidthCommands,
+  SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
+  SIDEBAR_WIDTH_FOCUS_WHEN,
+  SIDEBAR_WIDTH_STEP,
+  type SidebarWidthCommandsDeps,
+  type SidebarWidthCommandsRegistrar,
+} from "./sidebarWidthCommands";
+
 export {
   ThemeProvider,
   toColorInput,
@@ -147,6 +176,7 @@ export {
 } from "./components";
 
 export {
+  ACTIVITY_BAR_WIDTH,
   ActivityBar,
   EditorArea,
   Panel,

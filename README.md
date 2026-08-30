@@ -327,6 +327,23 @@ Create/rename/delete have no default keybinding — reachable via the
 command palette only (`explorer/manifest.ts`'s own TSDoc: Req 11.2 asks
 for the capability, not a specific shortcut per action).
 
+### Sidebar width (core, Issue #105)
+
+The sidebar's width — 30 columns by default — is adjustable three ways:
+the `workbench.sidebarWidth` setting (below), dragging the sidebar's own
+right border with the mouse, or these two commands:
+
+| Key | When | Command |
+|---|---|---|
+| `ctrl+k [` | sidebar or explorer focused | Decrease Sidebar Width |
+| `ctrl+k ]` | sidebar or explorer focused | Increase Sidebar Width |
+
+Either a completed drag or a command press writes the result back to
+`workbench.sidebarWidth` in `settings.json`, so it survives a restart. The
+width is always clamped to stay readable and to leave the editor usable
+room, regardless of which of the three ways it was changed
+(`packages/core/src/ui/sidebarWidth.ts`'s `clampSidebarWidth`).
+
 ### Keybindings editor
 
 | Key | Command |
@@ -436,6 +453,7 @@ exist yet:
 | `editor.insertSpaces` | boolean | `true` | core | Insert spaces (up to the next tab stop) instead of a literal tab when pressing Tab. |
 | `explorer.showHidden` | boolean | `false` | `explorer` built-in extension (`builtin/explorer/manifest.ts`) | Show hidden (dot-prefixed) and `.gitignore`-ignored files in the explorer sidebar. |
 | `keybindings.preset` | string | `"default"` | core (`config/coreDefaults.ts`) | A bundled keybinding scheme layered over the defaults — `"default"` (none), `"emacs"`, or `"windows"` (Req 4.8). See "Bundled keybinding presets" above. |
+| `workbench.sidebarWidth` | number | `30` | core (`config/coreDefaults.ts`) | The sidebar's width in columns (Issue #105). Also adjustable by dragging the sidebar's right border, or the Increase/Decrease Sidebar Width commands — see "Sidebar width" above. |
 | `editor.wordWrap` | — | — | **not implemented** | Named by Req 9.5. No `contributes.configuration` schema registers this key, and nothing in `packages/` reads `config.get("editor.wordWrap")` outside of test fixtures exercising the config-merge machinery in the abstract (`packages/core/src/config/service.test.ts`, `themeSettingsWriter.test.ts`) — those tests use the string purely as a generic example key, not as evidence of a real word-wrap feature. Verified by grepping the whole `packages/` tree for both the key string and any wrap-related rendering logic in `EditorView`; there is none. |
 | `files.autoSave` | — | — | **not implemented** | Named by Req 9.5. No schema registers it, and no reader ever calls `config.get("files.autoSave")` anywhere in `packages/` (verified the same way as `editor.wordWrap` above — a plain grep for the key string found zero matches at all, not even in a test fixture). |
 

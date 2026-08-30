@@ -124,8 +124,10 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     // extension/user layer. Task 3.5 adds `tab.*`'s own 5 default keys
     // (`ctrl+tab`, `ctrl+pagedown`, `ctrl+shift+tab`, `ctrl+pageup`,
     // `ctrl+w` — `ui/tabCommands.ts`'s `TAB_DEFAULT_KEYBINDINGS`) to the
-    // same layer: 4 + 5 = 9 distinct keys.
-    expect(root.keymap.getTable().entries().size).toBe(9);
+    // same layer, and Issue #105 adds `sidebarWidth`'s own 2 default keys
+    // (`ctrl+k [`, `ctrl+k ]` — `ui/sidebarWidthCommands.ts`'s
+    // `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS`): 4 + 5 + 2 = 11 distinct keys.
+    expect(root.keymap.getTable().entries().size).toBe(11);
     const resolvedModalClose = root.keymap
       .getTable()
       .lookup("escape", (key) => key === "quickPickFocus" || key === "inputBoxFocus");
@@ -845,7 +847,7 @@ test("applyKittyKeyboardVerdict(false) never throws even when the loader itself 
 
   try {
     await expect(root.applyKittyKeyboardVerdict(false)).resolves.toBeUndefined();
-    expect(root.keymap.getTable().entries().size).toBe(9); // unchanged: modal + tab defaults only
+    expect(root.keymap.getTable().entries().size).toBe(11); // unchanged: modal + tab + sidebarWidth defaults only
     expect(root.log.entries().some((e) => e.level === "error")).toBe(true);
   } finally {
     root.config.dispose();
