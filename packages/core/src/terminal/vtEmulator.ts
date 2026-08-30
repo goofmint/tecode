@@ -264,7 +264,34 @@ export function createVtEmulator(deps: VtEmulatorDeps): VtEmulator {
 
   function getCell(x: number, y: number): TerminalCell | undefined {
     if (disposed) return undefined;
-    const line = term.buffer.active.getLine(y);
+    // `IBuffer.getLine` indexes the WHOLE buffer, scrollback included, but
+    // this method's contract is viewport-relative ("row 0 is always
+    // on-screen" — {@link VtEmulator.getCell}'s own TSDoc). The two
+    // coincide only until the child program first scrolls; after that a
+    // bare `getLine(y)` returns the OLDEST scrollback line and the panel
+    // freezes on the start of the session (Issue #102).
+    //
+    // `viewportY`, not `baseY`: this answers "what is on screen right
+    // now", where `baseY` answers "where does the bottom page start". They
+    // are equal while nothing scrolls the view back through history, and
+    // scrollback navigation is out of scope — but picking the one that
+    // matches the documented contract means adding that later does not
+    // silently change what this returns.
+    //
+    // Re-read on every call rather than cached: `write`/`resize` both move
+    // it.
+    const buffer = term.buffer.active;
+    // Bounds-check `y` against the GRID, before the offset is applied.
+    // Without this, offsetting turns an out-of-range row into a valid
+    // buffer index: `getCell(x, -1)` would read the scrollback line just
+    // above the viewport, and (once scrollback navigation exists, putting
+    // `viewportY` below `baseY`) `y >= rows` would read one below it —
+    // both off-screen, both contradicting this method's documented
+    // "`undefined` when `(x, y)` is out of bounds". A bare `getLine(y)`
+    // used to get this right by accident, since a negative index is never
+    // a real buffer row.
+    if (y < 0 || y >= term.rows) return undefined;
+    const line = buffer.getLine(buffer.viewportY + y);
     if (!line) return undefined;
     const cell = line.getCell(x, scratchCell);
     if (!cell) return undefined;
