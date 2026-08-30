@@ -346,12 +346,54 @@ export type SlotId =
 export type ComponentType<P = Record<string, unknown>> = (props: P) => unknown;
 
 /**
+ * Optional metadata a {@link UiNamespace.registerView} call can attach
+ * beyond its component (Req 6.2; Issue #103 — "the explorer sidebar header
+ * should show the workspace root's name, the way VS Code does"). `title`
+ * is the only field exposed here (deliberately narrower than `@tecode/
+ * core`'s internal `RegisterViewMeta`, which also carries `icon`/
+ * `statusBar` for core-internal callers only — see `ui/slotRegistry.ts`);
+ * an extension has no legitimate reason to override its own manifest-
+ * declared icon or a `statusBar.item`'s placement through this path.
+ */
+export interface RegisterViewOptions {
+  /**
+   * A live title for this view, published by the extension itself AFTER
+   * activation — e.g. the explorer setting its sidebar header to the open
+   * folder's name instead of the static "Explorer" its manifest declares.
+   * Superseses the manifest's `contributes.views[].title` for THIS view's
+   * own rendering (`ui/shell.tsx`'s `Sidebar` reads `sidebarView.title`);
+   * every other consumer of the manifest's static title — the command
+   * palette's view-focus command label, the activity-bar icon's fallback
+   * glyph/tooltip (`ActivityBar`'s `pair.activityItem?.title`) — is a
+   * DIFFERENT `SlotViewEntry` (the paired `activityBar.item`, never
+   * touched by this option) and keeps showing the manifest's original
+   * title unchanged.
+   *
+   * Reactive, not a one-shot: call `registerView` again for the same
+   * `(slot, id)` with a new `title` to update it later — `SlotRegistry`
+   * last-wins on a duplicate `(slot, id)` exactly like a plain
+   * re-registration, and fires `onDidChange` so `Sidebar` re-renders with
+   * no restart needed. Omitting `title` (or omitting `options` entirely)
+   * leaves whatever title is already on record — the manifest's static
+   * one, if this view has never published its own — untouched.
+   */
+  title?: string;
+}
+
+/**
  * View registration and the common component library (Req 10.1, 6.3).
  */
 export interface UiNamespace {
   /** Register `Component` as the content for view `id` in `slot` (Req
-   * 6.3). Returns a {@link Disposable} that unregisters it. */
-  registerView(slot: SlotId, id: string, component: ComponentType): Disposable;
+   * 6.3). Returns a {@link Disposable} that unregisters it. `options`
+   * (Issue #103, Req 6.2) lets the registering extension publish a live
+   * title alongside the component — see {@link RegisterViewOptions}. */
+  registerView(
+    slot: SlotId,
+    id: string,
+    component: ComponentType,
+    options?: RegisterViewOptions,
+  ): Disposable;
   /** Read the active theme; components must obtain all colors from here
    * rather than hard-coding literals (Req 7.3). */
   useTheme(): ResolvedTheme;

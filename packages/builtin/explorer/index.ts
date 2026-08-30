@@ -33,11 +33,19 @@
  * "error")` — matching Req 11.2's "create/rename/delete with input-box
  * prompts and error surfacing" and design.md §14's "File save I/O error ->
  * status-bar error" row for the same class of failure.
+ *
+ * **Sidebar header shows the open folder's name (Issue #103)**: `./
+ * rootTitle.ts`'s `rootFolderName` derives the workspace root's own
+ * basename from `workspace.rootUri`, published once at `activate` as the
+ * `registerView` call's `options.title` (`@tecode/api`'s Req 6.2
+ * `RegisterViewOptions`) — `manifest.ts`'s static `"Explorer"` stays the
+ * fallback whenever there is no real folder name to show.
  */
 
 import type { ExtensionContext, QuickPickItem, Uri } from "@tecode/api";
 import { createBunGitRunner, createIgnoreChecker, joinChildUri } from "../shared";
 import { createExplorerViewComponent } from "./ExplorerView";
+import { rootFolderName } from "./rootTitle";
 import { createExplorerStore, type ExplorerStore } from "./store";
 import {
   EXPLORER_DELETE_COMMAND_ID,
@@ -349,6 +357,21 @@ export function activate(ctx: ExtensionContext): void {
   if (rootUri) void store.reload(rootUri);
   wireWatch(ctx, store);
 
+  // Issue #103: the sidebar header shows the open folder's own name
+  // instead of the manifest's static "Explorer", the way VS Code does.
+  // `rootFolderName` returns `undefined` for every case that is not a
+  // real, named folder (no workspace root, a filesystem root's own empty
+  // basename, an unparseable `rootUri`) — `options` is omitted entirely in
+  // that case rather than passing a hand-typed `"Explorer"` literal here,
+  // so the fallback is the manifest's own title (`manifest.ts`'s `views[0].
+  // title`), never a second copy of the same string drifting out of sync
+  // with it. `workspace.rootUri` is fixed for the process's whole lifetime
+  // (`@tecode/api`'s `WorkspaceNamespace.rootUri` is a plain `readonly`
+  // field, no `onDidChange` counterpart, and nothing in this codebase ever
+  // reassigns it after `cli/main.ts`'s startup wiring) — so this is
+  // computed once here, at `activate`, rather than re-derived on some
+  // change event that does not exist.
+  const rootTitle = rootFolderName(rootUri);
   ctx.subscriptions.push(
     api.ui.registerView(
       "sidebar.view",
@@ -358,6 +381,7 @@ export function activate(ctx: ExtensionContext): void {
         Tree: api.ui.Tree,
         onOpenFile: (uri) => void api.commands.execute(OPEN_FILE_COMMAND_ID, uri),
       }),
+      rootTitle ? { title: rootTitle } : undefined,
     ),
   );
 

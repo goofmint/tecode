@@ -44,6 +44,10 @@ type TreeComponentProps = Record<string, unknown> & {
   onToggle?: (id: string, expanding: boolean) => void;
   onActivate?: (id: string) => void;
   focusContextKey?: string;
+  /** `tecode.ui.Tree`'s own row-width budget (Issue #104), forwarded
+   * straight through from {@link ExplorerViewProps.width} — see that
+   * field's own TSDoc. */
+  width?: number;
 };
 
 /** Props for {@link ExplorerView}. */
@@ -59,6 +63,22 @@ export interface ExplorerViewProps {
    * called for a directory node (Tree's own `return`/click toggles its
    * expansion instead — see `components.tsx`'s `onActivate` TSDoc). */
   onOpenFile: (uri: string) => void;
+  /**
+   * The sidebar's real content width in terminal columns (Issue #104),
+   * forwarded straight through to `tecode.ui.Tree`'s own `width` prop
+   * (`@tecode/core`'s `components.tsx`'s `TreeProps.width` TSDoc) so a file
+   * name wider than the sidebar is truncated with an ellipsis instead of
+   * wrapping onto a second row. Optional, and — like `Tree`'s own `width`
+   * — OFF by default: `index.ts` registers this view with no fixed value
+   * (the sidebar's width isn't known until render time), so `shell.tsx`'s
+   * `Sidebar` supplies it per render via `RegisteredView`'s `viewProps`
+   * (`createExplorerViewComponent`'s own TSDoc below explains how that
+   * reaches this closed-over component at all). `undefined` is passed
+   * through to `Tree` as-is, preserving today's wrapping behavior for any
+   * render this component is mounted without a `Sidebar` above it (e.g.
+   * this file's own tests' fake `Tree`).
+   */
+  width?: number;
 }
 
 /** `explorerFocus` (Req 4.6, 11.2) — `tecode.ui.Tree`'s own
@@ -103,6 +123,7 @@ export function ExplorerView(props: ExplorerViewProps): ReactNode {
       selectedId={store.getSelectedId()}
       expandedIds={store.getExpandedIds()}
       focusContextKey={EXPLORER_FOCUS_CONTEXT_KEY}
+      width={props.width}
       onSelect={(id) => store.setSelectedId(id)}
       onToggle={(id, expanding) => store.toggle(id, expanding)}
       onActivate={(id) => {
@@ -123,7 +144,28 @@ export function ExplorerView(props: ExplorerViewProps): ReactNode {
  * every render always sees the SAME `store`/`Tree`/`onOpenFile` regardless
  * of whatever the caller (`shell.tsx`'s `Sidebar`, which passes none for a
  * `sidebar.view`) hands it as its own component props.
+ *
+ * **The one exception — `width` (Issue #104 Phase 3)**: `store`/`Tree`/
+ * `onOpenFile` are all fixed at `activate(ctx)` time, long before the
+ * sidebar's real width is known, so they stay closed-over exactly as
+ * above. The sidebar's content width, by contrast, is only known at RENDER
+ * time (`layout.sidebarWidth`, reactive React state) and changes over the
+ * component's lifetime — `Sidebar` hands it down fresh on every render via
+ * `RegisteredView`'s `viewProps` (`shell.tsx`'s `Sidebar` TSDoc), the same
+ * mechanism `ActivityBar`'s `viewProps={{ active }}` and `Panel`'s
+ * `viewProps={{ height, width }}` already use. The returned component
+ * therefore does read its OWN `rawProps` for this one field — pulling
+ * `width` out and passing it alongside the closed-over `props` — rather
+ * than ignoring every render-time prop across the board.
  */
 export function createExplorerViewComponent(props: ExplorerViewProps): ComponentType {
-  return () => <ExplorerView {...props} />;
+  return (rawProps: Record<string, unknown>) => {
+    // `?? props.width`, not a bare `width={width}`: the spread above already
+    // carries a registration-time `width` if the caller supplied one, and
+    // overwriting it with `undefined` on every render where `rawProps` has
+    // none would silently discard it. A real render-time width still wins —
+    // it is the live one.
+    const width = typeof rawProps["width"] === "number" ? rawProps["width"] : undefined;
+    return <ExplorerView {...props} width={width ?? props.width} />;
+  };
 }

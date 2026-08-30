@@ -61,9 +61,14 @@ function normalizeTabSize(tabSize: number): number {
  * to its stop) — `"\t"` is always its own grapheme cluster, so this split
  * never cuts through a combining mark or a multi-codepoint glyph.
  */
-function measureCells(text: string, rawTabSize: number): number {
+function measureCells(text: string, rawTabSize: number, startColumn: number = 0): number {
   const tabSize = normalizeTabSize(rawTabSize);
-  let column = 0;
+  // Cells consumed BEFORE `text` begins. Only tab stops depend on it (a tab
+  // advances to the next multiple of `tabSize` in absolute terminal
+  // columns, not relative to the string it happens to sit in), so a
+  // tab-free `text` measures identically whatever this is — which is why
+  // every pre-Issue-#104 caller can keep omitting it.
+  let column = startColumn;
   let run = "";
   for (const ch of text) {
     if (ch === "\t") {
@@ -74,7 +79,7 @@ function measureCells(text: string, rawTabSize: number): number {
       run += ch;
     }
   }
-  return column + stringWidth(run);
+  return column + stringWidth(run) - startColumn;
 }
 
 /**
@@ -117,4 +122,128 @@ export function cellWidthUpTo(
 ): number {
   const clampedIndex = Math.max(0, Math.min(Math.trunc(charIndex) || 0, text.length));
   return measureCells(text.slice(0, clampedIndex), tabSize);
+}
+
+/**
+ * A shared, stateless grapheme segmenter (Issue #104) — `measureCells`
+ * above walks `text` with `for (const ch of text)`, which is code-POINT
+ * iteration, fine for summing a whole string's width but too coarse for
+ * {@link truncateToWidth}'s job of stopping mid-string: slicing on a
+ * code-point boundary can cut a ZWJ emoji sequence in half or separate a
+ * combining mark from its base, producing a dangling low surrogate or an
+ * orphaned combining character at the cut point. `Intl.Segmenter`
+ * (`granularity: "grapheme"`) walks whole grapheme clusters instead — the
+ * same technique `packages/builtin/editor-core/wordBoundary.ts` uses for
+ * cursor-safe word/character navigation (that module's own TSDoc names this
+ * exact tradeoff: "the same … approach `@tecode/core`'s `ui/cellWidth.ts`
+ * uses" for cell-width measurement — this function is that promise,
+ * fulfilled; `wordBoundary.ts` duplicates the technique rather than
+ * importing from here, since `editor-core` cannot depend on `@tecode/core`,
+ * this repo's layering rule). A single instance is reused across calls
+ * (Segmenter construction is the expensive part; segmenting is cheap),
+ * matching `wordBoundary.ts`'s own `GRAPHEME_SEGMENTER` precedent.
+ */
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * Truncates `text` to fit within `maxWidth` terminal cells (Issue #104: a
+ * file name wider than the explorer sidebar wrapped onto a second row
+ * instead of being cut off with an ellipsis), returning `text` unchanged
+ * when it already fits. Built on this module's own {@link cellWidth}
+ * machinery (`measureCells`) rather than a second width implementation —
+ * `Tree`'s per-row budget (`components.tsx`) and every test in
+ * `cellWidth.test.ts` reason about width the same way for both whole-string
+ * measurement and truncation.
+ *
+ * **Grapheme-safe cutting**: the fast "already fits" check measures the
+ * whole string in one `measureCells` call (identical to {@link cellWidth}),
+ * but the actual cut walks {@link GRAPHEME_SEGMENTER}'s clusters one at a
+ * time, accumulating each cluster's width (tabs advance to their next stop,
+ * exactly as `measureCells` does; every other cluster is measured via
+ * `stringWidth`) and keeping the longest prefix that still leaves room for
+ * `ellipsis`. This guarantees the cut always lands on a cluster boundary —
+ * never inside a ZWJ sequence or between a combining mark and its base.
+ *
+ * **`startColumn`** is the terminal column `text` will be rendered at.
+ * Only tab stops depend on it, so it is irrelevant for tab-free input and
+ * defaults to `0` — but a label drawn after `Tree`'s indent and glyph
+ * (`components.tsx`) starts partway across the row, and measuring its tabs
+ * from column 0 makes them look wider than they render, truncating a label
+ * that would have fitted.
+ *
+ * **`ellipsis` is re-measured for each candidate prefix**, at the column it
+ * will actually occupy, rather than once up front. A tab-bearing ellipsis
+ * has no single width — `"xx\t"` is 3 cells at column 0 and 5 at column 3 —
+ * so a budget computed once understates it and the result overflows
+ * `maxWidth`. `truncateToWidth("abcdefg", 6, "xx\t")` returned `"abxx\t"`
+ * (8 cells) before this was fixed.
+ *
+ * **Degenerate cases** (all exist to keep this function's one hard
+ * postcondition true — `cellWidth(truncateToWidth(text, maxWidth)) <=
+ * max(0, maxWidth)`, for every input, no exceptions):
+ * - `maxWidth <= 0` (including `NaN`, which `Number.isFinite` rejects, and
+ *   negative widths from a stale/miscomputed layout): returns `""` — there
+ *   is no non-negative width `""` doesn't already satisfy, and any
+ *   non-empty result would violate the postcondition outright.
+ * - `maxWidth` too small to fit even `ellipsis` alone (`maxWidth` in cells
+ *   is less than `cellWidth(ellipsis)`, e.g. `maxWidth: 0` for the default
+ *   single-cell `"…"` — already covered above — but this branch is what
+ *   actually protects a caller passing a WIDER multi-cell ellipsis):
+ *   returns `""` rather than a partial ellipsis.
+ * - `maxWidth` exactly `cellWidth(ellipsis)` (e.g. `1` for the default
+ *   `"…"`), including a single 2-cell CJK character against `maxWidth: 1`:
+ *   there is zero budget left for any of `text`'s own content once
+ *   `ellipsis` is reserved, so the result is `ellipsis` alone — this is the
+ *   chosen answer to "just the ellipsis, or nothing?": a bare ellipsis
+ *   still communicates "truncated" (an empty string does not), and it is
+ *   the natural zero-iterations output of the walk below rather than a
+ *   special case.
+ */
+export function truncateToWidth(
+  text: string,
+  maxWidth: number,
+  ellipsis: string = "…",
+  tabSize: number = DEFAULT_TAB_SIZE,
+  startColumn: number = 0,
+): string {
+  const safeMaxWidth = Number.isFinite(maxWidth) ? Math.trunc(maxWidth) : 0;
+  if (safeMaxWidth <= 0) return "";
+
+  const safeStart = Number.isFinite(startColumn) ? Math.max(0, Math.trunc(startColumn)) : 0;
+  if (measureCells(text, tabSize, safeStart) <= safeMaxWidth) return text;
+
+  const safeTabSize = normalizeTabSize(tabSize);
+
+  // The ellipsis is measured AT THE COLUMN IT WILL ACTUALLY OCCUPY, once
+  // per candidate prefix, rather than once at column 0. An ellipsis
+  // containing a tab is not a fixed width: `"xx\t"` is 3 cells at column 0
+  // but 5 at column 3, so a budget computed up front understates it and the
+  // result overflows `maxWidth` — `truncateToWidth("abcdefg", 6, "xx\t")`
+  // returned `"abxx\t"` (8 cells) before this. Recomputing keeps the one
+  // postcondition true for EVERY `ellipsis`, not just tab-free ones.
+  const ellipsisWidthAfter = (consumed: number): number =>
+    measureCells(ellipsis, safeTabSize, safeStart + consumed);
+
+  // The empty prefix is a candidate in its own right: when even one cluster
+  // of `text` plus the ellipsis will not fit, a bare ellipsis still says
+  // "truncated" where `""` says nothing. `undefined` means not even that
+  // fits, which is the only case that yields `""`.
+  let best: string | undefined = ellipsisWidthAfter(0) <= safeMaxWidth ? "" : undefined;
+
+  let kept = "";
+  let consumed = 0;
+  for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+    const increment =
+      segment === "\t"
+        ? safeTabSize - ((safeStart + consumed) % safeTabSize)
+        : stringWidth(segment);
+    // Stop once the prefix alone would overflow — nothing longer can fit
+    // either, and every shorter candidate has already been considered.
+    if (consumed + increment > safeMaxWidth) break;
+    consumed += increment;
+    kept += segment;
+    if (consumed + ellipsisWidthAfter(consumed) <= safeMaxWidth) best = kept;
+  }
+
+  return best === undefined ? "" : best + ellipsis;
 }

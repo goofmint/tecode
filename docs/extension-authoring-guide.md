@@ -547,7 +547,7 @@ View registration and the common component library (Req 10.1, 6.3).
 | `registerView` | `(slot: SlotId, id: string, component: ComponentType) => Disposable` | `SlotId` is one of `"activityBar.item"`, `"sidebar.view"`, `"panel.tab"`, `"statusBar.item"`, `"editor.viewType"`. |
 | `useTheme` | `() => ResolvedTheme` | Components must source every color from here, never a hard-coded literal (Req 7.3). |
 | `List` | `ComponentType` | A minimal selectable list. |
-| `Tree` | `ComponentType` | A minimal expandable tree (what `explorer` renders over). |
+| `Tree` | `ComponentType` | A minimal expandable tree (what `explorer` renders over). Its optional `width` prop (a column count) truncates each row's label to fit with an ellipsis (`…`) instead of wrapping onto a second row, once a label is wider than its available space; omit it and rows wrap exactly as before (Issue #104). |
 | `Input` | `ComponentType` | A minimal text input. |
 | `Tabs` | `ComponentType` | A minimal tab strip. |
 

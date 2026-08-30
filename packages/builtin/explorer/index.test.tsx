@@ -35,7 +35,7 @@ import {
   writeFile as nodeWriteFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { act, type ReactNode } from "react";
 import { testRender } from "@opentui/react/test-utils";
@@ -53,6 +53,7 @@ import type {
   MessageKind,
   QuickPickItem,
   QuickPickOptions,
+  RegisterViewOptions,
   Tecode,
   Uri,
 } from "@tecode/api";
@@ -159,6 +160,7 @@ function createRealFs(): Tecode["workspace"]["fs"] {
 function createFakeApi(rootUri: Uri | undefined) {
   const commandHandlers = new Map<string, CommandHandler>();
   const registeredViews = new Map<string, ComponentType>();
+  const registeredTitles = new Map<string, string | undefined>();
   const messages: Array<{ message: string; kind?: MessageKind }> = [];
   const configValues = new Map<string, unknown>([[EXPLORER_SHOW_HIDDEN_CONFIG_KEY, false]]);
   const configListeners = new Set<Listener<ConfigChangeEvent>>();
@@ -229,8 +231,14 @@ function createFakeApi(rootUri: Uri | undefined) {
     } as unknown as Tecode["window"],
     editor: undefined as never,
     ui: {
-      registerView: (_slot, id, component) => {
+      registerView: (_slot, id, component, options?: RegisterViewOptions) => {
         if (component) registeredViews.set(id, component);
+        // Issue #103: records whatever `options.title` this call published
+        // (or `undefined` when it published none), the same "call again to
+        // update" semantics the real `SlotRegistry` implements — last-wins
+        // on repeated calls for the same `id`, which is exactly what the
+        // "publishes a live title" tests below rely on.
+        registeredTitles.set(id, options?.title);
         return { dispose: () => registeredViews.delete(id) };
       },
       useTheme: undefined as never,
@@ -261,6 +269,7 @@ function createFakeApi(rootUri: Uri | undefined) {
     api,
     getMessages: () => messages,
     getRegisteredView: () => registeredViews.get(EXPLORER_VIEW_ID),
+    getRegisteredTitle: () => registeredTitles.get(EXPLORER_VIEW_ID),
     setNextInputValue: (value: string | undefined) => (nextInputValue = value),
     setNextPick: (pick: QuickPickItem | undefined) => (nextPick = pick),
     getLastQuickPickOptions: () => lastQuickPickOptions,
@@ -321,6 +330,37 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     const fixture = createFixture(pathToUri(dir));
     expect(fixture.getRegisteredView()).toBeDefined();
     fixture.dispose();
+  });
+
+  describe("sidebar header title (Issue #103)", () => {
+    test("publishes the workspace root's own folder name as the sidebar view's title", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      const fixture = createFixture(pathToUri(dir));
+      expect(fixture.getRegisteredTitle()).toBe(basename(dir));
+      fixture.dispose();
+    });
+
+    test("percent-decodes a space in the root folder's name (the easiest mistake to make, per the issue)", async () => {
+      // `mkdtemp`'s prefix may contain a space; `pathToUri` (`pathToFileURL(
+      // path).href`) then percent-encodes it in the produced `Uri`, exactly
+      // like the real `cli/main.ts` startup wiring would for a folder
+      // literally named with a space in it — skipping the decode step in
+      // `rootTitle.ts` would surface this as "tecode%20explorer%20space-
+      // XXXXXX" instead of the real name.
+      dir = await mkdtemp(join(tmpdir(), "tecode explorer space-"));
+      const fixture = createFixture(pathToUri(dir));
+      const title = fixture.getRegisteredTitle();
+      expect(title).toBe(basename(dir));
+      expect(title).toContain(" ");
+      expect(title).not.toContain("%20");
+      fixture.dispose();
+    });
+
+    test("no workspace root open (rootUri undefined) publishes NO title — the manifest's static \"Explorer\" stays the fallback", () => {
+      const fixture = createFixture(undefined);
+      expect(fixture.getRegisteredTitle()).toBeUndefined();
+      fixture.dispose();
+    });
   });
 
   test("explorer.focus delegates to workbench.view.explorer", async () => {

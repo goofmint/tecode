@@ -206,6 +206,7 @@ export {
   ThemeProvider,
   toColorInput,
   Tree,
+  truncateToWidth,
   styleToTextColors,
   useFocusTracking,
   useLineTicks,

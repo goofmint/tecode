@@ -66,6 +66,7 @@ import { pathToUri } from "../buffer/uri";
 import { createEditorInputRouter } from "../editor/inputRouter";
 import { createHostLog } from "../host/errors";
 import { createContextService } from "../keymap/context";
+import { Tree } from "./components";
 import { createEditorSessionService } from "./editorSession";
 import { createFindService } from "./findService";
 import { ContextFocusTracker } from "./focus";
@@ -170,6 +171,53 @@ describe("Shell — registering a view re-renders its region (Req 6.3, design.md
     expect(captureCharFrame()).toContain("Explorer Panel Content");
   });
 
+  test("re-registering a sidebar.view with a new title updates the header without a restart (Issue #103, Req 6.2)", async () => {
+    // The generic mechanism `explorer`'s "show the open folder's name"
+    // (Issue #103) is built on: a view publishes a live title via
+    // `registerView`'s `options.title`, and `Sidebar` (this module) picks
+    // it up reactively — through the SAME `SlotRegistry.onDidChange`
+    // subscription `useSidebarPairs` already holds, no separate channel,
+    // no remounting the Shell or the view's own component.
+    const { slotRegistry, layoutState, context, commands } = createHarness();
+    await layoutState.ready;
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} commands={commands} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => { await renderOnce(); });
+
+    act(() => {
+      slotRegistry.registerView("activityBar.item", "explorer", noopComponent, {
+        title: "Explorer",
+        icon: "E",
+      });
+      slotRegistry.registerView("sidebar.view", "explorer", noopComponent, { title: "Explorer" });
+    });
+    await act(async () => {
+      await commands.execute("workbench.view.explorer");
+    });
+    await act(async () => { await renderOnce(); });
+
+    expect(captureCharFrame()).toContain("Explorer");
+    expect(captureCharFrame()).not.toContain("my-project");
+
+    // Same (slot, id) pair, a new title, no unregister/re-register of the
+    // component itself — exactly the "call registerView again" update path
+    // `@tecode/api`'s `RegisterViewOptions.title` TSDoc documents.
+    act(() => {
+      slotRegistry.registerView("sidebar.view", "explorer", noopComponent, { title: "my-project" });
+    });
+    await act(async () => { await renderOnce(); });
+
+    expect(captureCharFrame()).toContain("my-project");
+    expect(captureCharFrame()).not.toContain("Explorer");
+  });
+
   test("registering a statusBar.item re-renders the StatusBar", async () => {
     const { slotRegistry, layoutState, context } = createHarness();
     await layoutState.ready;
@@ -255,6 +303,48 @@ describe("Shell — workbench.view.<id> command switches the sidebar (Req 6.2)",
     await act(async () => { await renderOnce(); });
 
     expect(captureCharFrame()).toContain("Search Panel");
+  });
+});
+
+describe("Shell — Sidebar forwards its real content width to the registered view (Issue #104 Phase 3)", () => {
+  test("a Tree-rendering sidebar view truncates a label wider than the sidebar, using Sidebar's own viewProps width", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    // sidebarWidth 15 — Sidebar's own `border={["right"]}` (1 column)
+    // leaves a 14-column content width, which is what should reach `Tree`
+    // below via `viewProps={{ width }}` (`shell.tsx`'s `Sidebar` TSDoc).
+    layoutState.update({ activeView: "explorer", sidebarWidth: 15 });
+
+    slotRegistry.registerView("activityBar.item", "explorer", noopComponent, { title: "Explorer" });
+    // Stands in for `packages/builtin/explorer`'s real `ExplorerView` —
+    // forwards whatever `width` it's rendered with straight into the REAL
+    // `Tree` (no fake/duck-typed stand-in needed here: this test lives in
+    // `@tecode/core` itself, so it can use `Tree` directly), proving the
+    // actual `Sidebar` -> `RegisteredView` -> `viewProps` -> `Tree` wiring
+    // end to end rather than a builtin-side approximation of it.
+    slotRegistry.registerView("sidebar.view", "explorer", (rawProps: Record<string, unknown>) => {
+      const width = typeof rawProps["width"] === "number" ? rawProps["width"] : undefined;
+      return (
+        <Tree
+          nodes={[{ id: "a", label: "a-very-long-file-name-that-would-otherwise-wrap.ts" }]}
+          width={width}
+        />
+      );
+    });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => { await renderOnce(); });
+
+    const lines = captureCharFrame().split("\n");
+    expect(lines[0]).toContain("…");
+    expect(lines[0]).not.toContain("would-otherwise-wrap");
   });
 });
 
