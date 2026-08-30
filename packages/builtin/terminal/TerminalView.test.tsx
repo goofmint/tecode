@@ -3,11 +3,24 @@
  * #98 Phase 4) — a fake `tecode.ui.Terminal` stands in for `@tecode/core`'s
  * real `TerminalGridView` (this built-in has no compile-time or runtime
  * dependency on it), proving the PROP WIRING (`session`/`cols`/`rows`/
- * `autoFocus`/`onFocusHandleChange`) and the `store.ensureSession()`/
+ * `onFocusHandleChange`) and the `store.ensureSession()`/
  * `onDidChange` lifecycle, rather than `tecode.ui.Terminal`'s own
  * rendering (already covered by `@tecode/core`'s `terminalGridView.test.tsx`)
  * — matches `explorer/ExplorerView.test.tsx`'s own "fake the injected
  * component" convention exactly.
+ *
+ * **No unconditional `autoFocus` (Issue #113)**: `TerminalView` used to pass
+ * a hardcoded `autoFocus` prop on every mount, which meant a startup
+ * restore of `layoutState.panelVisible` (`~/.config/tecode/state.json`)
+ * silently stole OpenTUI focus into the terminal panel — every keystroke
+ * (including Ctrl+C) then went to the child shell/pty instead of the
+ * editor, with no `terminal.focus`/`terminal.new` command ever having run.
+ * `store.ts`'s `requestFocus`/`registerFocusHandle` pending-focus mechanism
+ * already covers the legitimate case (`terminal.focus`/`terminal.new`
+ * calling `store.requestFocus()` before or after the view mounts) without
+ * that prop, so it was simply removed — see "does NOT auto-focus on a
+ * plain mount" and "DOES focus when a requestFocus() was already pending"
+ * below for the two directions this must keep holding.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -52,7 +65,7 @@ function createStoreWithFakeSpawn(): { store: ReturnType<typeof createTerminalSt
 }
 
 describe("TerminalView (Issue #98 Phase 4)", () => {
-  test("spawns a session lazily on mount and passes it, plus cols/rows/autoFocus, to tecode.ui.Terminal", async () => {
+  test("spawns a session lazily on mount and passes it, plus cols/rows, to tecode.ui.Terminal", async () => {
     const { store, spawnCalls } = createStoreWithFakeSpawn();
     const { Terminal, lastProps } = createFakeTerminalComponent();
 
@@ -68,8 +81,75 @@ describe("TerminalView (Issue #98 Phase 4)", () => {
     expect(lastProps()?.["session"]).toBe(store.getSession());
     expect(lastProps()?.["cols"]).toBe(40);
     expect(lastProps()?.["rows"]).toBe(10);
-    expect(lastProps()?.["autoFocus"]).toBe(true);
     expect(typeof lastProps()?.["onFocusHandleChange"]).toBe("function");
+  });
+
+  test("Issue #113: does NOT pass autoFocus on a plain mount — a startup restore of panelVisible must not steal OpenTUI focus into the terminal", async () => {
+    const { store } = createStoreWithFakeSpawn();
+    const { Terminal, lastProps } = createFakeTerminalComponent();
+
+    // No `store.requestFocus()` anywhere in this test — this is exactly
+    // the "Panel restored `panelVisible: true` from `state.json` and
+    // mounted this view on its own, with no `terminal.focus`/`terminal.
+    // new` command ever having run" scenario Issue #113 reported.
+    const { renderOnce } = await testRender(<TerminalView store={store} Terminal={Terminal} />, {
+      width: 10,
+      height: 5,
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // The removed prop must actually be absent, not merely falsy-by-luck:
+    // `undefined` is the only value a bare "the prop was never included in
+    // the JSX" produces (`lastProps()` captures the literal object handed
+    // to the fake component).
+    expect(lastProps()?.["autoFocus"]).toBeUndefined();
+
+    // The stronger claim this bug is actually about: the focus handle this
+    // mount published is never itself invoked without an outstanding
+    // `requestFocus()`. `registerFocusHandle`'s own "consume pending
+    // immediately" branch (`store.ts`) is the only thing that could call
+    // it at mount time, and there is no pending request here.
+    const handle = lastProps()?.["onFocusHandleChange"] as (focus: () => void) => void;
+    let focusInvocations = 0;
+    act(() => {
+      handle(() => focusInvocations++);
+    });
+    expect(focusInvocations).toBe(0);
+  });
+
+  test("Issue #113: DOES focus on mount when requestFocus() was already pending — the terminal.focus/terminal.new command path must keep working", async () => {
+    const { store } = createStoreWithFakeSpawn();
+    const { Terminal, lastProps } = createFakeTerminalComponent();
+
+    // Mirrors `index.ts`'s `terminal.focus` handler calling `store.
+    // requestFocus()` BEFORE `Panel` has mounted `TerminalView` at all
+    // (`store.ts`'s own "remembered as PENDING... consumed the next time
+    // registerFocusHandle runs" TSDoc) — no live handle exists yet, so
+    // this sets `focusPending` rather than calling anything synchronously.
+    store.requestFocus();
+
+    const { renderOnce } = await testRender(<TerminalView store={store} Terminal={Terminal} />, {
+      width: 10,
+      height: 5,
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // `TerminalView`'s mount effect hands its stable `handleFocusHandleChange`
+    // callback to the fake component via `onFocusHandleChange`; the fake
+    // component (matching the real `TerminalGridView`) calls it once with
+    // its own imperative focus function, which reaches `store.
+    // registerFocusHandle` — and THAT must consume the still-pending
+    // request immediately, exactly as `store.ts`'s TSDoc promises.
+    const handle = lastProps()?.["onFocusHandleChange"] as (focus: () => void) => void;
+    let focusInvocations = 0;
+    act(() => {
+      handle(() => focusInvocations++);
+    });
+    expect(focusInvocations).toBe(1);
   });
 
   test("falls back to the default 80x24 when height/width are omitted", async () => {

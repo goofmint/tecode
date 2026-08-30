@@ -201,6 +201,61 @@ export interface ShellRenderDeps {
    */
   onDestroy?: () => void;
   /**
+   * Delivers a `setEnabled` function that toggles the live `CliRenderer`'s
+   * own Ctrl+C interception, exactly once (Issue #113), without exposing
+   * the `CliRenderer` itself — the same "hand over a value/callback, not
+   * the renderer" convention as {@link onClipboardWriterReady}/{@link
+   * onCapabilitiesResolved}/{@link onDestroy} above.
+   *
+   * **Why this needs to exist at all**: `createCliRenderer`'s default
+   * `exitOnCtrlC: true` (this module's `ShellRenderDeps.onDestroy` TSDoc)
+   * is what makes an interactive Ctrl+C quit the whole editor — the
+   * correct default everywhere EXCEPT while the built-in terminal panel
+   * has focus, where a user pressing Ctrl+C almost always means "interrupt
+   * the program running in my shell", not "quit tecode". `keyRouting.ts`
+   * already forwards Ctrl+C to the pty like any other key once the
+   * terminal has focus (`keyRouting.test.ts`'s own regression test for
+   * exactly that byte) — the only thing standing in the way is OpenTUI
+   * intercepting `\x03` first and calling `CliRenderer.destroy()` before
+   * that forwarding logic ever runs.
+   *
+   * **Why a live TOGGLE, not `exitOnCtrlC: false` at construction**: Req
+   * 12.3's `onDestroy` (not `exitOnCtrlC: false`) was deliberately chosen
+   * as the ONLY quit-on-Ctrl+C path this codebase implements, specifically
+   * to avoid ever reintroducing an unquittable editor (`main.ts`'s
+   * `runTecode` TSDoc makes the identical argument for why `onDestroy`
+   * itself is never bypassed) — permanently disabling `exitOnCtrlC` and
+   * hand-rolling quit-detection ourselves would resurrect exactly that
+   * risk (e.g. a focus-tracking bug that never reports "unfocused" again
+   * would leave Ctrl+C silently doing nothing, forever). Narrowing
+   * `exitOnCtrlC` to `false` only while the terminal panel genuinely has
+   * focus, and flipping it back to `true` (`@opentui/core`'s own default)
+   * the moment it does not, keeps that guarantee intact.
+   *
+   * **Why this is actually safe to toggle at runtime**: `exitOnCtrlC` is
+   * declared `private` in `@opentui/core`'s own `renderer.d.ts` —
+   * compile-time-only, enforced by `tsc`, not by the runtime value. The
+   * pinned `@opentui/core@0.1.107` bundle
+   * (`node_modules/@opentui/core/index-mw2x3082.js`) assigns it as an
+   * ordinary, mutable instance property in the constructor
+   * (`this.exitOnCtrlC = config.exitOnCtrlC === undefined ? true :
+   * config.exitOnCtrlC;`) and reads it FRESH, directly off `this`, inside
+   * a `"keypress"` handler registered once at construction
+   * (`this._keyHandler.on("keypress", (event) => { if (this.exitOnCtrlC
+   * && matchesKeyBinding(event, { name: "c", ctrl: true })) { ... } })`) —
+   * so a later write to that same property genuinely changes what the
+   * NEXT keypress sees. `main.ts` is responsible for flipping it on every
+   * `"terminalFocus"` context change rather than per-keystroke, precisely
+   * because that keypress handler already exists and runs before ours —
+   * the flag must be correct by the time a keystroke arrives, not updated
+   * in response to one.
+   *
+   * Optional and never required: {@link renderShellHeadless} never calls
+   * this (no real `CliRenderer`/keypress handler exists to toggle),
+   * matching every other optional terminal-seam callback in this module.
+   */
+  onCtrlCInterceptControlReady?: (setEnabled: (enabled: boolean) => void) => void;
+  /**
    * Delivers the terminal's OSC 52 write function exactly ONCE (Issue #91),
    * without exposing the `CliRenderer` itself — the same "hand over a
    * value/callback, not the renderer" convention as {@link
@@ -332,6 +387,37 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
   // bound write function.
   if (deps.onClipboardWriterReady) {
     deps.onClipboardWriterReady((text) => renderer.copyToClipboardOSC52(text));
+  }
+
+  // Ctrl+C interception control (Issue #113, `ShellRenderDeps.
+  // onCtrlCInterceptControlReady`'s TSDoc): delivered exactly once, the
+  // same shape as `onClipboardWriterReady` immediately above. The cast is
+  // the narrow, well-documented one that TSDoc already explains in full —
+  // `exitOnCtrlC` is `private` only at the type level; the pinned runtime
+  // bundle assigns and reads it as an ordinary mutable property.
+  if (deps.onCtrlCInterceptControlReady) {
+    deps.onCtrlCInterceptControlReady((enabled) => {
+      // Runtime shape check before writing (CodeRabbit PR #114 review).
+      // `packages/cli/package.json` allows `^0.1.107`, so a future 0.1.x
+      // could rename or drop this private field; a bare assignment would
+      // then silently CREATE an unrelated own-property that nothing reads,
+      // and Ctrl+C would quietly go back to killing the editor from inside
+      // the terminal. Writing only when the property is genuinely a boolean
+      // keeps this a no-op on an incompatible bundle rather than a
+      // confusing half-state.
+      //
+      // This guard is deliberately silent: `ShellRenderDeps` has no log/
+      // sink seam (see this interface's fields), and threading one through
+      // solely for this would widen both the seam and this PR. The LOUD
+      // channel for the same risk is
+      // `terminalCtrlCFocus.test.ts`'s dependency canary, which asserts
+      // this exact bundle shape and fails in CI on any upgrade that breaks
+      // it — a failing test reaches a developer, whereas a log line written
+      // underneath a full-screen TUI does not.
+      const target = renderer as unknown as { exitOnCtrlC?: unknown };
+      if (typeof target.exitOnCtrlC !== "boolean") return;
+      target.exitOnCtrlC = enabled;
+    });
   }
 
   // Bracketed-paste terminal input (Issue #91, `ShellRenderDeps.onPaste`'s
