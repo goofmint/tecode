@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { cellWidth, cellWidthUpTo } from "./cellWidth";
+import { cellWidth, cellWidthUpTo, truncateToWidth } from "./cellWidth";
 
 describe("cellWidth (Req 6.6)", () => {
   test("ASCII: one cell per character", () => {
@@ -125,5 +125,97 @@ describe("tabs (Req 6.6: string-width measures \"\\t\" as 0 cells on its own)", 
     expect(cellWidth("\t", 2.9)).toBe(2);
     // Truncating below 1 (e.g. 0.5 -> 0) is invalid and falls back to 4.
     expect(cellWidth("\t", 0.5)).toBe(4);
+  });
+});
+
+describe("truncateToWidth (Issue #104: Tree row wrapping)", () => {
+  test("ASCII text that already fits is returned unchanged", () => {
+    expect(truncateToWidth("hello", 10)).toBe("hello");
+  });
+
+  test("exactly at width: returned unchanged, no ellipsis", () => {
+    expect(truncateToWidth("hello", 5)).toBe("hello");
+  });
+
+  test("under width (shorter than maxWidth): returned unchanged", () => {
+    expect(truncateToWidth("hi", 5)).toBe("hi");
+  });
+
+  test("over width: cuts and appends the ellipsis, leaving room for it", () => {
+    // budget = 3 - 1 (ellipsis) = 2 content cells kept.
+    expect(truncateToWidth("hello", 3)).toBe("he…");
+  });
+
+  test("ASCII: one cell short of fitting still truncates (off-by-one)", () => {
+    expect(truncateToWidth("hello", 4)).toBe("hel…");
+  });
+
+  test("CJK: fullwidth characters are cut on a character boundary, never split", () => {
+    // "日本語" is 6 cells (2 each). maxWidth 5 -> budget 4 -> keeps "日本" (4).
+    expect(truncateToWidth("日本語", 5)).toBe("日本…");
+  });
+
+  test("a single CJK character (2 cells) against maxWidth 1: only the ellipsis fits", () => {
+    // budget = 1 - 1 = 0 -> zero content cells kept, bare ellipsis returned.
+    expect(truncateToWidth("古", 1)).toBe("…");
+  });
+
+  test("a ZWJ emoji sequence is kept or dropped whole, never split mid-cluster", () => {
+    const family = "\u{1F468}‍\u{1F469}‍\u{1F467}"; // one grapheme cluster, 2 cells.
+    // "x" + family + "y" is 1 + 2 + 1 = 4 cells.
+    const text = `x${family}y`;
+    // budget 2 (maxWidth 3, ellipsis 1) fits "x" (1) but not the 2-cell
+    // family cluster (1 + 2 = 3 > 2) -> stops after "x", never emits half
+    // of the ZWJ sequence.
+    const result = truncateToWidth(text, 3);
+    expect(result).toBe("x…");
+    expect(result).not.toContain("\u{1F468}");
+  });
+
+  test("a ZWJ emoji sequence that DOES fit is kept whole", () => {
+    const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+    const text = `${family}yy`; // 2 + 1 + 1 = 4 cells.
+    // budget 2 (maxWidth 3, ellipsis 1) fits the whole 2-cell family
+    // cluster exactly, but not the "y" after it (2 + 1 = 3 > 2).
+    expect(truncateToWidth(text, 3)).toBe(`${family}…`);
+  });
+
+  test("degenerate: maxWidth 0 returns an empty string", () => {
+    expect(truncateToWidth("hello", 0)).toBe("");
+    expect(truncateToWidth("", 0)).toBe("");
+  });
+
+  test("degenerate: negative maxWidth returns an empty string", () => {
+    expect(truncateToWidth("hello", -1)).toBe("");
+    expect(truncateToWidth("hello", -100)).toBe("");
+  });
+
+  test("degenerate: NaN maxWidth returns an empty string rather than crashing", () => {
+    expect(truncateToWidth("hello", Number.NaN)).toBe("");
+  });
+
+  test("degenerate: maxWidth exactly the ellipsis's own width returns just the ellipsis", () => {
+    expect(truncateToWidth("hello", 1)).toBe("…");
+    expect(truncateToWidth("hello", 1, "...")).toBe(""); // "..." is 3 cells > maxWidth 1.
+  });
+
+  test("a caller-supplied multi-cell ellipsis that doesn't fit at all yields no partial ellipsis", () => {
+    expect(truncateToWidth("hello world", 2, "...")).toBe("");
+  });
+
+  test("empty text at any positive width returns empty text unchanged", () => {
+    expect(truncateToWidth("", 5)).toBe("");
+  });
+
+  test("postcondition: the result's display width never exceeds max(0, maxWidth), for every input", () => {
+    const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
+    const samples = ["", "a", "hello", "日本語テキスト", `x${family}y${family}z`, "\tindented\tlabel"];
+    for (const text of samples) {
+      const upperBound = cellWidth(text) + 3;
+      for (let maxWidth = -2; maxWidth <= upperBound; maxWidth++) {
+        const result = truncateToWidth(text, maxWidth);
+        expect(cellWidth(result)).toBeLessThanOrEqual(Math.max(0, maxWidth));
+      }
+    }
   });
 });

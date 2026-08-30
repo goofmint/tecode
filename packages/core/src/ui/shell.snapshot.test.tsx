@@ -66,6 +66,7 @@ import { pathToUri } from "../buffer/uri";
 import { createEditorInputRouter } from "../editor/inputRouter";
 import { createHostLog } from "../host/errors";
 import { createContextService } from "../keymap/context";
+import { Tree } from "./components";
 import { createEditorSessionService } from "./editorSession";
 import { createFindService } from "./findService";
 import { ContextFocusTracker } from "./focus";
@@ -255,6 +256,48 @@ describe("Shell — workbench.view.<id> command switches the sidebar (Req 6.2)",
     await act(async () => { await renderOnce(); });
 
     expect(captureCharFrame()).toContain("Search Panel");
+  });
+});
+
+describe("Shell — Sidebar forwards its real content width to the registered view (Issue #104 Phase 3)", () => {
+  test("a Tree-rendering sidebar view truncates a label wider than the sidebar, using Sidebar's own viewProps width", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    // sidebarWidth 15 — Sidebar's own `border={["right"]}` (1 column)
+    // leaves a 14-column content width, which is what should reach `Tree`
+    // below via `viewProps={{ width }}` (`shell.tsx`'s `Sidebar` TSDoc).
+    layoutState.update({ activeView: "explorer", sidebarWidth: 15 });
+
+    slotRegistry.registerView("activityBar.item", "explorer", noopComponent, { title: "Explorer" });
+    // Stands in for `packages/builtin/explorer`'s real `ExplorerView` —
+    // forwards whatever `width` it's rendered with straight into the REAL
+    // `Tree` (no fake/duck-typed stand-in needed here: this test lives in
+    // `@tecode/core` itself, so it can use `Tree` directly), proving the
+    // actual `Sidebar` -> `RegisteredView` -> `viewProps` -> `Tree` wiring
+    // end to end rather than a builtin-side approximation of it.
+    slotRegistry.registerView("sidebar.view", "explorer", (rawProps: Record<string, unknown>) => {
+      const width = typeof rawProps["width"] === "number" ? rawProps["width"] : undefined;
+      return (
+        <Tree
+          nodes={[{ id: "a", label: "a-very-long-file-name-that-would-otherwise-wrap.ts" }]}
+          width={width}
+        />
+      );
+    });
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => { await renderOnce(); });
+
+    const lines = captureCharFrame().split("\n");
+    expect(lines[0]).toContain("…");
+    expect(lines[0]).not.toContain("would-otherwise-wrap");
   });
 });
 

@@ -14,7 +14,7 @@ import { testRender } from "@opentui/react/test-utils";
 import type { Tecode, Uri } from "@tecode/api";
 import { createIgnoreChecker } from "../shared";
 import { createExplorerStore } from "./store";
-import { EXPLORER_FOCUS_CONTEXT_KEY, ExplorerView } from "./ExplorerView";
+import { createExplorerViewComponent, EXPLORER_FOCUS_CONTEXT_KEY, ExplorerView } from "./ExplorerView";
 
 /** A minimal fake `tecode.ui.Tree` — captures the last props it was
  * rendered with (for assertion) and renders each node's label as text,
@@ -163,6 +163,30 @@ describe("ExplorerView (Task 3.3, Req 11.2)", () => {
     expect(opened).toEqual(["file:///workspace/a.ts"]);
   });
 
+  test("forwards width through to Tree (Issue #104)", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const { renderOnce } = await testRender(
+      <ExplorerView store={store} Tree={Tree} onOpenFile={() => {}} width={20} />,
+      { width: 30, height: 5 },
+    );
+    await renderOnce();
+    expect(lastProps()?.["width"]).toBe(20);
+  });
+
+  test("omits width from Tree's props when ExplorerView isn't given one (unchanged behavior)", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const { renderOnce } = await testRender(
+      <ExplorerView store={store} Tree={Tree} onOpenFile={() => {}} />,
+      { width: 30, height: 5 },
+    );
+    await renderOnce();
+    expect(lastProps()?.["width"]).toBeUndefined();
+  });
+
   test("onActivate on a DIRECTORY node does NOT call onOpenFile", async () => {
     const store = createStore({ src: { "a.ts": null } }, ROOT);
     await store.reload(ROOT);
@@ -178,5 +202,62 @@ describe("ExplorerView (Task 3.3, Req 11.2)", () => {
       (lastProps()?.["onActivate"] as (id: string) => void)("file:///workspace/src");
     });
     expect(opened).toEqual([]);
+  });
+});
+
+describe("createExplorerViewComponent (Issue #104 Phase 3)", () => {
+  test("forwards a render-time `width` (e.g. Sidebar's viewProps) into ExplorerView/Tree, while store/Tree/onOpenFile stay fixed", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const opened: string[] = [];
+    const component = createExplorerViewComponent({
+      store,
+      Tree,
+      onOpenFile: (uri) => opened.push(uri),
+    });
+    // The same "cast to a real React function-component type" bridge
+    // `ExplorerView.tsx`'s own TSDoc documents for `TreeComponent` — this
+    // is exactly what `RegisteredView` (`@tecode/core`'s `components.tsx`)
+    // does when it renders `<Component {...viewProps} />`.
+    const Component = component as unknown as (p: Record<string, unknown>) => ReactNode;
+
+    const { renderOnce } = await testRender(<Component width={20} />, { width: 30, height: 5 });
+    await renderOnce();
+
+    // width reached Tree...
+    expect(lastProps()?.["width"]).toBe(20);
+    // ...and store/onOpenFile are still the ones closed over at
+    // registration time, regardless of what else `rawProps` carries.
+    act(() => {
+      (lastProps()?.["onActivate"] as (id: string) => void)("file:///workspace/a.ts");
+    });
+    expect(opened).toEqual(["file:///workspace/a.ts"]);
+  });
+
+  test("a render with no width at all (e.g. no Sidebar above it) leaves Tree's width undefined", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const component = createExplorerViewComponent({ store, Tree, onOpenFile: () => {} });
+    const Component = component as unknown as (p: Record<string, unknown>) => ReactNode;
+
+    const { renderOnce } = await testRender(<Component />, { width: 30, height: 5 });
+    await renderOnce();
+
+    expect(lastProps()?.["width"]).toBeUndefined();
+  });
+
+  test("a non-numeric `width` in rawProps is ignored rather than forwarded as-is", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const component = createExplorerViewComponent({ store, Tree, onOpenFile: () => {} });
+    const Component = component as unknown as (p: Record<string, unknown>) => ReactNode;
+
+    const { renderOnce } = await testRender(<Component width="20" />, { width: 30, height: 5 });
+    await renderOnce();
+
+    expect(lastProps()?.["width"]).toBeUndefined();
   });
 });

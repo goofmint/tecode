@@ -302,9 +302,32 @@ export interface SidebarProps {
   activeView: string | undefined;
 }
 
+/** Columns `Sidebar`'s own `border={["right"]}` occupies (Issue #104 Phase
+ * 3) — verified against the vendored `@opentui/core@0.1.107` bundle's
+ * `BoxRenderable` (`node.setBorder(Edge.Right, this.borderSides.right ? 1
+ * : 0)`): Yoga treats a border edge exactly like a padding edge for layout
+ * purposes, so a `<box>` with a 1-cell right border gives its CHILDREN one
+ * fewer column of content width than the box's own `width`. Matches
+ * `PANEL_BORDER_HEIGHT`'s own "always drawn while visible, so always
+ * reserved" framing, for the horizontal axis instead of the vertical one. */
+const SIDEBAR_BORDER_WIDTH = 1;
+
 /** The sidebar (Req 6.1, 6.2, 6.4): renders the `sidebar.view` paired with
  * `activeView`, requesting lazy activation if it has no component yet
- * (design.md §8.2). */
+ * (design.md §8.2).
+ *
+ * **`viewProps` (Issue #104 Phase 3)**: the active view's component
+ * receives `{ width: contentWidth }` — `props.width` net of {@link
+ * SIDEBAR_BORDER_WIDTH} — the same `viewProps={{ height, width }}`
+ * mechanism `Panel` already uses to hand its active tab the panel's real
+ * content area (`Panel`'s own TSDoc); copied here rather than invented
+ * fresh. The explorer's `tecode.ui.Tree` reads this as its own `width` prop
+ * (`components.tsx`'s `TreeProps.width` TSDoc) to truncate labels wider
+ * than the sidebar instead of letting them wrap onto a second row (Issue
+ * #104's root cause) — and since `layout.sidebarWidth` flows through React
+ * state, a live width change re-renders `Sidebar` and this `viewProps`
+ * reaches `Tree` on the very next render, the live-reflow path Issue #105
+ * needs. */
 export function Sidebar(props: SidebarProps): ReactNode {
   const theme = useTheme();
   const pairs = useSidebarPairs(props.slotRegistry);
@@ -322,6 +345,9 @@ export function Sidebar(props: SidebarProps): ReactNode {
     // requests itself (slotRegistry.ts).
     props.slotRegistry.requestActivation("sidebar.view", view.id);
   }
+
+  const contentWidth = Math.max(0, props.width - SIDEBAR_BORDER_WIDTH);
+  const viewProps = { width: contentWidth };
 
   return (
     <box
@@ -341,7 +367,7 @@ export function Sidebar(props: SidebarProps): ReactNode {
         // component — unmounts the old view's fiber instead of reusing it
         // (components.tsx's RegisteredView TSDoc: this is what keeps hook
         // state from leaking across views).
-        <RegisteredView key={view.id} component={view.component} />
+        <RegisteredView key={view.id} component={view.component} viewProps={viewProps} />
       ) : (
         <text fg={toColorInput(theme.colors["sideBar.foreground"])}>
           {view ? "Activating…" : ""}

@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { KeyEvent, SelectOption, TabSelectOption, TabSelectRenderable } from "@opentui/core";
 import type { ComponentType } from "@tecode/api";
+import { truncateToWidth } from "./cellWidth";
 import type { FocusableNode } from "./focus";
 import { useFocusTracking } from "./focus";
 import { toColorInput, useTheme } from "./theme";
@@ -269,6 +270,33 @@ export interface TreeProps {
    * though that specific initial transition is not itself reported to
    * `focusContextKey`). */
   focused?: boolean;
+  /**
+   * Bounds each row's rendered text so a label wider than the sidebar is
+   * truncated with an ellipsis instead of wrapping onto a second row
+   * (Issue #104: with no width constraint, `<text>` wraps at its container
+   * width, so one node takes two terminal rows and every row below it stops
+   * lining up with the tree's own indentation). Optional, and OFF by
+   * default — omitting it keeps Tree's original wrapping behavior
+   * unchanged (the same "opt a caller INTO the new behavior" shape {@link
+   * ListStyle} used for issue #93, so every pre-existing caller, including
+   * `components.snapshot.test.tsx`, renders byte-for-byte unchanged).
+   *
+   * When given, it is the FULL row width available (this component's own
+   * root `<box>`'s content width — e.g. the sidebar's content width net of
+   * its own border, `shell.tsx`'s `Sidebar`), not just the label's own
+   * budget: each row's per-label budget is computed in the render loop as
+   * `width - 2 * node.depth - 2` (the indent's `"  ".repeat(node.depth)`
+   * plus the 2-column glyph — both always exactly 2 columns per level, this
+   * module's TSDoc), and only `node.label` is ever passed through {@link
+   * truncateToWidth} — the indent and glyph are never truncated, since
+   * cutting either would destroy the very alignment this prop exists to
+   * protect. A budget of `0` or less (nesting deep enough that indent +
+   * glyph alone consume the whole row) truncates the label to `""`
+   * (`truncateToWidth`'s own `maxWidth <= 0` case) rather than wrapping or
+   * slicing a negative length — the row still renders (indent + glyph, no
+   * label), it just carries no visible name.
+   */
+  width?: number;
 }
 
 /** One node of {@link Tree}'s CURRENTLY VISIBLE (i.e. every ancestor is
@@ -436,6 +464,14 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
         const isExpanded = expanded.has(node.id);
         const isSelected = props.selectedId === node.id;
         const glyph = node.hasChildren ? (isExpanded ? "▾ " : "▸ ") : "  ";
+        // Issue #104: truncate ONLY the label, never the indent/glyph
+        // (TreeProps.width's own TSDoc) — `props.width` absent keeps the
+        // pre-#104 behavior of handing the whole row string to `<text>`
+        // unbounded, wrapping exactly as before.
+        const label =
+          props.width !== undefined
+            ? truncateToWidth(node.label, props.width - 2 * node.depth - 2)
+            : node.label;
         return (
           <text
             key={node.id}
@@ -449,7 +485,7 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
               props.onSelect?.(node.id);
             }}
           >
-            {"  ".repeat(node.depth) + glyph + node.label}
+            {"  ".repeat(node.depth) + glyph + label}
           </text>
         );
       })}

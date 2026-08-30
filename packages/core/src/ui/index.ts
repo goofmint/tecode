@@ -161,7 +161,7 @@ export {
   type StatusBarProps,
 } from "./shell";
 
-export { cellWidth, cellWidthUpTo } from "./cellWidth";
+export { cellWidth, cellWidthUpTo, truncateToWidth } from "./cellWidth";
 
 export {
   computeVisibleLineRange,

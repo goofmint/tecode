@@ -118,3 +118,92 @@ export function cellWidthUpTo(
   const clampedIndex = Math.max(0, Math.min(Math.trunc(charIndex) || 0, text.length));
   return measureCells(text.slice(0, clampedIndex), tabSize);
 }
+
+/**
+ * A shared, stateless grapheme segmenter (Issue #104) — `measureCells`
+ * above walks `text` with `for (const ch of text)`, which is code-POINT
+ * iteration, fine for summing a whole string's width but too coarse for
+ * {@link truncateToWidth}'s job of stopping mid-string: slicing on a
+ * code-point boundary can cut a ZWJ emoji sequence in half or separate a
+ * combining mark from its base, producing a dangling low surrogate or an
+ * orphaned combining character at the cut point. `Intl.Segmenter`
+ * (`granularity: "grapheme"`) walks whole grapheme clusters instead — the
+ * same technique `packages/builtin/editor-core/wordBoundary.ts` uses for
+ * cursor-safe word/character navigation (that module's own TSDoc names this
+ * exact tradeoff: "the same … approach `@tecode/core`'s `ui/cellWidth.ts`
+ * uses" for cell-width measurement — this function is that promise,
+ * fulfilled; `wordBoundary.ts` duplicates the technique rather than
+ * importing from here, since `editor-core` cannot depend on `@tecode/core`,
+ * this repo's layering rule). A single instance is reused across calls
+ * (Segmenter construction is the expensive part; segmenting is cheap),
+ * matching `wordBoundary.ts`'s own `GRAPHEME_SEGMENTER` precedent.
+ */
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * Truncates `text` to fit within `maxWidth` terminal cells (Issue #104: a
+ * file name wider than the explorer sidebar wrapped onto a second row
+ * instead of being cut off with an ellipsis), returning `text` unchanged
+ * when it already fits. Built on this module's own {@link cellWidth}
+ * machinery (`measureCells`) rather than a second width implementation —
+ * `Tree`'s per-row budget (`components.tsx`) and every test in
+ * `cellWidth.test.ts` reason about width the same way for both whole-string
+ * measurement and truncation.
+ *
+ * **Grapheme-safe cutting**: the fast "already fits" check measures the
+ * whole string in one `measureCells` call (identical to {@link cellWidth}),
+ * but the actual cut walks {@link GRAPHEME_SEGMENTER}'s clusters one at a
+ * time, accumulating each cluster's width (tabs advance to their next stop,
+ * exactly as `measureCells` does; every other cluster is measured via
+ * `stringWidth`) until the NEXT cluster would overflow the budget left
+ * after reserving room for `ellipsis`. This guarantees the cut always lands
+ * on a cluster boundary — never inside a ZWJ sequence or between a
+ * combining mark and its base.
+ *
+ * **Degenerate cases** (all exist to keep this function's one hard
+ * postcondition true — `cellWidth(truncateToWidth(text, maxWidth)) <=
+ * max(0, maxWidth)`, for every input, no exceptions):
+ * - `maxWidth <= 0` (including `NaN`, which `Number.isFinite` rejects, and
+ *   negative widths from a stale/miscomputed layout): returns `""` — there
+ *   is no non-negative width `""` doesn't already satisfy, and any
+ *   non-empty result would violate the postcondition outright.
+ * - `maxWidth` too small to fit even `ellipsis` alone (`maxWidth` in cells
+ *   is less than `cellWidth(ellipsis)`, e.g. `maxWidth: 0` for the default
+ *   single-cell `"…"` — already covered above — but this branch is what
+ *   actually protects a caller passing a WIDER multi-cell ellipsis):
+ *   returns `""` rather than a partial ellipsis.
+ * - `maxWidth` exactly `cellWidth(ellipsis)` (e.g. `1` for the default
+ *   `"…"`), including a single 2-cell CJK character against `maxWidth: 1`:
+ *   there is zero budget left for any of `text`'s own content once
+ *   `ellipsis` is reserved, so the result is `ellipsis` alone — this is the
+ *   chosen answer to "just the ellipsis, or nothing?": a bare ellipsis
+ *   still communicates "truncated" (an empty string does not), and it is
+ *   the natural zero-iterations output of the walk below rather than a
+ *   special case.
+ */
+export function truncateToWidth(
+  text: string,
+  maxWidth: number,
+  ellipsis: string = "…",
+  tabSize: number = DEFAULT_TAB_SIZE,
+): string {
+  const safeMaxWidth = Number.isFinite(maxWidth) ? Math.trunc(maxWidth) : 0;
+  if (safeMaxWidth <= 0) return "";
+  if (measureCells(text, tabSize) <= safeMaxWidth) return text;
+
+  const safeTabSize = normalizeTabSize(tabSize);
+  const ellipsisWidth = measureCells(ellipsis, tabSize);
+  const budget = safeMaxWidth - ellipsisWidth;
+  if (budget < 0) return "";
+
+  let column = 0;
+  let kept = "";
+  for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+    const increment =
+      segment === "\t" ? safeTabSize - (column % safeTabSize) : stringWidth(segment);
+    if (column + increment > budget) break;
+    column += increment;
+    kept += segment;
+  }
+  return kept + ellipsis;
+}

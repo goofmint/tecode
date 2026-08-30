@@ -159,6 +159,82 @@ describe("Tree (tecode.ui.Tree)", () => {
     });
   });
 
+  describe("width (Issue #104): truncates the label only, never the indent/glyph", () => {
+    test("a label wider than the available row budget is truncated with an ellipsis, without wrapping", async () => {
+      const nodes: TreeNode[] = [
+        { id: "a", label: "a-very-long-file-name-that-would-otherwise-wrap.ts" },
+        { id: "b", label: "b.ts" },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(<Tree nodes={nodes} width={15} />, {
+        width: 15,
+        height: 6,
+      });
+      await renderOnce();
+      const lines = captureCharFrame().split("\n");
+      expect(lines[0]).toContain("…");
+      expect(lines[0]).not.toContain("would-otherwise-wrap");
+      // The long label above did NOT wrap onto a second row and push this
+      // one down — "b" lands on the very next row, one per node.
+      expect(lines[1]).toContain("b.ts");
+    });
+
+    test("indentation and the expand/collapse glyph are never truncated — only the label shrinks", async () => {
+      const nodes: TreeNode[] = [
+        {
+          id: "root",
+          label: "src",
+          hasChildren: true,
+          children: [
+            {
+              id: "child",
+              label: "lib",
+              hasChildren: true,
+              children: [{ id: "grandchild", label: "a-long-enough-label-to-overflow.ts" }],
+            },
+          ],
+        },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(
+        <Tree nodes={nodes} expandedIds={["root", "child"]} width={5} />,
+        { width: 20, height: 6 },
+      );
+      await renderOnce();
+      const lines = captureCharFrame().split("\n");
+      // The grandchild is a depth-2 leaf: indent "    " (4 cols) + glyph
+      // "  " (2 cols) = 6 fixed prefix columns — already WIDER than the
+      // 5-column width passed in. Its own label budget (5 - 2*2 - 2 = -1)
+      // is negative, so `truncateToWidth` returns "" outright (this
+      // module's TreeProps.width TSDoc) rather than slicing into the
+      // indent/glyph to make room for an ellipsis: the row is exactly 6
+      // blank columns, no ellipsis, no shortened indent.
+      expect(lines[2]!.slice(0, 6)).toBe("      ");
+      expect(lines[2]).not.toContain("…");
+    });
+
+    test("omitting width preserves the original (wrapping) behavior unchanged", async () => {
+      const nodes: TreeNode[] = [
+        { id: "a", label: "a-very-long-file-name-that-would-wrap.ts" },
+        { id: "b", label: "b.ts" },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(<Tree nodes={nodes} />, {
+        width: 15,
+        height: 6,
+      });
+      await renderOnce();
+      // No width prop: the full, untruncated label is still handed to
+      // `<text>` exactly as before #104 — no "…" appears anywhere, and the
+      // label, wider than the 15-column terminal, wraps onto extra rows
+      // (confirmed here by fragments of it landing on more than one row,
+      // and "b.ts" consequently being pushed past row 1 — this module's
+      // pre-#104, still-reachable-when-`width`-is-omitted behavior).
+      const lines = captureCharFrame().split("\n");
+      expect(captureCharFrame()).not.toContain("…");
+      expect(lines[0]).toContain("a-very-long-");
+      expect(lines[1]).toContain("file-name-that-");
+      expect(lines[1]).not.toContain("b.ts");
+    });
+  });
+
   describe("keyboard nav while focused (Task 3.3, Req 11.2)", () => {
     const NODES: TreeNode[] = [
       {
