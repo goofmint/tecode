@@ -397,7 +397,26 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
   // bundle assigns and reads it as an ordinary mutable property.
   if (deps.onCtrlCInterceptControlReady) {
     deps.onCtrlCInterceptControlReady((enabled) => {
-      (renderer as unknown as { exitOnCtrlC: boolean }).exitOnCtrlC = enabled;
+      // Runtime shape check before writing (CodeRabbit PR #114 review).
+      // `packages/cli/package.json` allows `^0.1.107`, so a future 0.1.x
+      // could rename or drop this private field; a bare assignment would
+      // then silently CREATE an unrelated own-property that nothing reads,
+      // and Ctrl+C would quietly go back to killing the editor from inside
+      // the terminal. Writing only when the property is genuinely a boolean
+      // keeps this a no-op on an incompatible bundle rather than a
+      // confusing half-state.
+      //
+      // This guard is deliberately silent: `ShellRenderDeps` has no log/
+      // sink seam (see this interface's fields), and threading one through
+      // solely for this would widen both the seam and this PR. The LOUD
+      // channel for the same risk is
+      // `terminalCtrlCFocus.test.ts`'s dependency canary, which asserts
+      // this exact bundle shape and fails in CI on any upgrade that breaks
+      // it — a failing test reaches a developer, whereas a log line written
+      // underneath a full-screen TUI does not.
+      const target = renderer as unknown as { exitOnCtrlC?: unknown };
+      if (typeof target.exitOnCtrlC !== "boolean") return;
+      target.exitOnCtrlC = enabled;
     });
   }
 
