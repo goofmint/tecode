@@ -435,4 +435,54 @@ describe("createLayoutStateService — onDidChange (Issue #101)", () => {
     service.update({ panelVisible: true });
     expect(calls).toBe(1);
   });
+  test("a listener that re-enters update() during the initial load() does not have its value reverted (Issue #101 review)", async () => {
+    // `onDidChange` fires from inside `update()`, so a listener is free to
+    // call `update()` again re-entrantly. That inner (newer) call records
+    // its fields in `localOverrides` first; if the outer frame then
+    // recorded ITS older `partial` afterwards, `localOverrides` would end
+    // up stale while `state` was correct — and `load()` re-applies
+    // `localOverrides` on top of the persisted values, silently reverting
+    // the newest change once the read settled. Recording before firing is
+    // what keeps the two in step.
+    //
+    // 33/50 rather than 30/50 deliberately: `DEFAULT_LAYOUT_STATE`'s own
+    // `sidebarWidth` is 30, so an outer update to 30 changes nothing,
+    // `hasChanged` correctly skips the notification, and the listener
+    // never runs at all — the test would pass without exercising anything.
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    let resolveRead: (text: string) => void = () => {};
+    const fs = {
+      readFile: () => new Promise<string>((resolve) => { resolveRead = resolve; }),
+      mkdir: async () => {},
+      writeFile: async () => {},
+    };
+    const service = createLayoutStateService({
+      log,
+      sink,
+      path: "/state.json",
+      fs,
+      timer: { schedule: () => 1, cancel() {} },
+    });
+
+    let reentered = false;
+    service.onDidChange(() => {
+      if (reentered) return;
+      reentered = true;
+      service.update({ sidebarWidth: 50 });
+    });
+
+    service.update({ sidebarWidth: 33 });
+    expect(reentered).toBe(true);
+    // The re-entrant (newer) value wins immediately.
+    expect(service.get().sidebarWidth).toBe(50);
+
+    // The persisted file sets the same field — `localOverrides` is what
+    // must protect the in-flight value from it.
+    resolveRead(JSON.stringify({ sidebarWidth: 10 }));
+    await service.ready;
+
+    // Still 50. Before the fix this reverted to 33, the OUTER call's value.
+    expect(service.get().sidebarWidth).toBe(50);
+  });
 });

@@ -318,19 +318,27 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
   function update(partial: Partial<LayoutState>): void {
     const prev = state;
     state = { ...state, ...partial };
+    if (!loaded) {
+      // Still mid-`load()` (or not yet started) — remember exactly which
+      // fields this update touched so `load()`'s merge below can exclude
+      // them from the persisted values, whether or not it awaits again
+      // before returning.
+      //
+      // Recorded BEFORE `fireChange()` below, not after: a listener is
+      // free to call `update()` again re-entrantly, and its (newer) merge
+      // would otherwise land here first, only for THIS frame's older
+      // `partial` to overwrite it on the way out — leaving `state` correct
+      // but `localOverrides` stale, which `load()` then re-applies on top,
+      // silently reverting the newest change. Recording first means the
+      // re-entrant call's value is the last one written, matching `state`.
+      localOverrides = { ...localOverrides, ...partial };
+    }
     // Shallow, field-by-field comparison against `partial`'s own keys only
     // (not a deep-equal of the whole state) — enough to skip the no-op case
     // `panelCommands.ts`'s TSDoc calls out ("setting panelVisible: true when
     // it is already true is a harmless no-op merge") without giving this a
     // fancier equality check than the rest of this module bothers with.
     if (hasChanged(prev, partial)) fireChange();
-    if (!loaded) {
-      // Still mid-`load()` (or not yet started) — remember exactly which
-      // fields this update touched so `load()`'s merge below can exclude
-      // them from the persisted values, whether or not it awaits again
-      // before returning.
-      localOverrides = { ...localOverrides, ...partial };
-    }
     if (pendingTimer !== undefined) {
       try {
         timer.cancel(pendingTimer);
