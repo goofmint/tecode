@@ -869,8 +869,14 @@ export function buildAssemblyRoot(
   // Persists a sidebar-resize COMMIT to `workbench.sidebarWidth` (Issue
   // #105, `ui/sidebarWidthSettingsWriter.ts`'s TSDoc) — built here,
   // alongside `layoutState`, since both back the same feature and neither
-  // depends on the other.
-  const sidebarWidthSettingsWriter = createSidebarWidthSettingsWriter({ log, sink });
+  // depends on the other. `path: settingsPath` mirrors `createConfigService`
+  // above: under `--config <dir>`, `ConfigService` already reads the USER
+  // settings layer from that directory (`settingsPath`, computed above), so
+  // the writer must target the SAME file — otherwise a `--config` user's
+  // resize commit would read from the override but write to the default
+  // `getUserSettingsPath()` (this writer's own fallback), and the width
+  // would never survive a restart.
+  const sidebarWidthSettingsWriter = createSidebarWidthSettingsWriter({ log, sink, path: settingsPath });
 
   // `workbench.action.showPanel` (Issue #98 Phase 3, `ui/panelCommands.ts`'s
   // TSDoc): another PRIVILEGED registration straight on `commands`, same

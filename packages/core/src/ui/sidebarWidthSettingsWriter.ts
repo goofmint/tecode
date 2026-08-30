@@ -28,9 +28,13 @@
  * string): `settings.json` is JSONC, and a naive parse/mutate/
  * `JSON.stringify` round-trip would destroy the user's own comments and
  * formatting. This module finds `"workbench.sidebarWidth"` with a targeted
- * regex and replaces only its value substring in place; if the key is
- * absent, it is appended just inside the object's opening `{`, exactly like
- * `applyColorThemeSetting`'s own fallback.
+ * regex against `stripComments`-sanitized text — so a commented-out
+ * `// "workbench.sidebarWidth": 40,` is never mistaken for a live key
+ * (`applySidebarWidthSetting`'s own TSDoc) — and replaces only its value
+ * substring in place, at the SAME offsets in the original (unsanitized)
+ * text, since `stripComments` never changes a string's length; if the key
+ * is absent, it is appended just inside the object's opening `{`, exactly
+ * like `applyColorThemeSetting`'s own fallback.
  */
 
 import { readFile as nodeReadFile, writeFile as nodeWriteFile, mkdir as nodeMkdir } from "node:fs/promises";
@@ -177,12 +181,30 @@ function findObjectOpenBrace(text: string): number {
  * `applyColorThemeSetting`.
  */
 export function applySidebarWidthSetting(text: string, width: number): string {
-  const match = SIDEBAR_WIDTH_KEY_RE.exec(text);
+  // Match against COMMENT-STRIPPED text, not `text` itself — `stripComments`
+  // blanks `//`/`/* */` spans to spaces without ever changing the string's
+  // length (`config/jsonc.ts`'s own `stripComments`, verified by
+  // construction: every branch either copies one input character to the
+  // same output index or overwrites it with a same-length blank), so a
+  // match's `index`/length found in the sanitized copy still names the
+  // exact same offsets in the original `text`. Without this, a
+  // commented-out `// "workbench.sidebarWidth": 40,` reads as a live key
+  // and gets spliced into instead of appended as a real one (CodeRabbit
+  // PR #111 review, Finding 5).
+  const sanitized = stripComments(text);
   const encodedWidth = JSON.stringify(width);
-  if (match) {
-    const start = match.index;
-    const end = start + match[0].length;
-    return `${text.slice(0, start)}"workbench.sidebarWidth": ${encodedWidth}${text.slice(end)}`;
+  // Defensive: only splice at `sanitized`'s offsets if it is actually the
+  // same length as `text` — true for every real `stripComments` output
+  // (this function's own contract), but a length mismatch here would mean
+  // splicing `text` at offsets that name the wrong characters, which is
+  // worse than falling through to the append path below.
+  if (sanitized.length === text.length) {
+    const match = SIDEBAR_WIDTH_KEY_RE.exec(sanitized);
+    if (match) {
+      const start = match.index;
+      const end = start + match[0].length;
+      return `${text.slice(0, start)}"workbench.sidebarWidth": ${encodedWidth}${text.slice(end)}`;
+    }
   }
 
   const openBrace = findObjectOpenBrace(text);

@@ -247,6 +247,43 @@ test("buildAssemblyRoot's configDir makes a --config directory's keybindings.jso
   }
 });
 
+test("buildAssemblyRoot's configDir makes sidebarWidthSettingsWriter target the --config directory's settings.json (CodeRabbit PR #111 Finding 2)", async () => {
+  // Regression test: `sidebarWidthSettingsWriter` used to be built with no
+  // `path` at all, so it always fell back to `getUserSettingsPath()`
+  // regardless of `--config` — reads came from the override (via
+  // `ConfigService`'s own `settingsPath`) but writes went to the default
+  // user file, so a resize commit never survived a restart under
+  // `--config`. This proves the writer's actual disk write lands in
+  // `configDir`, not the real user settings path.
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const configDir = await mkdtemp(join(tmpdir(), "tecode-cli-config-"));
+  await writeFile(join(configDir, "settings.json"), JSON.stringify({ "editor.tabSize": 2 }), "utf8");
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { configDir });
+    await root.config.ready;
+
+    root.sidebarWidthSettingsWriter.write(77);
+    await root.sidebarWidthSettingsWriter.flush();
+
+    const written = JSON.parse(await readFile(join(configDir, "settings.json"), "utf8"));
+    expect(written["workbench.sidebarWidth"]).toBe(77);
+    // The pre-existing key from configDir's settings.json survived the
+    // text-splice, and the real user settings path was never touched.
+    expect(written["editor.tabSize"]).toBe(2);
+  } finally {
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(configDir, { recursive: true, force: true });
+  }
+});
+
 test("forward-referenced activateExtension is a safe no-op before the deferred phase assigns hostRef", async () => {
   const dir = await mkdtemp(join(tmpdir(), "tecode-cli-root-"));
   const savedHome = process.env["HOME"];

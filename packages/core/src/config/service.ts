@@ -141,6 +141,22 @@ export interface ConfigService {
    * (e.g. for a `"type": "object"` schema) is stored as-is under its one
    * key, not split into further path segments (design.md §11). */
   get<T = unknown>(key: string): T | undefined;
+  /**
+   * Whether `key` is set by the USER or WORKSPACE layer specifically —
+   * i.e. whether {@link get}'s merged value for `key` came from a real
+   * `settings.json` entry rather than falling through to a
+   * `registerConfiguration`-supplied schema default (Issue #105 Finding 3).
+   * `get` alone cannot distinguish the two: an absent key returns the same
+   * `T | undefined` shape as a key a user genuinely set to that exact
+   * value, so a caller that must apply a setting ONLY when the user
+   * actually configured it (`ui/sidebarWidthConfigSync.ts`'s
+   * `applyConfiguredSidebarWidth` — a schema default must never clobber
+   * `LayoutState.sidebarWidth`'s own persisted `state.json` value) needs
+   * this instead of inferring "explicit" by comparing against the default
+   * value, which cannot tell a user who genuinely configured the default
+   * apart from one who configured nothing at all.
+   */
+  isExplicitlySet(key: string): boolean;
   /** Fires whenever a live reload changes the merged view (Req 9.4). Never
    * fires for a reload that reproduces identical values. */
   onDidChange: Event<ConfigChangeEvent>;
@@ -565,6 +581,11 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     return merged[key] as T | undefined;
   }
 
+  function isExplicitlySet(key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(userLayer, key) ||
+      Object.prototype.hasOwnProperty.call(workspaceLayer, key);
+  }
+
   function onDidChange(listener: Listener<ConfigChangeEvent>): Disposable {
     changeListeners.add(listener);
     let listenerDisposed = false;
@@ -631,6 +652,7 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
 
   return {
     get,
+    isExplicitlySet,
     onDidChange,
     registerConfiguration,
     getKeybindingEntries,

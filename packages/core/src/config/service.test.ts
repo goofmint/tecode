@@ -155,6 +155,80 @@ describe("ConfigService.get — layering (Req 9.2, 9.3)", () => {
   });
 });
 
+describe("ConfigService.isExplicitlySet (Issue #105 Finding 3)", () => {
+  test("false for a key with only a schema default and no user/workspace entry", async () => {
+    const fake = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, fs: fake.fs });
+    service.registerConfiguration({
+      properties: { "workbench.sidebarWidth": { type: "number", default: 30 } },
+    });
+    await service.ready;
+
+    // `get` alone cannot tell these two situations apart — both return 30.
+    expect(service.get<number>("workbench.sidebarWidth")).toBe(30);
+    expect(service.isExplicitlySet("workbench.sidebarWidth")).toBe(false);
+    service.dispose();
+  });
+
+  test("true when the USER layer names the key, even at the exact same value as the schema default", async () => {
+    const userPath = getUserSettingsPath();
+    const fake = createFakeFs({ [userPath]: JSON.stringify({ "workbench.sidebarWidth": 30 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, fs: fake.fs });
+    service.registerConfiguration({
+      properties: { "workbench.sidebarWidth": { type: "number", default: 30 } },
+    });
+    await service.ready;
+
+    expect(service.get<number>("workbench.sidebarWidth")).toBe(30);
+    expect(service.isExplicitlySet("workbench.sidebarWidth")).toBe(true);
+    service.dispose();
+  });
+
+  test("true when only the WORKSPACE layer names the key", async () => {
+    const workspaceRoot = "/fake-workspace";
+    const workspacePath = getWorkspaceSettingsPath(workspaceRoot);
+    const fake = createFakeFs({ [workspacePath]: JSON.stringify({ "workbench.sidebarWidth": 60 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, workspaceRoot, fs: fake.fs });
+    await service.ready;
+
+    expect(service.isExplicitlySet("workbench.sidebarWidth")).toBe(true);
+    service.dispose();
+  });
+
+  test("reverts to false after a live reload removes the key from settings.json", async () => {
+    const userPath = getUserSettingsPath();
+    const fake = createFakeFs({ [userPath]: JSON.stringify({ "workbench.sidebarWidth": 50 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, fs: fake.fs });
+    await service.ready;
+    expect(service.isExplicitlySet("workbench.sidebarWidth")).toBe(true);
+
+    fake.setFile(userPath, JSON.stringify({}));
+    fake.triggerChange(userPath);
+    await waitFor(() => service.isExplicitlySet("workbench.sidebarWidth") === false);
+
+    service.dispose();
+  });
+
+  test("false for a key that has never been registered or configured at all", async () => {
+    const fake = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, fs: fake.fs });
+    await service.ready;
+
+    expect(service.isExplicitlySet("nothing.here")).toBe(false);
+    service.dispose();
+  });
+});
+
 describe("ConfigService — settingsPath/keybindingsPath overrides (Req 9.6, Issue #81 Phase 1)", () => {
   test("settingsPath overrides where the user settings layer is read from, leaving the workspace layer untouched", async () => {
     const overriddenSettingsPath = "/override/settings.json";

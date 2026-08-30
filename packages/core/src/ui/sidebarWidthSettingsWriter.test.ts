@@ -56,21 +56,50 @@ describe("applySidebarWidthSetting (Issue #105, text-replace)", () => {
     expect(after.match(/"workbench\.sidebarWidth"/g)).toHaveLength(1);
   });
 
-  test("does not disturb a same-named key inside a comment or a different key sharing a suffix", () => {
+  test("does not disturb a different key sharing a suffix with the real key", () => {
     const before = `{\n  "notWorkbench.sidebarWidth": "untouched"\n}\n`;
     const after = applySidebarWidthSetting(before, 33);
     expect(after).toContain('"notWorkbench.sidebarWidth": "untouched"');
     expect(after).toContain('"workbench.sidebarWidth": 33');
+  });
+
+  test("a key that appears ONLY inside a comment is left untouched, and a real key is appended instead (Issue #105 Finding 5)", () => {
+    // Regression: `applySidebarWidthSetting` used to search the RAW text
+    // (only `findObjectOpenBrace`'s fallback path used `stripComments`), so
+    // a commented-out occurrence of the key was matched as if it were live
+    // and spliced into — corrupting the comment and leaving no real,
+    // parseable `"workbench.sidebarWidth"` entry at all.
+    const before = `{\n  // "workbench.sidebarWidth": 40,\n  "editor.tabSize": 2\n}\n`;
+    const after = applySidebarWidthSetting(before, 45);
+
+    // The comment survives byte-for-byte...
+    expect(after).toContain('// "workbench.sidebarWidth": 40,');
+    // ...and a REAL key was appended rather than spliced into the comment.
+    const parsed = parseJsonc<Record<string, unknown>>(after);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value["workbench.sidebarWidth"]).toBe(45);
+      expect(parsed.value["editor.tabSize"]).toBe(2);
+    }
   });
 });
 
 function createFakeFs(initial: Record<string, string>): {
   fs: SidebarWidthSettingsWriterFs;
   files: Record<string, string>;
+  /** How many times `writeFile` actually ran — unlike counting
+   * `Object.keys(files)`, which only ever reports how many DISTINCT paths
+   * were ever written (always 1 for these single-path tests, regardless of
+   * how many times `writeFile` ran), this increments on every call, so a
+   * mutation that fires a disk write per `write()` call instead of once
+   * per debounce window is actually caught (Issue #105 Finding 4). */
+  writeCount(): number;
 } {
   const files = { ...initial };
+  let writeCalls = 0;
   return {
     files,
+    writeCount: () => writeCalls,
     fs: {
       readFile: (path) => {
         const text = files[path];
@@ -81,6 +110,7 @@ function createFakeFs(initial: Record<string, string>): {
       },
       mkdir: () => Promise.resolve(),
       writeFile: (path, data) => {
+        writeCalls += 1;
         files[path] = data;
         return Promise.resolve();
       },
@@ -154,7 +184,7 @@ describe("createSidebarWidthSettingsWriter (Issue #105)", () => {
     // settings.json must result — the whole reason this module debounces
     // rather than writing immediately like `themeSettingsWriter.ts` does
     // (this module's own TSDoc explains why the two differ).
-    const { fs, files } = createFakeFs({ "/settings.json": "{}\n" });
+    const { fs, files, writeCount } = createFakeFs({ "/settings.json": "{}\n" });
     const { timer, scheduledCount, runScheduled } = createManualTimer();
     const writer = createSidebarWidthSettingsWriter({ path: "/settings.json", fs, timer });
 
@@ -170,15 +200,14 @@ describe("createSidebarWidthSettingsWriter (Issue #105)", () => {
     runScheduled();
     await writer.flush();
 
-    let writeCount = 0;
-    for (const key of Object.keys(files)) {
-      if (key === "/settings.json") writeCount += 1;
-    }
-    // Only one file was ever produced/updated — assert on the FS write
-    // count directly, not just the final content, so a mutation that fires
-    // a write per update() call (rather than once per debounce window)
-    // would be caught even if the final value still happened to look right.
-    expect(writeCount).toBe(1);
+    // Only one actual `writeFile` call happened — asserted via a counter
+    // incremented INSIDE the fake `writeFile` (Issue #105 Finding 4:
+    // counting `Object.keys(files)` instead cannot fail here, since that
+    // map is keyed by PATH — one key regardless of how many times
+    // `writeFile` ran against it), so a mutation that fires a write per
+    // update() call (rather than once per debounce window) would be
+    // caught even if the final value still happened to look right.
+    expect(writeCount()).toBe(1);
     const parsed = parseJsonc<Record<string, unknown>>(files["/settings.json"]!);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.value["workbench.sidebarWidth"]).toBe(30);

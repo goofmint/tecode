@@ -29,9 +29,14 @@ import { ContextFocusTracker } from "./focus";
 import { createLayoutStateService, DEFAULT_LAYOUT_STATE, type LayoutStateFs } from "./layoutState";
 import { createSlotRegistry } from "./slotRegistry";
 import { ACTIVITY_BAR_WIDTH, Shell } from "./shell";
+import { MIN_EDITOR_WIDTH } from "./sidebarWidth";
 import { ThemeProvider } from "./theme";
 
-function createRecordingSink() {
+/** A `StatusSink` stub that records nothing, just swallows every error —
+ * these tests assert on `Shell`/`Sidebar`'s own behavior, not on error
+ * reporting (Issue #105 nitpick: this was misnamed `createRecordingSink`
+ * despite never recording anything). */
+function createNoopSink() {
   return { error() {} };
 }
 
@@ -51,7 +56,7 @@ function createLayoutFs(sidebarWidth: number): LayoutStateFs {
 
 function createHarness(sidebarWidth: number) {
   const log = createHostLog();
-  const sink = createRecordingSink();
+  const sink = createNoopSink();
   const slotRegistry = createSlotRegistry({ log });
   const layoutState = createLayoutStateService({
     log,
@@ -121,8 +126,13 @@ describe("Shell — sidebar width render-site clamp (Issue #105)", () => {
 
     const sidebarBox = findSidebarBox(renderer.root);
     expect(sidebarBox).toBeDefined();
-    expect(sidebarBox!.width).toBeLessThan(80);
-    expect(sidebarBox!.width).toBeLessThan(40);
+    // Assert the EXACT capped width `clampSidebarWidth` computes (derived
+    // from `ACTIVITY_BAR_WIDTH`/`MIN_EDITOR_WIDTH`, `sidebarWidth.ts`'s own
+    // terminal-aware ceiling), not just two loose `toBeLessThan`s — a
+    // drift in either constant is caught here instead of silently passing
+    // as long as SOME shrinkage happened.
+    const expectedWidth = 40 - ACTIVITY_BAR_WIDTH - MIN_EDITOR_WIDTH;
+    expect(sidebarBox!.width).toBe(expectedWidth);
   });
 
   test("a persisted width that already fits the terminal is left unchanged", async () => {

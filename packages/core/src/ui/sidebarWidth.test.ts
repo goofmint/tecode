@@ -14,7 +14,11 @@ describe("clampSidebarWidth (Issue #105)", () => {
 
   test("a non-finite desired width (NaN/Infinity) degrades to MIN_SIDEBAR_WIDTH rather than propagating", () => {
     expect(clampSidebarWidth(Number.NaN)).toBe(MIN_SIDEBAR_WIDTH);
-    expect(clampSidebarWidth(Number.POSITIVE_INFINITY, 200)).toBeLessThanOrEqual(200);
+    // Asserts the EXACT value, not merely `<= 200` — a mutated
+    // `clampSidebarWidth` that only capped Infinity via the terminal-width
+    // ceiling (rather than degrading it to MIN_SIDEBAR_WIDTH first) would
+    // still pass a `toBeLessThanOrEqual(200)` check.
+    expect(clampSidebarWidth(Number.POSITIVE_INFINITY, 200)).toBe(MIN_SIDEBAR_WIDTH);
   });
 
   test("a fractional width is truncated toward zero", () => {

@@ -38,6 +38,35 @@
  * `workbench.sidebarWidth` in `settings.json` sees it take effect
  * immediately (this module's live `onDidChange` subscription) without this
  * module ever writing back to the file it just read from.
+ *
+ * **Only an EXPLICIT setting is ever applied (Issue #105 Finding 3)**:
+ * `ConfigService.get` reads the merged `defaults <- user <- workspace`
+ * view, so an absent key returns the very same value a schema default
+ * would (`coreDefaults.ts` registers `workbench.sidebarWidth`'s default as
+ * `30`) — `get` alone cannot tell "the user configured 30" apart from "the
+ * user configured nothing." Since `applyConfiguredSidebarWidth` runs on
+ * EVERY startup (after `config.ready`, from the composition root) as well
+ * as on every subsequent config change, applying whatever `get` returns
+ * unconditionally would silently overwrite `state.json`'s own persisted
+ * width with the schema default on every single launch where
+ * `settings.json` happens not to mention the key — defeating the entire
+ * point of `state.json` round-tripping a drag/commit across restarts. Both
+ * {@link applyConfiguredSidebarWidth} and {@link wireSidebarWidthConfigSync}'s
+ * `onDidChange` handler therefore gate on `ConfigService.isExplicitlySet`
+ * first: apply the merged value only when the USER or WORKSPACE layer
+ * genuinely names the key.
+ *
+ * **Deliberate choice for the "key REMOVED from settings.json" case**:
+ * `onDidChange` still fires (the merged value's numeric identity may not
+ * even have changed, but `isExplicitlySet` newly reads `false`), and this
+ * module's answer is to leave `state.json`'s current width exactly alone,
+ * NOT reset it to the schema default — the same "never overwrite with a
+ * schema default" reasoning as the startup case above, just re-triggered
+ * by a live edit instead of a fresh launch. Removing a line from
+ * `settings.json` reads as "stop pinning the width", not "reset the width
+ * to 30 right now" — the width remains whatever `state.json`/the live UI
+ * already has, exactly as if the user had dragged the border to that width
+ * without ever touching `settings.json` at all.
  */
 
 import type { Disposable } from "@tecode/api";
@@ -48,16 +77,22 @@ import { clampSidebarWidth } from "./sidebarWidth";
 const SIDEBAR_WIDTH_CONFIG_KEY = "workbench.sidebarWidth";
 
 /** Read `configKey` (`"workbench.sidebarWidth"` by default) from `config`
- * and, if it currently names a number, apply it (floor-clamped via
- * `clampSidebarWidth`, this module's TSDoc) via
- * `layoutState.update({ sidebarWidth })`. A non-numeric or missing value is
- * left alone entirely — `LayoutStateService` already has its own default/
- * persisted value, so there is nothing useful to overwrite it with. */
+ * and, if the USER or WORKSPACE layer EXPLICITLY sets it
+ * (`ConfigService.isExplicitlySet` — this module's TSDoc explains why `get`
+ * alone cannot be trusted for this) to a number, apply it (floor-clamped
+ * via `clampSidebarWidth`, this module's TSDoc) via
+ * `layoutState.update({ sidebarWidth })`. Left alone entirely otherwise —
+ * both when the key is absent (a bare schema default, this module's
+ * TSDoc's "never overwrite `state.json` with the schema default") and when
+ * it is present but non-numeric — `LayoutStateService` already has its own
+ * default/persisted value, so there is nothing useful to overwrite it
+ * with. */
 export function applyConfiguredSidebarWidth(
-  config: Pick<ConfigService, "get">,
+  config: Pick<ConfigService, "get" | "isExplicitlySet">,
   layoutState: Pick<LayoutStateService, "update">,
   configKey: string = SIDEBAR_WIDTH_CONFIG_KEY,
 ): void {
+  if (!config.isExplicitlySet(configKey)) return;
   const width = config.get<number>(configKey);
   if (typeof width === "number") {
     layoutState.update({ sidebarWidth: clampSidebarWidth(width) });
@@ -66,7 +101,7 @@ export function applyConfiguredSidebarWidth(
 
 /** Dependencies for {@link wireSidebarWidthConfigSync}. */
 export interface WireSidebarWidthConfigSyncDeps {
-  config: Pick<ConfigService, "get" | "onDidChange">;
+  config: Pick<ConfigService, "get" | "isExplicitlySet" | "onDidChange">;
   layoutState: Pick<LayoutStateService, "update">;
   /** Overrides the config key watched — defaults to
    * `"workbench.sidebarWidth"`. Test-only knob; production never sets
