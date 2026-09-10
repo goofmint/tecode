@@ -217,7 +217,7 @@ describe("DocumentManager.openDocument (Req 5.5)", () => {
     await expect(fsStat(path)).rejects.toBeDefined(); // opening alone created nothing
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(true);
+    expect(ok).toBe("saved");
     const written = await readFile(path, "utf8");
     expect(written).toBe("");
   });
@@ -275,7 +275,7 @@ describe("DocumentManager.openDocument (Req 5.5)", () => {
     ]);
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(false);
+    expect(ok).toBe("error");
     expect(doc.dirty).toBe(true); // the failed save must not clear dirty
     expect(errors.length).toBeGreaterThan(0);
     expect(errors.some((e) => e.path === uri)).toBe(true);
@@ -338,7 +338,7 @@ describe("DocumentManager.save (Req 5.5)", () => {
     manager.onDidSave((d) => saved.push(d.uri));
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(true);
+    expect(ok).toBe("saved");
     expect(doc.dirty).toBe(false);
     expect(saved).toEqual([uri]);
 
@@ -359,7 +359,7 @@ describe("DocumentManager.save (Req 5.5)", () => {
     manager.onDidSave(() => saved.push("fired"));
 
     const ok = await manager.save(pathToUri(path));
-    expect(ok).toBe(false);
+    expect(ok).toBe("noop");
     expect(saved).toHaveLength(0);
     expect(errors).toHaveLength(1);
   });
@@ -379,7 +379,7 @@ describe("DocumentManager.save (Req 5.5)", () => {
     manager.onDidSave(() => saved.push("fired"));
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(false);
+    expect(ok).toBe("noop");
     expect(saved).toHaveLength(0);
     expect(errors).toHaveLength(1);
   }, 20000);
@@ -414,7 +414,7 @@ describe("DocumentManager.save (Req 5.5)", () => {
     manager.onDidSave(() => saved.push("fired"));
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(false);
+    expect(ok).toBe("error");
     expect(doc.dirty).toBe(true);
     expect(saved).toHaveLength(0);
     expect(errors.length).toBeGreaterThan(0);
@@ -554,7 +554,7 @@ describe("DocumentManager — concurrency (review regressions)", () => {
     releaseWrite();
     const ok = await pendingSave;
 
-    expect(ok).toBe(true);
+    expect(ok).toBe("saved");
     // The newest edit is not in the saved bytes, so the document must
     // still read as unsaved.
     expect(doc.dirty).toBe(true);
@@ -580,7 +580,7 @@ describe("DocumentManager.save — permission preservation (review nitpick)", ()
       },
     ]);
 
-    expect(await manager.save(uri)).toBe(true);
+    expect(await manager.save(uri)).toBe("saved");
     expect(await readFile(path, "utf8")).toBe("echo bye");
     // The executable bit survives the temp-file rename.
     expect((await fsStat(path)).mode & 0o777).toBe(0o755);
@@ -622,7 +622,7 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
     const saved: string[] = [];
     manager.onDidSave(() => saved.push("fired"));
 
-    expect(await manager.save(uri)).toBe(false);
+    expect(await manager.save(uri)).toBe("error");
     expect(doc.dirty).toBe(true);
     expect(saved).toHaveLength(0);
     expect(errors.at(-1)!.message).toContain("disk read failure");
@@ -652,7 +652,7 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
       },
     ]);
 
-    expect(await manager.save(uri)).toBe(true);
+    expect(await manager.save(uri)).toBe("saved");
     expect(doc.dirty).toBe(false);
     expect(await readFile(path, "utf8")).toBe("modified");
     expect(await readFile(victimPath, "utf8")).toBe("untouched");
@@ -712,8 +712,8 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
     const p2 = manager.save(uri);
     releaseWrite();
 
-    expect(await p1).toBe(true);
-    expect(await p2).toBe(true);
+    expect(await p1).toBe("saved");
+    expect(await p2).toBe("saved");
     // save #2 ran strictly after save #1 finished, snapshotting the newest
     // text — the older snapshot can never end up as the final disk state.
     expect(await readFile(path, "utf8")).toBe("second");
@@ -835,7 +835,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     doc.applyEdits([
       { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, newText: "B" },
     ]);
-    expect(await manager.save(uri)).toBe(true);
+    expect(await manager.save(uri)).toBe("saved");
     expect(doc.dirty).toBe(false);
 
     const firstReload = new Promise<string>((resolve) => {
@@ -872,7 +872,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     doc.applyEdits([
       { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, newText: "B" },
     ]);
-    expect(await manager.save(uri)).toBe(true);
+    expect(await manager.save(uri)).toBe("saved");
 
     // A change landing AFTER the save's rename must still be detected —
     // the manager never re-registers its watch per save, so this proves
@@ -974,7 +974,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     await writeFile(path, "externally modified with different length", "utf8");
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(false);
+    expect(ok).toBe("conflict-changed");
     expect(doc.dirty).toBe(true);
     expect(warnings.length).toBeGreaterThan(0);
     expect(await readFile(path, "utf8")).toBe("externally modified with different length");
@@ -1022,7 +1022,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     await writeFile(path, "different", "utf8");
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(false);
+    expect(ok).toBe("conflict-changed");
     expect(doc.dirty).toBe(true);
     expect(warnings.length).toBeGreaterThan(0);
     expect(await readFile(path, "utf8")).toBe("different");
@@ -1090,7 +1090,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     doc.applyEdits([
       { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } }, newText: "edited" },
     ]);
-    expect(await manager.save(uri)).toBe(true);
+    expect(await manager.save(uri)).toBe("saved");
     expect(await readFile(path, "utf8")).toBe("edited");
   });
 
@@ -1170,7 +1170,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     doc.applyEdits([
       { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "X" },
     ]);
-    expect(await manager.save(uri)).toBe(true);
+    expect(await manager.save(uri)).toBe("saved");
     expect(doc.dirty).toBe(false);
     manager.close(uri);
     expect(() => manager.dispose()).not.toThrow();
@@ -1247,11 +1247,49 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     await fsUnlink(path);
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(false);
+    expect(ok).toBe("conflict-deleted");
     expect(doc.dirty).toBe(true);
     expect(warnings.length).toBeGreaterThan(0);
     // Must not have silently recreated the file from the stale buffer.
     await expect(fsStat(path)).rejects.toBeDefined();
+  });
+
+  test("Issue #139: save({ force: true }) recreates a KNOWN file that was deleted externally", async () => {
+    const path = join(dir, "deleted-before-force-save.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+    // No `watch` injected — same "purely off the open()-time signature"
+    // setup as the non-force sibling test above.
+    const manager = createDocumentManager({
+      log,
+      sink,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "edited" },
+    ]);
+
+    // Externally delete the file the buffer's stale snapshot still
+    // believes exists — the exact same setup that gets refused with
+    // `"conflict-deleted"` above.
+    await fsUnlink(path);
+
+    // The default (non-force) save is still refused first — this is the
+    // Ctrl+S "Save Anyway" flow (`editor-core/index.ts`), which only ever
+    // retries with `force: true` AFTER the first call comes back
+    // `"conflict-deleted"`.
+    expect(await manager.save(uri)).toBe("conflict-deleted");
+    expect(doc.dirty).toBe(true);
+
+    const forced = await manager.save(uri, { force: true });
+    expect(forced).toBe("saved");
+    expect(doc.dirty).toBe(false);
+    // The deleted file is recreated with the buffer's current content.
+    expect(await readFile(path, "utf8")).toBe("edited");
   });
 
   test("CodeRabbit PR #128: an external write landing after the hash check but before rename aborts the save without renaming", async () => {
@@ -1289,7 +1327,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     ]);
 
     const ok = await manager.save(uri);
-    expect(ok).toBe(false);
+    expect(ok).toBe("conflict-changed");
     expect(doc.dirty).toBe(true);
     expect(warnings.length).toBeGreaterThan(0);
     // The rename must never have happened: disk still holds the race

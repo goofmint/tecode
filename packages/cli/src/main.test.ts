@@ -508,7 +508,7 @@ test("Issue #88 end to end: `tecode README2.md` on a non-existent path opens an 
         },
       ]);
       const saved = await root.documents.save(uri);
-      expect(saved).toBe(true);
+      expect(saved).toBe("saved");
       expect(doc!.dirty).toBe(false);
 
       // The real file now exists on disk with the expected content.
@@ -577,7 +577,7 @@ test("Issue #119 end to end: buildAssemblyRoot wires documents to the REAL fs.wa
       doc.applyEdits([
         { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "saved" },
       ]);
-      expect(await root.documents.save(uri)).toBe(true);
+      expect(await root.documents.save(uri)).toBe("saved");
       expect(doc.dirty).toBe(false);
 
       // Give the self-save's own (real) watch event, if any slips through,

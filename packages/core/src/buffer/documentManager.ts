@@ -54,7 +54,15 @@
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { Disposable, Event, FileChangeEvent, Listener, Uri } from "@tecode/api";
+import type {
+  Disposable,
+  Event,
+  FileChangeEvent,
+  Listener,
+  SaveOptions,
+  SaveOutcome,
+  Uri,
+} from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import type { Clock } from "./clock";
 import { createDocument, type CoreDocument } from "./document";
@@ -170,6 +178,16 @@ export interface DocumentManagerDeps {
   notifyUser?: (message: string, kind: "warning") => void;
 }
 
+/**
+ * {@link SaveOutcome}/{@link SaveOptions} (re-exported types, imported from
+ * `@tecode/api` above) back `save`/`saveNow` below (Issue #139) — defined in
+ * `@tecode/api`'s `namespaces.ts` rather than here because `WorkspaceNamespace.
+ * save` (the extension-facing surface `api/create.ts` wires to this
+ * function) needs the exact same shape; `@tecode/api` has no dependency on
+ * `core`, so the type has to live on that side for both to share it without
+ * a duplicate definition drifting out of sync.
+ */
+
 /** The document-manager service itself (design.md §7.2). */
 export interface DocumentManager {
   /**
@@ -221,9 +239,9 @@ export interface DocumentManager {
   /** All currently open documents, as a fresh array snapshot. */
   readonly documents: readonly CoreDocument[];
   /** Save `uri`'s current text to disk atomically (write a temp file in
-   * the same directory, then rename over the target). Returns `true` on
-   * success, `false` on a no-op (unopened `uri`, readonly document) or a
-   * write/rename failure.
+   * the same directory, then rename over the target). Resolves a
+   * {@link SaveOutcome} — see that type's own TSDoc for what each value
+   * means and why this replaced a plain `boolean` (Issue #139).
    *
    * Durability trade-off (deliberate): the temp file is NOT fsync'd
    * before the rename. The rename guarantees readers never observe a
@@ -240,21 +258,28 @@ export interface DocumentManager {
    * or whose content no longer matches the last known-good hash, aborts
    * the save — checked once early in `saveNow`, and reconfirmed a second
    * time immediately before the `rename` (after the temp file is already
-   * prepared) — through a `notifyUserSafely` warning and a `false`
-   * return, instead of silently recreating a deleted file or letting a
-   * stale buffer's `rename` clobber a newer external write. BOTH checks
-   * only narrow the gap a race can land in — there is no file lock on the
-   * target path, so a delete or write can still land in the (much
-   * smaller) remaining gap between the second check and the `rename`
-   * itself. This is not an atomic, race-proof guarantee; it is a
-   * best-effort reduction of an inherent TOCTOU window.
+   * prepared) — through a `notifyUserSafely` warning and a
+   * `"conflict-deleted"`/`"conflict-changed"` return, instead of silently
+   * recreating a deleted file or letting a stale buffer's `rename` clobber
+   * a newer external write. BOTH checks only narrow the gap a race can
+   * land in — there is no file lock on the target path, so a delete or
+   * write can still land in the (much smaller) remaining gap between the
+   * second check and the `rename` itself. This is not an atomic,
+   * race-proof guarantee; it is a best-effort reduction of an inherent
+   * TOCTOU window. `options.force` (Issue #139, {@link SaveOptions}'s own
+   * TSDoc) bypasses both checks entirely, for a caller that has already
+   * confirmed the overwrite/recreate with the user.
    *
-   * A no-op reports through `sink` but is not logged as an error (it is
-   * not a filesystem failure); a write/rename
-   * failure is reported through both `sink` and `log`, leaves `dirty`
-   * true, fires no `onDidSave`, and best-effort removes the temp file.
+   * A no-op (`"noop"`) reports through `sink` but is not logged as an
+   * error (it is not a filesystem failure); a write/rename failure
+   * (`"error"`) is reported through both `sink` and `log`, leaves `dirty`
+   * true, fires no `onDidSave`, and best-effort removes the temp file. A
+   * refused conflict (`"conflict-deleted"`/`"conflict-changed"`) reports
+   * only through `notifyUserSafely` (not `sink`/`log` — this is a
+   * deliberate decline, not a failure) and likewise leaves `dirty` true
+   * and fires no `onDidSave`.
    */
-  save(uri: Uri): Promise<boolean>;
+  save(uri: Uri, options?: SaveOptions): Promise<SaveOutcome>;
   /** Close `uri`: drop it from the manager and fire `onDidClose`.
    * Documents have no `dispose` of their own today — dropping the
    * manager's sole reference is enough for GC. An unknown `uri` is a
@@ -789,11 +814,11 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
    * newer save's bytes on disk. */
   const saveQueues = new Map<Uri, Promise<unknown>>();
 
-  function save(uri: Uri): Promise<boolean> {
+  function save(uri: Uri, options?: SaveOptions): Promise<SaveOutcome> {
     const prev = saveQueues.get(uri) ?? Promise.resolve();
     const run = prev.then(
-      () => saveNow(uri),
-      () => saveNow(uri),
+      () => saveNow(uri, options),
+      () => saveNow(uri, options),
     );
     const tail = run.then(
       () => undefined,
@@ -806,26 +831,27 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     return run;
   }
 
-  async function saveNow(uri: Uri): Promise<boolean> {
+  async function saveNow(uri: Uri, options?: SaveOptions): Promise<SaveOutcome> {
     const document = documentsMap.get(uri);
     if (!document) {
       notifySafely({
         message: `Cannot save: no open document for ${uri}`,
         path: uri,
       });
-      return false;
+      return "noop";
     }
     if (document.readonly) {
       notifySafely({
         message: `Cannot save: document is read-only: ${uri}`,
         path: uri,
       });
-      return false;
+      return "noop";
     }
 
     const path = uriToPath(uri);
     const text = document.getText();
     const versionAtWrite = document.version;
+    const force = options?.force === true;
 
     // Fetched up front, independent of whether the `stat` below even
     // succeeds (CodeRabbit PR #128 finding "known file deletion"): a uri
@@ -834,7 +860,15 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     // just because ITS OWN `stat` happens to fail with `ENOENT` — that
     // specific "ENOENT is fine" carve-out (Req 5.6/Issue #88) is reserved
     // for a path that was NEVER successfully read in the first place.
-    const known = diskSignatures.get(uri);
+    //
+    // `force` (Issue #139, `SaveOptions`'s own TSDoc) short-circuits this
+    // to `undefined` regardless of what `diskSignatures` actually holds —
+    // every check below keyed on `known` (the ENOENT-deletion carve-out,
+    // the content-hash comparison, the pre-rename reconfirmation) already
+    // treats "unknown" as "nothing to compare against, proceed", so this
+    // single substitution is enough to bypass all three at once without
+    // duplicating their logic.
+    const known = force ? undefined : diskSignatures.get(uri);
 
     // Capture the target's current mode (when it exists) so the rename
     // does not silently reset an executable or restricted file to the
@@ -855,7 +889,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
         };
         logSafely("error", err);
         notifySafely(err);
-        return false;
+        return "error";
       }
       if (known) {
         // CodeRabbit PR #128 finding "known file deletion": this uri WAS
@@ -870,7 +904,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
         notifyUserSafely(
           `Cannot save: "${uri}" was deleted on disk. Reload to see the latest content before saving again.`,
         );
-        return false;
+        return "conflict-deleted";
       }
       // known === undefined AND ENOENT: genuinely the first save of a
       // path that has never been successfully read (Req 5.6/Issue #88's
@@ -904,7 +938,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
           notifyUserSafely(
             `Cannot save: "${uri}" was deleted on disk. Reload to see the latest content before saving again.`,
           );
-          return false;
+          return "conflict-deleted";
         }
         const err: HostError = {
           message: `Failed to save document: ${describeError(cause)}`,
@@ -912,13 +946,13 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
         };
         logSafely("error", err);
         notifySafely(err);
-        return false;
+        return "error";
       }
       if (hashText(diskText) !== known.hash) {
         notifyUserSafely(
           `Cannot save: "${uri}" changed on disk since it was last read. Reload to see the latest content before saving again.`,
         );
-        return false;
+        return "conflict-changed";
       }
     }
 
@@ -976,7 +1010,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
             // Best-effort cleanup only — see the generic failure handler
             // below for the same rationale.
           }
-          return false;
+          return reconfirm ? "conflict-changed" : "conflict-deleted";
         }
       }
 
@@ -996,7 +1030,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
           // problem than losing the save-failure report above.
         }
       }
-      return false;
+      return "error";
     }
 
     // Issue #119: the bytes just renamed into place ARE disk's current
@@ -1031,7 +1065,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
       document.markSaved();
     }
     fire(saveListeners, document, "onDidSave");
-    return true;
+    return "saved";
   }
 
   function close(uri: Uri): void {

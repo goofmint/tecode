@@ -57,6 +57,8 @@ export type {
   FileChangeEvent,
   FileSystem,
   WorkspaceNamespace,
+  SaveOutcome,
+  SaveOptions,
   MessageKind,
   QuickPickItem,
   QuickPickOptions,

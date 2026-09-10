@@ -29,9 +29,10 @@
  * stale intermediate value on every iteration.
  *
  * **Save-failure safety** (design.md §14's "never lose unsaved data"):
- * `documents.save`'s contract is "returns `false` on a no-op or a write/
- * rename failure" (`documentManager.ts`) — `closeDocumentWithPrompt`
- * treats both a `false` return AND a thrown rejection identically: log and
+ * `documents.save`'s contract is "resolves a `SaveOutcome` other than
+ * `\"saved\"` on a no-op, a refused save-conflict, or a write/rename
+ * failure" (`documentManager.ts`) — `closeDocumentWithPrompt` treats any
+ * non-`\"saved\"` outcome AND a thrown rejection identically: log and
  * abort, `documents.close` is never reached, so a save failure can never
  * silently discard the buffer.
  *
@@ -128,6 +129,7 @@ import type {
   KeybindingContribution,
   QuickPickItem,
   QuickPickOptions,
+  SaveOutcome,
   Uri,
 } from "@tecode/api";
 import type { HostError, HostLog } from "../host/errors";
@@ -197,8 +199,8 @@ export type CloseOutcome = boolean;
  * Save/Discard/Cancel:
  *
  * - **Save** → `await documents.save(uri)`, then close ONLY if that
- *   resolved `true`; a `false` result or a thrown rejection aborts without
- *   closing (this module's TSDoc's "Save-failure safety").
+ *   resolved `"saved"`; any other outcome or a thrown rejection aborts
+ *   without closing (this module's TSDoc's "Save-failure safety").
  * - **Discard** → close without saving.
  * - **Cancel, Escape (`undefined`), or a throwing `showQuickPick`** → no
  *   side effects at all.
@@ -245,9 +247,9 @@ export function createCloseDocumentWithPrompt(
     }
 
     // Save.
-    let saved: boolean;
+    let outcome: SaveOutcome;
     try {
-      saved = await documents.save(uri);
+      outcome = await documents.save(uri);
     } catch (cause) {
       logSafely(log, "error", {
         message: `${TAB_CLOSE_COMMAND}: save threw for "${uri}", not closing: ${describeError(cause)}`,
@@ -255,9 +257,9 @@ export function createCloseDocumentWithPrompt(
       });
       return false;
     }
-    if (!saved) {
+    if (outcome !== "saved") {
       logSafely(log, "warning", {
-        message: `${TAB_CLOSE_COMMAND}: save failed for "${uri}", not closing (unsaved changes preserved).`,
+        message: `${TAB_CLOSE_COMMAND}: save failed for "${uri}" (${outcome}), not closing (unsaved changes preserved).`,
         path: uri,
       });
       return false;
