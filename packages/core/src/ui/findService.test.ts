@@ -321,7 +321,7 @@ describe("createFindService — jumpToActiveMatch (Issue #117)", () => {
     service.open();
     service.setQuery("foo"); // matches at 0, 8, 16; activeMatchIndex starts at 0
 
-    service.jumpToActiveMatch();
+    expect(service.jumpToActiveMatch()).toBe(true);
 
     const find = editorSession.getState(document.uri).find!;
     const activeMatch = find.matches[find.activeMatchIndex]!;
@@ -336,7 +336,7 @@ describe("createFindService — jumpToActiveMatch (Issue #117)", () => {
     service.setQuery("foo"); // activeMatchIndex 0
     service.next(); // activeMatchIndex 1
 
-    service.jumpToActiveMatch();
+    expect(service.jumpToActiveMatch()).toBe(true);
 
     const find = editorSession.getState(document.uri).find!;
     expect(find.activeMatchIndex).toBe(1);
@@ -346,20 +346,28 @@ describe("createFindService — jumpToActiveMatch (Issue #117)", () => {
     ]);
   });
 
-  test("with no matches, jumpToActiveMatch() is a no-op — no throw, selections unchanged", () => {
+  test("with no matches, jumpToActiveMatch() is a no-op — no throw, returns false, selections unchanged", () => {
     const { document, editorSession, service } = harness("bar baz");
     service.open();
     service.setQuery("foo"); // no matches
     const selectionsBefore = editorSession.getState(document.uri).selections;
 
-    expect(() => service.jumpToActiveMatch()).not.toThrow();
+    let result: boolean | undefined;
+    expect(() => {
+      result = service.jumpToActiveMatch();
+    }).not.toThrow();
+    expect(result).toBe(false);
     expect(editorSession.getState(document.uri).selections).toEqual(selectionsBefore);
   });
 
-  test("jumpToActiveMatch() with no active document is a no-op", () => {
+  test("jumpToActiveMatch() with no active document is a no-op and returns false", () => {
     const editorSession = createFakeEditorSession(undefined);
     const service = createFindService({ editorSession });
-    expect(() => service.jumpToActiveMatch()).not.toThrow();
+    let result: boolean | undefined;
+    expect(() => {
+      result = service.jumpToActiveMatch();
+    }).not.toThrow();
+    expect(result).toBe(false);
   });
 });
 

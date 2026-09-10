@@ -298,7 +298,9 @@ export function createFindStub(): FindNamespace {
     previous() {},
     replaceCurrent() {},
     replaceAll() {},
-    jumpToActiveMatch() {},
+    jumpToActiveMatch() {
+      return false;
+    },
   });
 }
 

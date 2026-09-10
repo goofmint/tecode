@@ -118,8 +118,16 @@ export interface FindService {
    * is empty (this module's TSDoc's "Reveal-on-navigate" paragraph
    * explains why this is the one method here that DOES write
    * `EditorState.selections`).
+   *
+   * @returns `true` if a selection was actually written (a jump happened);
+   * `false` if this call was a no-op. `editor-core`'s
+   * `editor.action.findAccept` handler (CodeRabbit finding, Issue #117)
+   * needs exactly this to implement "close the find widget only when the
+   * jump actually succeeded" — without a success signal, it would call
+   * `close()` unconditionally and violate the "no matches: do nothing"
+   * invariant by closing the widget on an empty result.
    */
-  jumpToActiveMatch(): void;
+  jumpToActiveMatch(): boolean;
   /** Fires after any state change this service makes (this module's TSDoc)
    * — same "just re-render, don't diff what changed" shape as
    * `EditorSessionService.onDidChange`. Note `editorSession.setState` ALSO
@@ -352,13 +360,13 @@ export function createFindService(deps: FindServiceDeps): FindService {
     document.transaction(() => document.applyEdits(edits));
   }
 
-  function jumpToActiveMatch(): void {
+  function jumpToActiveMatch(): boolean {
     const document = editorSession.getActiveDocument();
-    if (!document) return;
+    if (!document) return false;
     const find = readFind(document);
-    if (find.activeMatchIndex < 0 || find.matches.length === 0) return;
+    if (find.activeMatchIndex < 0 || find.matches.length === 0) return false;
     const match = find.matches[find.activeMatchIndex];
-    if (!match) return;
+    if (!match) return false;
     // One `Selection` (`Selection extends Range` — `primitives.ts`) built
     // straight from the match's own range: a collapsed-to-the-match
     // anchor/active pair, matching how `next`/`previous` already treat
@@ -372,6 +380,7 @@ export function createFindService(deps: FindServiceDeps): FindService {
       selections: [{ start: match.start, end: match.end, anchor: match.start, active: match.end }],
     });
     fireChange();
+    return true;
   }
 
   function onDidChange(listener: Listener<void>): Disposable {

@@ -436,10 +436,18 @@ export function activate(ctx: ExtensionContext): void {
   // triggers `shell.tsx`'s existing focus-restore effect (Req 11.1's
   // existing `editor.action.closeFind` behavior) — no extra focus handling
   // belongs in this handler.
+  //
+  // `close()` only runs when `jumpToActiveMatch()` returns `true`
+  // (CodeRabbit finding on this issue): with zero matches, `jumpToActive
+  // Match()` is a documented no-op (`findService.ts`'s TSDoc), and closing
+  // the widget anyway would violate that "no matches: do nothing"
+  // invariant by making the widget disappear on an empty result instead of
+  // leaving it open for the user to keep typing.
   ctx.subscriptions.push(
     api.commands.register("editor.action.findAccept", () => {
-      api.editor.find.jumpToActiveMatch();
-      api.editor.find.close();
+      if (api.editor.find.jumpToActiveMatch()) {
+        api.editor.find.close();
+      }
     }),
   );
 

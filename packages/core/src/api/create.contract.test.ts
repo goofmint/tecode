@@ -610,7 +610,7 @@ describe("createTecodeApi — real editor.find backing via a FindService (Req 11
 
     api.editor.find.open();
     api.editor.find.setQuery("foo"); // matches at 0, 8, 16 — activeMatchIndex 0
-    api.editor.find.jumpToActiveMatch();
+    expect(api.editor.find.jumpToActiveMatch()).toBe(true);
 
     expect(api.editor.selections).toEqual([
       {
@@ -632,7 +632,7 @@ describe("createTecodeApi — real editor.find backing via a FindService (Req 11
     expect(() => api.editor.find.open()).not.toThrow();
     expect(() => api.editor.find.next()).not.toThrow();
     expect(() => api.editor.find.replaceAll()).not.toThrow();
-    expect(() => api.editor.find.jumpToActiveMatch()).not.toThrow();
+    expect(api.editor.find.jumpToActiveMatch()).toBe(false);
   });
 
   test("a findService with NO editorSession supplied is inert — no find/replace operation reaches a document (CodeRabbit PR #59 Finding 1)", async () => {
@@ -690,7 +690,7 @@ describe("createTecodeApi — real editor.find backing via a FindService (Req 11
     api.editor.find.next();
     api.editor.find.replaceCurrent();
     api.editor.find.replaceAll();
-    expect(() => api.editor.find.jumpToActiveMatch()).not.toThrow();
+    expect(api.editor.find.jumpToActiveMatch()).toBe(false);
 
     // Neither document was touched — `findNamespace` fell back to the
     // fully inert stub because `deps.editorSession` was absent.
@@ -747,7 +747,7 @@ describe("createTecodeApi — real editor.find backing via a FindService (Req 11
     api.editor.find.setQuery("foo");
     api.editor.find.setReplaceQuery("X");
     api.editor.find.replaceAll();
-    expect(() => api.editor.find.jumpToActiveMatch()).not.toThrow();
+    expect(api.editor.find.jumpToActiveMatch()).toBe(false);
 
     // The mismatch fell back to the inert stub: NEITHER session's document
     // changed, and A (the API's active document) is exactly as written.

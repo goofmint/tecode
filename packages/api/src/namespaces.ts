@@ -265,8 +265,14 @@ export interface FindNamespace {
   replaceAll(): void;
   /** Accept the active match: move the editor's real cursor/selection onto
    * it (Issue #117), without closing the find widget. A no-op with no
-   * active match. */
-  jumpToActiveMatch(): void;
+   * active match.
+   *
+   * @returns `true` if the jump happened; `false` if this call was a
+   * no-op (no active match). Callers that want to close the widget on
+   * accept — e.g. `editor-core`'s `editor.action.findAccept` — must only
+   * do so when this returns `true`, so that "no matches" leaves the
+   * widget open instead of closing it on an empty result. */
+  jumpToActiveMatch(): boolean;
 }
 
 /* ------------------------------------------------------------------ */
