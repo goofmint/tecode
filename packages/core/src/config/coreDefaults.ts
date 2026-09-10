@@ -53,6 +53,21 @@ export const DEFAULT_COLOR_THEME_ID = "tecode.dark-modern";
  */
 export const DEFAULT_SIDEBAR_WIDTH = 30;
 
+/**
+ * `workbench.panelHeight`'s default value (Issue #118) — DUPLICATED here as
+ * a literal number for the SAME reason {@link DEFAULT_SIDEBAR_WIDTH} above
+ * duplicates `layoutState.ts`'s `sidebarWidth` default: `layoutState.ts`'s
+ * `DEFAULT_LAYOUT_STATE.panelHeight` is the real source of truth (`ui/` has
+ * no existing import edge into `config/`, and introducing one for a single
+ * literal number is not worth it, matching {@link DEFAULT_SIDEBAR_WIDTH}'s
+ * identical "no new cross-module edge for one literal" reasoning one
+ * paragraph up). Kept in sync by hand; `coreDefaults.test.ts` asserts this
+ * literal equals `layoutState.ts`'s real `DEFAULT_LAYOUT_STATE.panelHeight`,
+ * so a drift between the two fails a test rather than silently resolving to
+ * the wrong default.
+ */
+export const DEFAULT_PANEL_HEIGHT = 10;
+
 /** The narrow slice of `ConfigService` {@link registerCoreConfiguration}
  * needs — the same shape as `host/registration.ts`'s `ConfigRegistrar`,
  * duplicated locally rather than imported so `config/` never depends on
@@ -98,7 +113,16 @@ export interface CoreConfigRegistrar {
  * `workbench.action.increase/decreaseSidebarWidth` commands,
  * `ui/sidebarWidthCommands.ts`) writes the result back here via
  * `ui/sidebarWidthSettingsWriter.ts`, so the two stay in sync in both
- * directions. */
+ * directions. `workbench.panelHeight` (Issue #118, Req 6.4, design.md
+ * §8.2's "persist layout state ... across sessions") is the SAME idea,
+ * vertically, but ONE-DIRECTIONAL only: a hand-edited number here is
+ * floor-clamped (`panelHeight.ts`'s `clampPanelHeight`) and applied to
+ * `LayoutStateService` by `ui/panelHeightConfigSync.ts`'s
+ * `applyConfiguredPanelHeight`/`wirePanelHeightConfigSync`, wired at
+ * `main.ts`'s composition root right alongside the sidebar-width sync —
+ * there is (yet) no resize command or mouse-drag commit for the panel, so
+ * nothing writes a changed height back to this setting (Issue #118's scope;
+ * a settings-file round trip is left to a future issue). */
 export const CORE_CONFIGURATION: ConfigurationContribution = {
   title: "Editor",
   properties: {
@@ -127,6 +151,12 @@ export const CORE_CONFIGURATION: ConfigurationContribution = {
       default: DEFAULT_SIDEBAR_WIDTH,
       description:
         "The sidebar's width in columns. Also adjustable by dragging the sidebar's right border, or the workbench.action.increase/decreaseSidebarWidth commands (Issue #105).",
+    },
+    "workbench.panelHeight": {
+      type: "number",
+      default: DEFAULT_PANEL_HEIGHT,
+      description:
+        "The bottom panel's height in rows (Issue #118, Req 6.4, design.md §8.2). One-directional: applied to the persisted layout on startup and on live edits, but not yet written back by a resize command or drag (out of scope for Issue #118).",
     },
   },
 };
