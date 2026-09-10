@@ -78,13 +78,35 @@ export const EXPLORER_DELETE_COMMAND_ID = "explorer.delete";
  * `index.ts` and tests reference the same key. */
 export const EXPLORER_SHOW_HIDDEN_CONFIG_KEY = "explorer.showHidden";
 
+/** Issue #121's setting: how many terminal columns `tecode.ui.Tree` indents
+ * each depth level by inside the explorer (`components.tsx`'s
+ * `TreeProps.indentWidth`, forwarded through `ExplorerView.tsx`). Follows
+ * {@link EXPLORER_SHOW_HIDDEN_CONFIG_KEY}'s own shape exactly: read once at
+ * `activate` (`index.ts`), kept live via `api.config.onDidChange`, and also
+ * step-adjustable at runtime via {@link EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID}/
+ * {@link EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID} WITHOUT writing back to
+ * `settings.json` (`store.ts`'s `ExplorerStore.stepIndentWidth` TSDoc) — a
+ * temporary, session-only override that a genuine `explorer.indentWidth`
+ * edit (or a live config reload) always clears. Exported so `index.ts` and
+ * tests reference the same key. */
+export const EXPLORER_INDENT_WIDTH_CONFIG_KEY = "explorer.indentWidth";
+
+/** Increases the explorer tree's indent width by one step, without writing
+ * back to `settings.json` (Issue #121; `store.ts`'s `ExplorerStore.
+ * stepIndentWidth` TSDoc). Exported so `index.ts` and tests reference the
+ * same id. */
+export const EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID = "explorer.increaseIndentWidth";
+/** Decreases the explorer tree's indent width by one step (Issue #121) —
+ * see {@link EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID}'s TSDoc. */
+export const EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID = "explorer.decreaseIndentWidth";
+
 export default {
   id: "tecode.explorer",
   version: "0.1.0",
   apiVersion: "1.0",
   activationEvents: [`onCommand:${EXPLORER_FOCUS_COMMAND_ID}`],
   contributes: {
-    views: [{ id: EXPLORER_VIEW_ID, title: "Explorer", slot: "sidebar", icon: "📁" }],
+    views: [{ id: EXPLORER_VIEW_ID, title: "Explorer", slot: "sidebar" }],
     commands: [
       { id: EXPLORER_FOCUS_COMMAND_ID, title: "Focus on Explorer", category: "View" },
       { id: EXPLORER_NEW_FILE_COMMAND_ID, title: "New File", category: "File" },
@@ -92,8 +114,68 @@ export default {
       { id: EXPLORER_NEW_FOLDER_COMMAND_ID, title: "New Folder", category: "File" },
       { id: EXPLORER_RENAME_COMMAND_ID, title: "Rename", category: "File" },
       { id: EXPLORER_DELETE_COMMAND_ID, title: "Delete", category: "File" },
+      { id: EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID, title: "Increase Indent Width", category: "View" },
+      { id: EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID, title: "Decrease Indent Width", category: "View" },
     ],
-    keybindings: [{ key: "ctrl+shift+e", command: EXPLORER_FOCUS_COMMAND_ID }],
+    // Issue #121's indent-width keybindings — `]`/`[`, plain (no modifier),
+    // scoped to `when: "explorerFocus"`:
+    //
+    // - **NOT `ctrl+k ]` / `ctrl+k [`** (the originally-proposed key): those
+    //   two chords are ALREADY `@tecode/core`'s own
+    //   `sidebarWidthCommands.ts`'s `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS`, bound
+    //   to `workbench.action.increase/decreaseSidebarWidth` under
+    //   `SIDEBAR_WIDTH_FOCUS_WHEN = "sidebarFocus || explorerFocus"` — i.e.
+    //   exactly the `explorerFocus` scope these two commands need too. Reusing
+    //   the identical key string would make the two features fight over the
+    //   very same chord the moment the explorer has focus (the case Issue #121
+    //   actually cares about); the sidebar-width pair wins that fight simply by
+    //   being registered in the `defaults` layer, ahead of any `extension`-
+    //   layer entry a manifest like this one contributes, leaving these two
+    //   commands permanently unreachable by keyboard. A DIFFERENT `ctrl+k`
+    //   second stroke (e.g. `ctrl+k i`/`ctrl+k d`) would dodge the exact
+    //   string collision but still make `ctrl+k` a chord PREFIX the instant
+    //   `explorerFocus` is true — `chords.ts`'s "prefix wins over a
+    //   simultaneous single-stroke exact match" (`sidebarWidthCommands.ts`'s
+    //   own TSDoc walks through this exact hazard) — piling a second,
+    //   unrelated `ctrl+k`-prefixed feature onto a chord namespace this
+    //   package does not own is avoidable complexity for no benefit, so this
+    //   manifest steers clear of `ctrl+k` altogether rather than trying to
+    //   thread a non-colliding second stroke through it.
+    // - **Not `ctrl+[` / `ctrl+]` either**: `ctrl+[` is indistinguishable from
+    //   a bare Escape keypress in raw terminal input (both send the single
+    //   byte `0x1B`) on a non-Kitty terminal — binding it would either steal
+    //   Escape everywhere `explorerFocus` is true, or never fire at all,
+    //   depending on how the terminal/parser resolves the ambiguity. Plain,
+    //   unmodified `]`/`[` have no such ambiguity: they are ordinary printable
+    //   characters, decoded identically on every terminal.
+    // - **`]`/`[` are free**: verified by grepping `key:`/`"key":` across every
+    //   `packages/builtin/*/manifest.ts`, `packages/core/src/ui/*Commands.ts`,
+    //   `packages/core/src/keymap/keybindings.fallback.json`, and
+    //   `samples/keybindings*.json` — the only existing bindings on these two
+    //   characters are `editor-core/manifest.ts`'s `editor.action.
+    //   typeOpenBracket`/`typeCloseBracket`, scoped to `when:
+    //   "editorTextFocus"` — a context that can never be simultaneously true
+    //   with `explorerFocus` (only one widget holds real keyboard focus at
+    //   once), so the two `when`-scoped bindings on the same key never
+    //   actually compete for a keystroke, the same "same key, mutually
+    //   exclusive `when`" shape `modalCommands.ts`'s `up`/`down`/`return` and
+    //   `editor-core/manifest.ts`'s own `up`/`down`/`return` already coexist
+    //   under. `tecode.ui.Tree` itself (`components.tsx`) only intercepts
+    //   `up`/`down`/`left`/`right`/`return` directly on its own focused root
+    //   box — `]`/`[` pass through untouched, so there is no Tree-vs-keybinding
+    //   race either (unlike Enter/arrows, `manifest.ts`'s own "no keybinding
+    //   for Enter" paragraph above).
+    // - **Why `]`/`[` conceptually**: mirrors how narrowing/widening the
+    //   tree's indent visually resembles indent/outdent — `]` (increase)
+    //   widens, `[` (decrease) narrows, the same left/right-bracket pairing
+    //   an editor's own indent/outdent commands use elsewhere in this
+    //   codebase, just applied to the tree's indent step instead of a text
+    //   buffer's.
+    keybindings: [
+      { key: "ctrl+shift+e", command: EXPLORER_FOCUS_COMMAND_ID },
+      { key: "]", command: EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID, when: "explorerFocus" },
+      { key: "[", command: EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID, when: "explorerFocus" },
+    ],
     configuration: {
       title: "Explorer",
       properties: {
@@ -101,6 +183,11 @@ export default {
           type: "boolean",
           default: false,
           description: "Show hidden (dot-prefixed) and .gitignore-ignored files in the explorer.",
+        },
+        [EXPLORER_INDENT_WIDTH_CONFIG_KEY]: {
+          type: "number",
+          default: 1,
+          description: "Terminal columns each nesting level indents the explorer tree by.",
         },
       },
     },

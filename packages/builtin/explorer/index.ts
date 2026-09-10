@@ -50,8 +50,11 @@ import { createExplorerViewComponent } from "./ExplorerView";
 import { rootFolderName } from "./rootTitle";
 import { createExplorerStore, type ExplorerStore } from "./store";
 import {
+  EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID,
   EXPLORER_DELETE_COMMAND_ID,
   EXPLORER_FOCUS_COMMAND_ID,
+  EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID,
+  EXPLORER_INDENT_WIDTH_CONFIG_KEY,
   EXPLORER_NEW_FILE_COMMAND_ID,
   EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID,
   EXPLORER_NEW_FOLDER_COMMAND_ID,
@@ -132,6 +135,45 @@ function registerFocusCommand(ctx: ExtensionContext): void {
   ctx.subscriptions.push(
     api.commands.register(EXPLORER_FOCUS_COMMAND_ID, async () => {
       await api.commands.execute(FOCUS_SIDEBAR_VIEW_COMMAND_ID);
+    }),
+  );
+}
+
+/** Columns {@link EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID}/
+ * {@link EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID} step `ExplorerStore`'s
+ * indent-width override by per invocation (Issue #121) — matches
+ * `@tecode/core`'s `sidebarWidthCommands.ts`'s `SIDEBAR_WIDTH_STEP`'s own
+ * "one keypress, one visible change" granularity, scaled down to `1` since
+ * an indent step (a handful of columns at most) is a much smaller quantity
+ * than a sidebar's width. */
+export const EXPLORER_INDENT_WIDTH_STEP = 1;
+
+/** Registers `explorer.increase/decreaseIndentWidth` (Issue #121, Task
+ * completion requirement: "increase/decrease commands"). Registered via
+ * `api.commands.register` — NOT `registerCore` — because, unlike
+ * `@tecode/core`'s `sidebarWidthCommands.ts`'s privileged bridge commands,
+ * this package's own layering rule (`packages/builtin/**` may never import
+ * `@tecode/core`) makes `registerCore` unreachable here in the first place;
+ * `ExplorerStore` is this package's own local state, already reachable
+ * through the ordinary extension `api.commands` surface, with no need for a
+ * core-registered bridge command at all. Each handler calls {@link
+ * ExplorerStore.stepIndentWidth} directly — matches `sidebarWidthCommands.
+ * ts`'s `createSidebarWidthStepHandler`'s own shape (a `delta`-parameterized
+ * handler factory), except this override is NEVER written back to
+ * `settings.json` (`store.ts`'s `stepIndentWidth` TSDoc's whole point,
+ * Issue #121's own "no settingsWriter.write" completion requirement) —
+ * `ExplorerStore` has no settings-writer dependency to call in the first
+ * place. */
+function registerIndentWidthCommands(ctx: ExtensionContext, store: ExplorerStore): void {
+  const { api } = ctx;
+  ctx.subscriptions.push(
+    api.commands.register(EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID, () => {
+      store.stepIndentWidth(EXPLORER_INDENT_WIDTH_STEP);
+    }),
+  );
+  ctx.subscriptions.push(
+    api.commands.register(EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID, () => {
+      store.stepIndentWidth(-EXPLORER_INDENT_WIDTH_STEP);
     }),
   );
 }
@@ -372,6 +414,7 @@ export function activate(ctx: ExtensionContext): void {
     ignore,
     showMessage: (message, kind) => api.window.showMessage(message, kind),
     showHidden: api.config.get<boolean>(EXPLORER_SHOW_HIDDEN_CONFIG_KEY) ?? false,
+    indentWidth: api.config.get<number>(EXPLORER_INDENT_WIDTH_CONFIG_KEY) ?? 1,
   });
 
   // Req 9.5's `explorer.showHidden`, live (Task 3.3's "showHidden toggle
@@ -381,6 +424,18 @@ export function activate(ctx: ExtensionContext): void {
     api.config.onDidChange((event) => {
       if (!event.affectsConfiguration(EXPLORER_SHOW_HIDDEN_CONFIG_KEY)) return;
       store.setShowHidden(api.config.get<boolean>(EXPLORER_SHOW_HIDDEN_CONFIG_KEY) ?? false);
+    }),
+  );
+
+  // Issue #121's `explorer.indentWidth`, live — mirrors `explorer.
+  // showHidden`'s own subscription immediately above exactly.
+  // `store.setIndentWidth` also clears any session-only `stepIndentWidth`
+  // override (`store.ts`'s TSDoc), so a genuine settings edit always wins
+  // over a stale keyboard-driven nudge from earlier in the session.
+  ctx.subscriptions.push(
+    api.config.onDidChange((event) => {
+      if (!event.affectsConfiguration(EXPLORER_INDENT_WIDTH_CONFIG_KEY)) return;
+      store.setIndentWidth(api.config.get<number>(EXPLORER_INDENT_WIDTH_CONFIG_KEY) ?? 1);
     }),
   );
 
@@ -419,6 +474,7 @@ export function activate(ctx: ExtensionContext): void {
   registerCreateCommands(ctx, store);
   registerRenameCommand(ctx, store);
   registerDeleteCommand(ctx, store);
+  registerIndentWidthCommands(ctx, store);
 }
 
 export function deactivate(): void {

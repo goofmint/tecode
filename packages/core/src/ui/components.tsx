@@ -313,18 +313,73 @@ export interface TreeProps {
    * root `<box>`'s content width — e.g. the sidebar's content width net of
    * its own border, `shell.tsx`'s `Sidebar`), not just the label's own
    * budget: each row's per-label budget is computed in the render loop as
-   * `width - 2 * node.depth - 2` (the indent's `"  ".repeat(node.depth)`
-   * plus the 2-column glyph — both always exactly 2 columns per level, this
-   * module's TSDoc), and only `node.label` is ever passed through {@link
-   * truncateToWidth} — the indent and glyph are never truncated, since
-   * cutting either would destroy the very alignment this prop exists to
-   * protect. A budget of `0` or less (nesting deep enough that indent +
-   * glyph alone consume the whole row) truncates the label to `""`
-   * (`truncateToWidth`'s own `maxWidth <= 0` case) rather than wrapping or
-   * slicing a negative length — the row still renders (indent + glyph, no
-   * label), it just carries no visible name.
+   * `width - indentWidth * node.depth - 2` (the indent's `" ".repeat(indent
+   * * node.depth)` plus the 2-column glyph — the glyph is always exactly 2
+   * columns per level; the indent's own per-level width is {@link
+   * indentWidth}, this module's TSDoc), and only `node.label` is ever
+   * passed through {@link truncateToWidth} — the indent and glyph are never
+   * truncated, since cutting either would destroy the very alignment this
+   * prop exists to protect. A budget of `0` or less (nesting deep enough
+   * that indent + glyph alone consume the whole row) truncates the label to
+   * `""` (`truncateToWidth`'s own `maxWidth <= 0` case) rather than
+   * wrapping or slicing a negative length — the row still renders (indent +
+   * glyph, no label), it just carries no visible name.
    */
   width?: number;
+  /**
+   * Terminal columns each depth level indents a row by (Issue #121: the
+   * explorer's own `explorer.indentWidth` setting/commands drive this
+   * caller-side; `tecode.ui.Tree` itself stays a dumb renderer with no
+   * config/store dependency of its own). Multiplies `node.depth` to build
+   * each row's indent string (the render loop's own `" ".repeat(indent *
+   * node.depth)`) and folds into {@link width}'s own truncation-budget
+   * formula the exact same way (`indentWidth * node.depth + 2` — the
+   * trailing `+ 2` is the glyph, unaffected by this prop). Optional;
+   * omitted (the default) falls back to `2` — the exact fixed value every
+   * caller rendered at before this prop existed, so leaving it unset
+   * renders byte-for-byte identically to pre-#121 behavior (including
+   * `components.snapshot.test.tsx`'s existing width/indent assertions).
+   */
+  indentWidth?: number;
+}
+
+/**
+ * Sane ceiling for {@link TreeProps.indentWidth} once normalized
+ * (CodeRabbit follow-up on Issue #121/#104): no real terminal — and
+ * therefore no sidebar `Tree` could ever be rendered inside — is remotely
+ * this many columns wide, so a value beyond it can never correspond to a
+ * visible indent; it would only inflate `" ".repeat()`'s argument (risking
+ * `Invalid string length` at depth) and drag `prefixWidth`'s truncation
+ * budget deeply negative for no benefit. The exact number carries no other
+ * meaning beyond "comfortably past any plausible terminal width".
+ */
+const MAX_TREE_INDENT_WIDTH = 512;
+
+/**
+ * Normalize a caller-supplied `TreeProps.indentWidth` into a non-negative,
+ * finite integer safe to feed BOTH `" ".repeat(indent * node.depth)` and
+ * the `prefixWidth` truncation-budget formula (CodeRabbit follow-up on
+ * Issue #121/#104 — `ExplorerStore`'s own `clampIndentWidth` protects
+ * `ExplorerStore`'s config value, but not `Tree`'s initial render before
+ * that store exists, nor any other direct caller of this reusable `tecode.
+ * ui.Tree` component). `undefined` falls back to `2` — the exact pre-#121
+ * fixed indent, unaffected by the clamp below (`TreeProps.indentWidth`'s
+ * own TSDoc's "omitted keeps byte-for-byte pre-#121 rendering" contract).
+ * A negative or non-finite value (`NaN`, `Infinity`, or a raw negative that
+ * reached `Tree` some other way than `ExplorerStore`) floors at `0` rather
+ * than throwing out of `" ".repeat()`. A fractional value is truncated
+ * toward zero FIRST, before either consumer ever sees it — computing the
+ * indent string and the truncation budget from two independently-truncated
+ * numbers would drift apart, reintroducing the exact indent/label-budget
+ * mismatch Issue #104 fixed (`TreeProps.indentWidth`'s own TSDoc: "both
+ * MUST use the same prefixWidth"). Finally capped at
+ * {@link MAX_TREE_INDENT_WIDTH} so an extreme value degrades to a large-
+ * but-safe indent instead of an `Invalid string length` RangeError.
+ */
+function normalizeIndentWidth(indentWidth: number | undefined): number {
+  if (indentWidth === undefined) return 2;
+  const safe = Number.isFinite(indentWidth) ? Math.trunc(indentWidth) : 0;
+  return Math.min(MAX_TREE_INDENT_WIDTH, Math.max(0, safe));
 }
 
 /** One node of {@link Tree}'s CURRENTLY VISIBLE (i.e. every ancestor is
@@ -496,13 +551,24 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
         // (TreeProps.width's own TSDoc) — `props.width` absent keeps the
         // pre-#104 behavior of handing the whole row string to `<text>`
         // unbounded, wrapping exactly as before.
-        // The prefix the label is drawn after: `"  ".repeat(depth)` plus the
-        // 2-column glyph. Subtracted from the row width for the budget AND
-        // passed as the label's start column, so a tab inside a label
-        // advances to the stop it will really land on rather than one
-        // measured from column 0 (which would over-measure it and truncate
-        // a label that fits).
-        const prefixWidth = 2 * node.depth + 2;
+        // Issue #121: `indent` generalizes the previously-fixed 2-column
+        // indent step to `props.indentWidth`, falling back to `2` when
+        // unset (TreeProps.indentWidth's own TSDoc) — preserves every
+        // pre-#121 caller's rendering exactly. Normalized through
+        // `normalizeIndentWidth` (CodeRabbit follow-up) rather than a bare
+        // `?? 2`: a raw negative/non-finite/fractional/oversized prop would
+        // otherwise reach `" ".repeat()` and `prefixWidth` below unclamped.
+        // The prefix the label is drawn after: `" ".repeat(indent *
+        // depth)` plus the 2-column glyph. Subtracted from the row width
+        // for the budget AND passed as the label's start column, so a tab
+        // inside a label advances to the stop it will really land on
+        // rather than one measured from column 0 (which would over-measure
+        // it and truncate a label that fits) — both MUST use the same
+        // `prefixWidth`, or the truncation point drifts from the indent
+        // actually drawn (Issue #104's regression). Both also derive from
+        // the SAME normalized `indent` below, for the identical reason.
+        const indent = normalizeIndentWidth(props.indentWidth);
+        const prefixWidth = indent * node.depth + 2;
         const label =
           props.width !== undefined
             ? truncateToWidth(node.label, props.width - prefixWidth, "…", undefined, prefixWidth)
@@ -520,7 +586,7 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
               props.onSelect?.(node.id);
             }}
           >
-            {"  ".repeat(node.depth) + glyph + label}
+            {" ".repeat(indent * node.depth) + glyph + label}
           </text>
         );
       })}
