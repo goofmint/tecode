@@ -56,7 +56,7 @@ import * as nodeFs from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Disposable, Event, FileChangeEvent, Listener, Uri } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
-import { isBinaryContent } from "./binaryDetection";
+import { BINARY_DETECTION_SAMPLE_BYTES, isBinaryContent } from "./binaryDetection";
 import type { Clock } from "./clock";
 import { createDocument, type CoreDocument } from "./document";
 import { pathToUri, uriToPath } from "./uri";
@@ -95,13 +95,20 @@ export interface DocumentManagerFs {
    * first. A separate method rather than an optional-encoding overload on
    * `readFile`: an overloaded call signature on an object-literal property
    * needs its own hand-written implementation signature to satisfy both
-   * call shapes, which is more ceremony than this one extra method buys —
-   * every real and fake implementation of this method (`createNodeFs`
-   * below, every `DocumentManagerFs` literal in `documentManager.test.ts`)
-   * is a one-line delegate to `node:fs/promises`' own `readFile(path)` with
-   * NO encoding argument, which is what returns a `Buffer` (itself a
-   * `Uint8Array`, matching `terminal/ptyService.ts`'s raw-bytes convention)
-   * instead of a decoded `string`.
+   * call shapes, which is more ceremony than this one extra method buys.
+   *
+   * **Bounded, never the whole file** (CodeRabbit PR #142): this exists
+   * ONLY to feed `isBinaryContent`'s own bounded scan, so the real
+   * `createNodeFs` below reads at most {@link BINARY_DETECTION_SAMPLE_BYTES}
+   * leading bytes regardless of the file's actual size — a multi-gigabyte
+   * file with a leading NUL byte must be rejected without ever pulling its
+   * full contents into memory first, which is exactly what a naive
+   * `readFile(path)` (no encoding argument, returning the whole file as a
+   * `Buffer` — itself a `Uint8Array`, matching `terminal/ptyService.ts`'s
+   * raw-bytes convention) would do. Test `DocumentManagerFs` literals in
+   * `documentManager.test.ts` may still delegate straight to `readFile`
+   * (their fixture files are always small), but the real implementation
+   * must not.
    */
   readFileBytes(path: string): Promise<Uint8Array>;
   writeFile(
@@ -114,12 +121,41 @@ export interface DocumentManagerFs {
   unlink(path: string): Promise<void>;
 }
 
-/** The real {@link DocumentManagerFs}, backed by `node:fs/promises`. */
-function createNodeFs(): DocumentManagerFs {
+/**
+ * Reads at most `maxBytes` leading bytes of `path` (CodeRabbit PR #142) —
+ * `createNodeFs`'s `readFileBytes` only ever needs a bounded prefix to feed
+ * `isBinaryContent`'s own bounded scan, so this opens the file, reads a
+ * single fixed-size chunk at offset 0, and closes it, instead of
+ * `node:fs/promises`' `readFile(path)`, which allocates and returns the
+ * ENTIRE file regardless of how few bytes the caller actually looks at. A
+ * huge file with a leading NUL byte would otherwise sit fully in memory —
+ * possibly for a long time — before `isBinaryContent` even gets to reject
+ * it. `handle.read` short-reads on a file smaller than `maxBytes` (the
+ * common case), so the returned view is trimmed to the actual `bytesRead`
+ * rather than left zero-padded out to `maxBytes`.
+ */
+async function readLeadingBytes(path: string, maxBytes: number): Promise<Uint8Array> {
+  const handle = await nodeFs.open(path, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The real {@link DocumentManagerFs}, backed by `node:fs/promises`.
+ * Exported so `documentManager.test.ts` can exercise its `readFileBytes`
+ * directly against a real (large) file — the only way to actually verify
+ * the {@link BINARY_DETECTION_SAMPLE_BYTES} read bound below, since every
+ * hand-written `DocumentManagerFs` test fake is free to (and does) read the
+ * whole fixture file instead. */
+export function createNodeFs(): DocumentManagerFs {
   return {
     stat: (path) => nodeFs.stat(path),
     readFile: (path, encoding) => nodeFs.readFile(path, encoding),
-    readFileBytes: (path) => nodeFs.readFile(path),
+    readFileBytes: (path) => readLeadingBytes(path, BINARY_DETECTION_SAMPLE_BYTES),
     writeFile: (path, data, options) => nodeFs.writeFile(path, data, options),
     chmod: (path, mode) => nodeFs.chmod(path, mode),
     rename: (oldPath, newPath) => nodeFs.rename(oldPath, newPath),

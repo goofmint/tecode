@@ -253,9 +253,28 @@ describe("truncateToWidth (Issue #104: Tree row wrapping)", () => {
     expect(truncateToWidth("", 5)).toBe("");
   });
 
+  test("a leading unsafe control character is measured as 1 cell, matching cellWidth (CodeRabbit PR #142)", () => {
+    // `string-width` measures "\x00" as 0 cells, but `cellWidth`/`measureCells`
+    // measure every `isUnsafeRenderChar` character as 1 (Issue #137). Before
+    // this fix, `truncateToWidth`'s own candidate-width calculation used
+    // `stringWidth` directly, so `truncateToWidth("\x00abc", 3)` returned
+    // "\x00ab…" — 4 cells by `cellWidth`'s own accounting, over `maxWidth`.
+    const result = truncateToWidth("\x00abc", 3);
+    expect(cellWidth(result)).toBeLessThanOrEqual(3);
+    expect(result).toBe("\x00a…");
+  });
+
   test("postcondition: the result's display width never exceeds max(0, maxWidth), for every input", () => {
     const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
-    const samples = ["", "a", "hello", "日本語テキスト", `x${family}y${family}z`, "\tindented\tlabel"];
+    const samples = [
+      "",
+      "a",
+      "hello",
+      "日本語テキスト",
+      `x${family}y${family}z`,
+      "\tindented\tlabel",
+      "\x00abc\x1bdef\x7f",
+    ];
     for (const text of samples) {
       const upperBound = cellWidth(text) + 3;
       for (let maxWidth = -2; maxWidth <= upperBound; maxWidth++) {

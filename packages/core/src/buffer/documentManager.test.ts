@@ -21,6 +21,7 @@ import { createHostLog } from "../host/errors";
 import { BINARY_DETECTION_SAMPLE_BYTES } from "./binaryDetection";
 import {
   createDocumentManager,
+  createNodeFs,
   LARGE_FILE_THRESHOLD_BYTES,
   type DocumentManagerFs,
 } from "./documentManager";
@@ -229,6 +230,46 @@ describe("DocumentManager.openDocument (Req 5.5)", () => {
     expect(errors).toHaveLength(0);
     expect(manager.documents).toHaveLength(1);
   });
+
+  test("createNodeFs().readFileBytes reads at most BINARY_DETECTION_SAMPLE_BYTES even from a huge file (CodeRabbit PR #142)", async () => {
+    // A large, sparse file: only a small prefix is actually written, then
+    // truncate() extends the logical size to well past the sample bound
+    // without writing (or later reading) tens of megabytes of real data —
+    // keeping this test fast while still proving the read is bounded by
+    // SIZE, not by how much of the file happens to be non-sparse.
+    const path = join(dir, "huge-sparse.bin");
+    const handle = await open(path, "w");
+    try {
+      await handle.write(Buffer.from([0x00, 0x61, 0x62, 0x63])); // "\0abc"
+      await handle.truncate(50 * 1024 * 1024); // 50 MB logical size
+    } finally {
+      await handle.close();
+    }
+
+    const bytes = await createNodeFs().readFileBytes(path);
+    expect(bytes.length).toBeLessThanOrEqual(BINARY_DETECTION_SAMPLE_BYTES);
+    // And the bytes actually read are still the real leading bytes — the
+    // bound must trim the read, not corrupt it.
+    expect(bytes.subarray(0, 4)).toEqual(new Uint8Array([0x00, 0x61, 0x62, 0x63]));
+  });
+
+  test("opening a huge file with a leading NUL byte still aborts as binary without reading the whole file (CodeRabbit PR #142)", async () => {
+    const path = join(dir, "huge-binary.bin");
+    const handle = await open(path, "w");
+    try {
+      await handle.write(Buffer.from([0x00, 0x61, 0x62, 0x63]));
+      await handle.truncate(50 * 1024 * 1024);
+    } finally {
+      await handle.close();
+    }
+    const { log, sink, errors } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    await expect(manager.openDocument(pathToUri(path))).rejects.toBeDefined();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("Cannot open binary file");
+    expect(manager.documents).toHaveLength(0);
+  }, 20000);
 
   test("opening the same uri twice returns the same instance (dedupe)", async () => {
     const path = join(dir, "dup.txt");

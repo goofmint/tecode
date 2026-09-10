@@ -287,10 +287,23 @@ export function truncateToWidth(
   let kept = "";
   let consumed = 0;
   for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+    // Measured via `measureCells` — the SAME function `cellWidth`/the fast
+    // "already fits" check above use — rather than a second, independent
+    // `stringWidth(segment)` call (CodeRabbit PR #142): `string-width`
+    // measures an `isUnsafeRenderChar` character (a C0 control byte, DEL, or
+    // U+FFFD) as 0 cells, while `measureCells` measures it as 1 (this
+    // module's own TSDoc on `CONTROL_CHAR_PLACEHOLDER`/`isUnsafeRenderChar`).
+    // A `stringWidth`-based increment let `truncateToWidth("\x00abc", 3)`
+    // return `"\x00ab…"` — 4 cells by `cellWidth`'s own accounting, over
+    // `maxWidth`, and still carrying the raw control character into the
+    // result. Routing every candidate's width through `measureCells`
+    // guarantees this function's postcondition holds for unsafe characters
+    // too, and keeps exactly one width-measuring code path for `cellWidth`,
+    // `cellWidthUpTo`, and `truncateToWidth` alike (Issue #104, #123, #136).
     const increment =
       segment === "\t"
         ? safeTabSize - ((safeStart + consumed) % safeTabSize)
-        : stringWidth(segment);
+        : measureCells(segment, safeTabSize, safeStart + consumed);
     // Stop once the prefix alone would overflow — nothing longer can fit
     // either, and every shorter candidate has already been considered.
     if (consumed + increment > safeMaxWidth) break;
