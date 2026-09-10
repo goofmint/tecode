@@ -624,6 +624,28 @@ plus an optional `.<string>` suffix, e.g. `"function.builtin"`, `"string.escape"
 longest-prefix match. `RGB { r, g, b }` (0-255 each). `Style { foreground?,
 background?, bold?, italic?, underline? }`.
 
+**Loading a theme from the user themes directory** (Req 11.4, Issue #124):
+a theme JSON file does not need a manifest/extension at all — tecode
+embeds exactly one theme in the binary (`tecode.dark-modern`, the
+`workbench.colorTheme` default) and reads every other one, including a
+Light Modern equivalent, from plain files. Any `*.json` file placed in
+`~/.config/tecode/themes/` (`%APPDATA%\tecode\themes` on Windows —
+`host/paths.ts`'s `getUserThemesDir`) is picked up during startup's
+deferred phase (`packages/cli/src/userThemes.ts`'s `scanUserThemes`) and
+registered into the SAME `ThemeRegistry` a manifest's `contributes.themes`
+entry goes through — `register`'s `ThemeContribution { id, label, path }`
+shape above, just built by the scanner instead of a manifest author. Its
+`id`/`label` are derived rather than declared: **`id`** is the filename
+without its `.json` extension (`light-modern.json` → `light-modern`);
+**`label`** is the JSON's own top-level `"name"` string when present,
+otherwise the same id (`themes/light-modern.json` in the repository root
+— copyable into the user themes directory, README.md's "Themes" section —
+sets `"name": "Light Modern"` for exactly this reason). A missing user
+themes directory, or one with no `*.json` files, is not an error; a file
+that fails to parse still registers (so it appears in `theme.select`) but
+resolves to the base palette if selected, matching every other theme's
+existing degrade policy — it never blocks startup.
+
 ### `Document` — what `workspace.openDocument`/`window.activeEditor.document` return
 
 Not a `tecode.*` namespace itself, but referenced by two of them above, so

@@ -25,8 +25,24 @@ import {
   getUserExtensionsDir,
   type DiscoveryFs,
 } from "@tecode/core";
-import { DARK_MODERN_THEME_ID, LIGHT_MODERN_THEME_ID } from "@tecode/builtin";
+import { DARK_MODERN_THEME_ID } from "@tecode/builtin";
+import darkModernJson from "../../../themes/dark-modern.json";
 import { buildAssemblyRoot, runDeferredPhase } from "./main";
+
+/** `"#rrggbb"` -> `{ r, g, b }` — a tiny local reimplementation of
+ * `@tecode/core`'s `themeLoader.ts`'s `parseHexColor` (not imported: this
+ * suite intentionally checks the ACTIVE theme's resolved colors against
+ * the raw JSON file independently of the loader that produced them). Only
+ * used against `themes/dark-modern.json`'s own known-valid 6-digit hex
+ * values below, so no validation/error handling beyond what a plain
+ * `parseInt` needs. */
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  return {
+    r: parseInt(hex.slice(1, 3), 16),
+    g: parseInt(hex.slice(3, 5), 16),
+    b: parseInt(hex.slice(5, 7), 16),
+  };
+}
 
 /** Blocks the real user extensions dir, matches `main.test.ts`'s own
  * `createHermeticDiscoveryFs` — keeps this test from ever scanning the
@@ -92,12 +108,15 @@ test("Dark Modern is active before renderShell would be called, with zero extens
 
     expect(root.themeService.getActiveThemeId()).toBe(DARK_MODERN_THEME_ID);
     const activeColors = root.themeService.get().colors;
-    // Dark Modern's own values (`themes-default/themes/dark-modern.json`),
-    // not the built-in base palette's — proves the REAL embedded theme
-    // loaded, not just a registry that still reports BASE_THEME_ID's
-    // colors under a different active id.
-    expect(activeColors["editor.background"]).toEqual({ r: 31, g: 31, b: 31 });
-    expect(activeColors["statusBar.background"]).toEqual({ r: 0, g: 120, b: 212 });
+    // Dark Modern's own values, read directly from the top-level
+    // `themes/dark-modern.json` this suite imports above (Issue #124: no
+    // longer `themes-default/themes/dark-modern.json` — that directory was
+    // removed, the file moved to the repo's top-level `themes/`) — not the
+    // built-in base palette's, proving the REAL embedded theme loaded, not
+    // just a registry that still reports BASE_THEME_ID's colors under a
+    // different active id.
+    expect(activeColors["editor.background"]).toEqual(hexToRgb(darkModernJson.colors["editor.background"]));
+    expect(activeColors["statusBar.background"]).toEqual(hexToRgb(darkModernJson.colors["statusBar.background"]));
 
     // Zero extension modules loaded: the extension host does not exist
     // yet at all (it is only built inside runDeferredPhase, below) —
@@ -109,8 +128,17 @@ test("Dark Modern is active before renderShell would be called, with zero extens
 
     // --- Now run the deferred phase (design.md §3's step 2) and prove
     // loading/activation only happens from here on. ---
+    // `userThemesDir` points at a guaranteed-nonexistent subdirectory of
+    // this test's own temp dir (Issue #124) — `main.test.ts`'s
+    // `createHermeticDiscoveryFs` TSDoc explains why the `HOME` override
+    // above cannot be trusted to redirect `getUserThemesDir()` away from
+    // the real machine's `~/.config/tecode/themes` on POSIX in-process;
+    // this explicit seam is this test's real hermeticity guarantee for the
+    // user-themes scan, exactly like `fs: createHermeticDiscoveryFs()`
+    // already is for extension discovery.
     const { extensionHost, loadResult } = await runDeferredPhase(root, {
       fs: createHermeticDiscoveryFs(),
+      userThemesDir: join(dir, "no-such-themes-dir"),
     });
 
     expect(root.hostRef.current).toBe(extensionHost);
@@ -130,14 +158,13 @@ test("Dark Modern is active before renderShell would be called, with zero extens
     // retry) — a safe no-op here since it was already correct.
     expect(root.themeService.getActiveThemeId()).toBe(DARK_MODERN_THEME_ID);
 
-    // `runDeferredPhase` re-registers the SAME two built-in theme ids via
-    // `loadContributions` (discovery found them again, this time with a
-    // real `LoadedExtension`) — `themeRegistry.ts`'s per-id generation
-    // guard means this is a harmless re-registration, not a duplicate
-    // `list()` entry.
+    // `runDeferredPhase` re-registers the SAME built-in theme id via
+    // `loadContributions` (discovery found it again, this time with a real
+    // `LoadedExtension`) — `themeRegistry.ts`'s per-id generation guard
+    // means this is a harmless re-registration, not a duplicate `list()`
+    // entry.
     const themeListIds = root.themeRegistry.list().map((t) => t.id);
     expect(themeListIds.filter((id) => id === DARK_MODERN_THEME_ID)).toHaveLength(1);
-    expect(themeListIds.filter((id) => id === LIGHT_MODERN_THEME_ID)).toHaveLength(1);
 
     await extensionHost.disposeAll();
   } finally {

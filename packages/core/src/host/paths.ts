@@ -95,3 +95,17 @@ export function getUserExtensionsDir(): string {
 export function getWorkspaceExtensionsDir(workspaceRoot: string): string {
   return join(workspaceRoot, ".tecode", "extensions");
 }
+
+/**
+ * The user-level themes directory (Req 11.4, Issue #124): `~/.config/
+ * tecode/themes` (or the Windows equivalent under {@link getUserConfigDir}).
+ * `packages/cli/src/userThemes.ts`'s scanner `readdir`s this directory for
+ * `*.json` theme files during the deferred startup phase — mirrors
+ * {@link getUserExtensionsDir}'s own "just the path, no side effects"
+ * contract: does not create the directory or check that it exists (a
+ * missing directory is the scanner's ENOENT-is-empty case, not this
+ * function's problem).
+ */
+export function getUserThemesDir(): string {
+  return join(getUserConfigDir(), "themes");
+}

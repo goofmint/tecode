@@ -20,6 +20,7 @@ export {
   getUserKeybindingsPath,
   getUserLayoutStatePath,
   getUserSettingsPath,
+  getUserThemesDir,
   getWorkspaceExtensionsDir,
   getWorkspaceSettingsPath,
 } from "./paths";

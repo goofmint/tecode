@@ -18,6 +18,35 @@
  * on the fly") from OUTSIDE the compiled binary's own embedded module
  * graph.
  *
+ * **Dark Modern's embedded-asset resolution, specifically** (Issue #124):
+ * `themes-default` now embeds only Dark Modern (`themes-default/assets.ts`'s
+ * TSDoc) — its JSON is a STATIC `import` from the repository's top-level
+ * `themes/dark-modern.json`, so `bun build --compile` embeds it into this
+ * suite's compiled binary exactly like it always did when the file lived
+ * under `packages/builtin/themes-default/themes/`; the import merely
+ * crosses a package-directory boundary now, which affects bundling not at
+ * all (Bun resolves and embeds by real on-disk path, not by package
+ * membership). Both runs below construct `ThemeRegistry` and register
+ * `themes-default`'s `contributes.themes` (a NON-OPTIONAL step of every
+ * startup, `main.ts`'s `buildAssemblyRoot`) before `renderShell`/headless
+ * exit is ever reached, so a broken embed here would either fail the
+ * `bun build --compile` step itself (an unresolvable import) or degrade
+ * silently to the base palette at runtime — this suite's `exitCode === 0`
+ * plus zero new `logWarnings`/`logErrors` over the language-load-free
+ * directory-only baseline (below) is the same evidence Finding 3's fix
+ * already established for `languages-basic`'s embedded grammar, applied
+ * here to Dark Modern's embedded theme JSON rather than a new dedicated
+ * theme-id assertion — `tecode.headlessExit` carries no active-theme-id
+ * field to assert against directly (see `main.ts`'s `emitMetric` call
+ * site for its full field list). Light Modern is NOT exercised by this
+ * suite at all any more: it is no longer embedded — it ships as a plain
+ * file at the repository's top-level `themes/light-modern.json`, loaded
+ * (when copied to `~/.config/tecode/themes/`) through `userThemes.ts`'s
+ * ordinary real-`fs.readFile` scan, which this binary-embedding-focused
+ * suite has no reason to cover (`userThemes.test.ts`/
+ * `userThemesStartup.test.ts` cover that path against a plain `bun run`
+ * process instead).
+ *
  * **The `TECODE_BIN` convention** (new to this repo — no other test uses
  * it): this suite needs an actual compiled binary on disk, which `bun
  * test` cannot produce itself (a `bun build --compile` invocation takes

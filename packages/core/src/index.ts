@@ -8,6 +8,7 @@ export {
   getUserConfigDir,
   getUserExtensionsDir,
   getUserFallbackKeybindingsPath,
+  getUserThemesDir,
   getWorkspaceExtensionsDir,
   HOST_PLACEHOLDER,
   loadExtensions,

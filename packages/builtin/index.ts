@@ -37,8 +37,12 @@
  * pair of privileged bridge commands `@tecode/core`'s `ui/
  * keybindingsCommands.ts` registers directly on the core
  * `CommandRegistry` (that module's TSDoc). `themes-default` (Task 2.7,
- * Req 11.4) and `languages-basic` (Task 2.9, Req 8.4) are the second and
- * third. `terminal` (Issue #98 Phase 4) is the eighth — `terminal.focus`/
+ * Req 11.4; Issue #124) and `languages-basic` (Task 2.9, Req 8.4) are the
+ * second and third — `themes-default` now contributes only its one
+ * embedded default theme (Dark Modern; Light Modern moved out to the
+ * top-level `themes/` directory, loaded as a user theme instead —
+ * `themes-default/manifest.ts`'s TSDoc). `terminal` (Issue #98 Phase 4)
+ * is the eighth — `terminal.focus`/
  * `terminal.new`, a `panel.tab` view over a real pty session
  * (`tecode.terminal`) rendered through `tecode.ui.Terminal`
  * (`@tecode/core`'s `TerminalGridView`); registers commands but no view at
@@ -71,10 +75,7 @@ import keybindingsEditorManifest from "./keybindings-editor/manifest";
 import * as terminalModule from "./terminal/index";
 import terminalManifest from "./terminal/manifest";
 import * as themesDefaultModule from "./themes-default/index";
-import themesDefaultManifest, {
-  DARK_MODERN_THEME_ID,
-  LIGHT_MODERN_THEME_ID,
-} from "./themes-default/manifest";
+import themesDefaultManifest, { DARK_MODERN_THEME_ID } from "./themes-default/manifest";
 import { builtinThemeAssets as themesDefaultAssets } from "./themes-default/assets";
 import * as languagesBasicModule from "./languages-basic/index";
 import languagesBasicManifest, { LANGUAGES_BASIC_EXTENSION_ID } from "./languages-basic/manifest";
@@ -87,7 +88,7 @@ import {
 // mainly) can reference the real built-in theme/language-pack ids without a
 // package subpath import into `themes-default/manifest.ts` or
 // `languages-basic/manifest.ts` directly.
-export { DARK_MODERN_THEME_ID, LIGHT_MODERN_THEME_ID, LANGUAGES_BASIC_EXTENSION_ID };
+export { DARK_MODERN_THEME_ID, LANGUAGES_BASIC_EXTENSION_ID };
 
 /**
  * The `activate(ctx)`/`deactivate()` shape a built-in's `index.ts` exports
@@ -133,7 +134,8 @@ export const builtinModules: Record<string, BuiltinExtensionModule> = {
 /** Every built-in extension's embedded theme JSON assets, keyed by the
  * synthetic `<builtin>/<id>/<path>` `ThemeRegistry` resolves a manifest
  * theme's `path` to (this module's TSDoc's `builtinThemeAssets`). Only
- * `themes-default` contributes any today. */
+ * `themes-default` contributes any today — just its one embedded default
+ * theme, Dark Modern (Issue #124; `themes-default/assets.ts`'s TSDoc). */
 export const builtinThemeAssets: Record<string, string> = {
   ...themesDefaultAssets,
 };
