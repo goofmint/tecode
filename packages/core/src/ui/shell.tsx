@@ -72,6 +72,7 @@ import type { FocusableNode } from "./focus";
 import { useFocusContextService, useFocusTracking } from "./focus";
 import type { LayoutState, LayoutStateService } from "./layoutState";
 import { INPUT_BOX_FOCUS_CONTEXT_KEY, QUICK_PICK_FOCUS_CONTEXT_KEY } from "./modalCommands";
+import { clampPanelHeight } from "./panelHeight";
 import { clampSidebarWidth } from "./sidebarWidth";
 import type { SidebarPair, SlotRegistry, SlotViewEntry } from "./slotRegistry";
 import { toColorInput, useTheme } from "./theme";
@@ -473,16 +474,22 @@ export function Sidebar(props: SidebarProps): ReactNode {
  * `Tabs` never overrides either — computes `1` (tab row) + `1` (underline)
  * + `1` (description row) = `3`; confirmed directly against the vendored
  * headless renderer (a mounted `<tab-select>` with no explicit `height`
- * measures exactly `3` rows), not merely read off the library's source. */
-const TAB_BAR_HEIGHT = 3;
+ * measures exactly `3` rows), not merely read off the library's source.
+ * Exported so `panelHeight.ts`'s hand-kept-in-sync `TAB_BAR_HEIGHT_FOR_CAP`
+ * duplicate (Issue #118, that module's TSDoc explains why it cannot import
+ * this directly) has a real value to drift-guard against in
+ * `panelHeight.test.ts` — the same role `ACTIVITY_BAR_WIDTH`'s export
+ * already plays for `sidebarWidth.ts`'s equivalent duplicate. */
+export const TAB_BAR_HEIGHT = 3;
 
 /** Rows `FindWidget`'s own outer box occupies while open (`findWidget.tsx`'s
  * `style={{ height: 1 }}`) — Req 11.1. */
 const FIND_WIDGET_HEIGHT = 1;
 
 /** Rows `StatusBar` occupies (`shell.tsx`'s `StatusBar`, `style={{ height: 1
- * }}`) — always rendered, so always reserved. */
-const STATUS_BAR_HEIGHT = 1;
+ * }}`) — always rendered, so always reserved. Exported for the same
+ * `panelHeight.ts` drift-guard reason as {@link TAB_BAR_HEIGHT} above. */
+export const STATUS_BAR_HEIGHT = 1;
 
 /** The live terminal's current column/row count, reactively — see this
  * function's own TSDoc for the full rationale. */
@@ -1189,8 +1196,25 @@ export function Shell(props: ShellProps): ReactNode {
   // independent of whatever `layout.sidebarWidth` itself currently holds
   // (which may still be wider than the terminal, e.g. right after a resize
   // shrank the terminal but before any new `update()` call has landed).
-  const terminalWidth = useLiveTerminalDimensions()?.width;
+  const terminalDimensions = useLiveTerminalDimensions();
+  const terminalWidth = terminalDimensions?.width;
   const renderedSidebarWidth = clampSidebarWidth(layout.sidebarWidth, terminalWidth);
+
+  // Issue #118 — the panel-height equivalent of `renderedSidebarWidth`
+  // directly above, translated vertically: `coerceLayoutState` only ever
+  // applies `panelHeight.ts`'s `clampPanelHeight` floor (no live terminal at
+  // load time, same reasoning as `sidebarWidth`), so THIS is the one call
+  // site with a live `terminalHeight` to additionally cap against
+  // (`panelHeight.ts`'s TSDoc's "Two independent floors/ceilings"). Reuses
+  // `terminalDimensions` above rather than a second `useLiveTerminalDimensions`
+  // subscription — the same live terminal, just its `height` field instead
+  // of `width`. `renderedPanelHeight` is what actually reaches both
+  // `EditorArea`'s `panelHeight` prop and `Panel`'s `height` prop below, NOT
+  // whatever `layout.panelHeight` itself currently holds — mirrors
+  // `renderedSidebarWidth`'s identical "render-site clamp, independent of
+  // the possibly-stale persisted value" role.
+  const terminalHeight = terminalDimensions?.height;
+  const renderedPanelHeight = clampPanelHeight(layout.panelHeight, terminalHeight);
 
   // `Sidebar`'s own drag-resize callbacks (Issue #105, `Sidebar`'s TSDoc):
   // both receive the RAW, unclamped desired width and apply
@@ -1346,11 +1370,11 @@ export function Shell(props: ShellProps): ReactNode {
           findService={props.findService}
           highlightService={props.highlightService}
           panelVisible={layout.panelVisible}
-          panelHeight={layout.panelHeight}
+          panelHeight={renderedPanelHeight}
           onEditorFocusHandleChange={props.onEditorFocusHandleChange}
         />
       </box>
-      <Panel slotRegistry={props.slotRegistry} visible={layout.panelVisible} height={layout.panelHeight} />
+      <Panel slotRegistry={props.slotRegistry} visible={layout.panelVisible} height={renderedPanelHeight} />
       <StatusBar slotRegistry={props.slotRegistry} />
     </box>
   );

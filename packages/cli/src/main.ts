@@ -8,6 +8,7 @@ import type {
   Tecode,
 } from "@tecode/api";
 import {
+  applyConfiguredPanelHeight,
   applyConfiguredSidebarWidth,
   applyConfiguredTheme,
   BASE_THEME_ID,
@@ -56,6 +57,7 @@ import {
   SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
   TAB_DEFAULT_KEYBINDINGS,
   wireEditorLangIdContext,
+  wirePanelHeightConfigSync,
   wireSidebarWidthConfigSync,
   wireThemeConfigSync,
   type BindingTable,
@@ -278,6 +280,12 @@ export interface AssemblyRoot {
    * alongside every other startup-owned subscription in
    * {@link wireProcessExit}. */
   sidebarWidthConfigSync: Disposable;
+  /** Live `workbench.panelHeight` config-change subscription (Issue #118,
+   * `ui/panelHeightConfigSync.ts`'s `wirePanelHeightConfigSync`) — mirrors
+   * {@link sidebarWidthConfigSync}'s own shape, just for
+   * `LayoutState.panelHeight` instead of `sidebarWidth`. Disposed alongside
+   * every other startup-owned subscription in {@link wireProcessExit}. */
+  panelHeightConfigSync: Disposable;
   /** The `theme.select` command registration (Req 7.5, `ui/
    * themeSelectCommand.ts`) — registered directly on `commands`, not
    * through `tecode.commands` (that module's TSDoc on the privilege
@@ -1056,6 +1064,12 @@ export function buildAssemblyRoot(
   // above.
   const sidebarWidthConfigSync = wireSidebarWidthConfigSync({ config, layoutState });
 
+  // Live `workbench.panelHeight` config-change subscription (Issue #118,
+  // `ui/panelHeightConfigSync.ts`'s TSDoc) — same "INITIAL value applied by
+  // `runTecode` after `config.ready`, not here" shape as `sidebarWidthConfigSync`
+  // above.
+  const panelHeightConfigSync = wirePanelHeightConfigSync({ config, layoutState });
+
   // The live keymap table view (this function's TSDoc) — a thin forwarding
   // object, not a snapshot, so `chordMachine` below always resolves
   // against whichever `BindingTable` `keymap` currently holds.
@@ -1104,6 +1118,7 @@ export function buildAssemblyRoot(
     themeService,
     themeConfigSync,
     sidebarWidthConfigSync,
+    panelHeightConfigSync,
     themeSelectCommand,
     openFileCommand,
     tabCommands,
@@ -1365,6 +1380,10 @@ export interface ShutdownRoot {
   editorLangIdSync: Pick<Disposable, "dispose">;
   themeConfigSync: Pick<Disposable, "dispose">;
   sidebarWidthConfigSync: Pick<Disposable, "dispose">;
+  /** Live `workbench.panelHeight` config-change subscription (Issue #118,
+   * `ui/panelHeightConfigSync.ts`'s `wirePanelHeightConfigSync`) — disposed
+   * alongside {@link sidebarWidthConfigSync}, same reasoning. */
+  panelHeightConfigSync: Pick<Disposable, "dispose">;
   themeSelectCommand: Pick<Disposable, "dispose">;
   openFileCommand: Pick<Disposable, "dispose">;
   tabCommands: Pick<Disposable, "dispose">;
@@ -1457,6 +1476,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.editorLangIdSync.dispose();
       root.themeConfigSync.dispose();
       root.sidebarWidthConfigSync.dispose();
+      root.panelHeightConfigSync.dispose();
       root.clipboardConfigSync.dispose();
       // Issue #98 Phase 5: the pty service owns a REAL child process
       // (unlike `clipboard`, which owns nothing OS-level to release) —
@@ -1714,6 +1734,15 @@ export async function runTecode(
   // `themesReadyPromise`-equivalent second call needed: a sidebar width
   // never depends on anything `loadExtensions`/discovery resolves.
   applyConfiguredSidebarWidth(root.config, root.layoutState);
+
+  // Apply the ACTUAL configured `workbench.panelHeight` now that
+  // `config.ready` has settled (Issue #118) — same "schema default only,
+  // until ready" reasoning as `workbench.sidebarWidth` immediately above
+  // (`ui/panelHeightConfigSync.ts`'s TSDoc): `buildAssemblyRoot`'s
+  // `wirePanelHeightConfigSync` only reacts to LIVE `onDidChange` events, so
+  // the value already on disk when the process started still needs this
+  // one explicit call.
+  applyConfiguredPanelHeight(root.config, root.layoutState);
 
   // Apply the ACTUAL configured `clipboard.useSystemClipboard` now that
   // `config.ready` has settled (Issue #91) — same "schema default only,

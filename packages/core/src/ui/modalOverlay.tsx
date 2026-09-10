@@ -80,7 +80,7 @@
 
 import { useCallback, useEffect, useReducer, useRef, type ReactNode } from "react";
 import { useRenderer, useTerminalDimensions } from "@opentui/react";
-import { Input, List, type ListItem } from "./components";
+import { hasDescription, Input, List, type ListItem } from "./components";
 import type { FocusableNode } from "./focus";
 import { useFocusTracking } from "./focus";
 import { INPUT_BOX_FOCUS_CONTEXT_KEY, QUICK_PICK_FOCUS_CONTEXT_KEY } from "./modalCommands";
@@ -193,15 +193,31 @@ function QuickPickBody(props: {
   // TSDoc's "Sizing") to however many rows actually fit below the modal's
   // own top margin, MINUS this box's own border (1 row top + 1 bottom —
   // `border={[...]}` below) and the filter `Input` above (always exactly 1
-  // row, single-line). Below that many items, this comes out to
-  // `listItems.length` itself — i.e. IDENTICAL to `List`'s own unconstrained
-  // default — so a short list still hugs its own content exactly as before;
-  // only once there are MORE items than fit does this clamp kick in,
-  // handing `List` a height smaller than its item count so OpenTUI's
-  // `<select>` scrolls instead of overflowing (this module's TSDoc).
+  // row, single-line).
+  //
+  // Issue #122's fix: OpenTUI's `<select>` renders each option across TWO
+  // rows, not one, the moment ANY item in the list carries a `description`
+  // (`components.tsx`'s `hasDescription` TSDoc — e.g. the tab-close prompt's
+  // Save/Discard/Cancel items, which all set one). This module used to
+  // assume 1 row per item unconditionally, so a 3-item Save/Discard/Cancel
+  // list was handed a `listHeight` of 3 when it actually needed 6 rows to
+  // show all three labels — only the first item and a half ever fit.
+  // `rowsPerItem` mirrors the SAME `hasDescription` predicate `List`
+  // itself uses for `showDescription` (imported from `components.tsx`
+  // rather than recomputed here, so the two can never drift apart — this
+  // module's own TSDoc's "one number for BOTH axes" precedent for why a
+  // single shared source of truth matters). Below the terminal's available
+  // rows, `contentRows` comes out to exactly `listItems.length * rowsPerItem`
+  // — i.e. still hugging the list's own content exactly as before this fix
+  // for a short list; only once there are MORE rows than fit does the
+  // `maxListRows` clamp kick in, handing `List` a height smaller than its
+  // needed row count so OpenTUI's `<select>` scrolls instead of overflowing
+  // (this module's TSDoc).
   const { height: terminalHeight } = useTerminalDimensions();
   const maxListRows = Math.max(1, terminalHeight - modalMarginRows(terminalHeight) - QUICK_PICK_RESERVED_ROWS);
-  const listHeight = Math.max(1, Math.min(listItems.length, maxListRows));
+  const rowsPerItem = hasDescription(listItems) ? 2 : 1;
+  const contentRows = listItems.length * rowsPerItem;
+  const listHeight = Math.max(1, Math.min(contentRows, maxListRows));
 
   return (
     <box
