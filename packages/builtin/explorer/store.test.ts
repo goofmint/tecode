@@ -35,7 +35,7 @@ function createFakeReaddir(tree: FakeTree): (uri: Uri) => Promise<DirEntry[]> {
 
 function createStore(
   tree: FakeTree,
-  overrides: { rootUri?: Uri | undefined; showHidden?: boolean } = {},
+  overrides: { rootUri?: Uri | undefined; showHidden?: boolean; indentWidth?: number } = {},
 ): { store: ExplorerStore; messages: Array<{ message: string; kind?: MessageKind }> } {
   const messages: Array<{ message: string; kind?: MessageKind }> = [];
   const store = createExplorerStore("rootUri" in overrides ? overrides.rootUri : ROOT, {
@@ -43,6 +43,7 @@ function createStore(
     ignore: createIgnoreChecker(),
     showMessage: (message, kind) => messages.push({ message, kind }),
     showHidden: overrides.showHidden ?? false,
+    indentWidth: overrides.indentWidth ?? 1,
   });
   return { store, messages };
 }
@@ -108,6 +109,7 @@ describe("createExplorerStore (Task 3.3, Req 11.2)", () => {
       ignore: createIgnoreChecker(),
       showMessage: (message, kind) => messages.push({ message, kind }),
       showHidden: false,
+      indentWidth: 1,
     });
 
     await store.reload(ROOT);
@@ -327,6 +329,7 @@ describe("createExplorerStore (Task 3.3, Req 11.2)", () => {
         ignore: createIgnoreChecker(),
         showMessage: () => {},
         showHidden: false,
+        indentWidth: 1,
       });
 
       const firstReload = store.reload(ROOT); // starts first, blocks on releaseFirst
@@ -372,6 +375,81 @@ describe("createExplorerStore (Task 3.3, Req 11.2)", () => {
     test("getShowHidden reflects the constructed initial value", () => {
       const { store } = createStore({}, { showHidden: true });
       expect(store.getShowHidden()).toBe(true);
+    });
+  });
+
+  describe("indentWidth (Issue #121)", () => {
+    test("getIndentWidth reflects the constructed initial value with no override active", () => {
+      const { store } = createStore({}, { indentWidth: 3 });
+      expect(store.getIndentWidth()).toBe(3);
+    });
+
+    test("setIndentWidth updates the effective value and fires onDidChange", () => {
+      const { store } = createStore({}, { indentWidth: 1 });
+      let fired = false;
+      const sub = store.onDidChange(() => (fired = true));
+      store.setIndentWidth(4);
+      sub.dispose();
+      expect(store.getIndentWidth()).toBe(4);
+      expect(fired).toBe(true);
+    });
+
+    test("setIndentWidth clamps a negative value to 0 rather than rejecting it", () => {
+      const { store } = createStore({}, { indentWidth: 2 });
+      store.setIndentWidth(-5);
+      expect(store.getIndentWidth()).toBe(0);
+    });
+
+    test("stepIndentWidth nudges the effective value by delta without touching the filesystem (no readdir call)", async () => {
+      let readdirCalls = 0;
+      const store = createExplorerStore(ROOT, {
+        readdir: async (uri) => {
+          readdirCalls += 1;
+          return createFakeReaddir({ "a.ts": null })(uri);
+        },
+        ignore: createIgnoreChecker(),
+        showMessage: () => {},
+        showHidden: false,
+        indentWidth: 2,
+      });
+
+      const changed = waitForChange(store);
+      store.stepIndentWidth(1);
+      await changed;
+
+      expect(store.getIndentWidth()).toBe(3);
+      expect(readdirCalls).toBe(0);
+    });
+
+    test("stepIndentWidth stacks on top of the CURRENT effective value, not the config-driven base alone", () => {
+      const { store } = createStore({}, { indentWidth: 2 });
+      store.stepIndentWidth(1); // override -> 3
+      store.stepIndentWidth(1); // override -> 4, stacked on the prior override, not back to base (2) + 1
+      expect(store.getIndentWidth()).toBe(4);
+    });
+
+    test("stepIndentWidth clamps its result at the floor (0), never going negative", () => {
+      const { store } = createStore({}, { indentWidth: 1 });
+      store.stepIndentWidth(-10);
+      expect(store.getIndentWidth()).toBe(0);
+    });
+
+    test("setIndentWidth clears an active stepIndentWidth override, even when the new base value is unchanged", () => {
+      const { store } = createStore({}, { indentWidth: 2 });
+      store.stepIndentWidth(5); // override -> 7
+      expect(store.getIndentWidth()).toBe(7);
+
+      // A live config reload landing the exact same base value back must
+      // still clear the stale override — `ExplorerStore.setIndentWidth`'s
+      // own TSDoc: this setter fires unconditionally, with no same-value
+      // early return, precisely so this case cannot be skipped.
+      let fired = false;
+      const sub = store.onDidChange(() => (fired = true));
+      store.setIndentWidth(2);
+      sub.dispose();
+
+      expect(store.getIndentWidth()).toBe(2);
+      expect(fired).toBe(true);
     });
   });
 });

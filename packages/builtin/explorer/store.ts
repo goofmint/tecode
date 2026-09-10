@@ -83,6 +83,43 @@ export interface ExplorerStoreDeps {
    * `api.config.get` once up front and passes the result here; later
    * changes go through {@link ExplorerStore.setShowHidden}. */
   showHidden: boolean;
+  /** Issue #121's `explorer.indentWidth` initial value — `index.ts` reads
+   * `api.config.get` once up front and passes the result here (mirrors
+   * {@link showHidden}'s own precedent exactly); later config changes go
+   * through {@link ExplorerStore.setIndentWidth}, and a session-only
+   * keyboard-driven nudge goes through {@link ExplorerStore.stepIndentWidth}
+   * instead. */
+  indentWidth: number;
+}
+
+/** The absolute floor for {@link ExplorerStore.getIndentWidth}'s effective
+ * value (Issue #121) — `tecode.ui.Tree`'s own `indentWidth` prop multiplies
+ * this by a node's depth to build its indent string
+ * (`@tecode/core`'s `components.tsx`), so a negative value would throw
+ * building that string (`" ".repeat` rejects a negative count) and even `0`
+ * is a fully legitimate "no indent" choice, never one to reject. Mirrors
+ * `@tecode/core`'s `sidebarWidth.ts`'s `clampSidebarWidth` in shape — a
+ * pure, deterministic clamp shared by every entry point that can change the
+ * value — but stays LOCAL to this module (not its own file) since, unlike
+ * sidebar width, nothing outside `store.ts` needs to clamp an indent width. */
+const MIN_INDENT_WIDTH = 0;
+
+/**
+ * Clamp a desired `explorer.indentWidth` value (Issue #121; this module's
+ * `MIN_INDENT_WIDTH` TSDoc): floors at {@link MIN_INDENT_WIDTH}, with no
+ * ceiling (the manifest's own configuration schema deliberately declares no
+ * `maximum` either — an extremely wide value degrades the tree's usable
+ * width but never breaks rendering, `components.tsx`'s `TreeProps.
+ * indentWidth` TSDoc). Never throws: a non-finite `desired` (`NaN`/
+ * `Infinity` — a hand-edited `settings.json`, or arithmetic gone wrong in
+ * {@link createExplorerStore}'s `stepIndentWidth`) degrades to
+ * {@link MIN_INDENT_WIDTH} rather than propagating; a fractional value is
+ * truncated toward zero first — matches `clampSidebarWidth`'s identical
+ * defensiveness.
+ */
+function clampIndentWidth(desired: number): number {
+  const safeDesired = Number.isFinite(desired) ? Math.trunc(desired) : MIN_INDENT_WIDTH;
+  return Math.max(MIN_INDENT_WIDTH, safeDesired);
 }
 
 /** Render a caught `unknown` as a message string without risking a second
@@ -108,6 +145,39 @@ export interface ExplorerStore {
    * immediately — Task 3.3's "showHidden toggle reflects without
    * restart". */
   setShowHidden(value: boolean): void;
+  /** The EFFECTIVE `explorer.indentWidth` (Issue #121) — a session-only
+   * {@link stepIndentWidth} override when one is active, otherwise the
+   * config-driven value {@link setIndentWidth} last set. `ExplorerView.tsx`
+   * reads this on every render and forwards it straight to `tecode.ui.
+   * Tree`'s own `indentWidth` prop. */
+  getIndentWidth(): number;
+  /** Sets the CONFIG-DRIVEN `explorer.indentWidth` value (Issue #121) —
+   * `index.ts` calls this from its `api.config.onDidChange` subscription,
+   * mirroring {@link setShowHidden}'s own live-reload wiring exactly.
+   * Clamped via this module's `clampIndentWidth`. Clears any active
+   * {@link stepIndentWidth} override FIRST — a genuine settings change (or
+   * a live config reload landing the same value back) always wins over a
+   * stale keyboard-driven nudge from earlier in the session, never leaves
+   * it silently shadowing the new setting — THEN fires {@link onDidChange}
+   * unconditionally (unlike {@link setShowHidden}'s same-value early
+   * return): even when the clamped value happens to equal the current
+   * config-driven value already stored, an active override still needs
+   * clearing and reporting, so this setter cannot skip firing just because
+   * the base value alone looks unchanged. No `readdir`/reload — indent
+   * width is a purely visual render setting, unlike `showHidden`. */
+  setIndentWidth(value: number): void;
+  /** Nudges the SESSION-ONLY {@link stepIndentWidth} override by `delta`
+   * (Issue #121) — `index.ts`'s `explorer.increase/decreaseIndentWidth`
+   * commands call this with `+1`/`-1`. Adds `delta` to the CURRENT
+   * effective value ({@link getIndentWidth}, i.e. stacking on top of any
+   * prior override rather than the config-driven base alone), clamps the
+   * result via this module's `clampIndentWidth`, and stores it as the new
+   * override before firing {@link onDidChange} — deliberately NEVER written
+   * back to `settings.json` (this is the whole point of Issue #121's
+   * keybindings: a quick, disposable nudge, not a persisted preference
+   * change). No `readdir`/reload needed — same reasoning as
+   * {@link setIndentWidth}. */
+  stepIndentWidth(delta: number): void;
   getSelectedId(): Uri | undefined;
   setSelectedId(id: Uri | undefined): void;
   /** Every currently-expanded directory's uri, as plain strings (`tecode.
@@ -189,6 +259,13 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
 
   let showHidden = deps.showHidden;
   let selectedId: Uri | undefined;
+  // Issue #121: `indentWidth`'s config-driven base value (mirrors
+  // `showHidden` above), plus a session-only override (mirrors
+  // `selectedId` above's own "non-persistent, plain closure variable, no
+  // deps seed" shape) — see `ExplorerStore.getIndentWidth`'s TSDoc for how
+  // the two combine.
+  let indentWidth = deps.indentWidth;
+  let indentWidthOverride: number | undefined;
 
   if (rootUri) relativeDirByUri.set(rootUri, "");
 
@@ -363,6 +440,26 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
     fireChange();
   }
 
+  function getIndentWidth(): number {
+    return indentWidthOverride ?? indentWidth;
+  }
+
+  function setIndentWidth(value: number): void {
+    indentWidth = clampIndentWidth(value);
+    // A genuine settings change always wins over a stale keyboard-driven
+    // nudge (`ExplorerStore.setIndentWidth`'s own TSDoc) — cleared BEFORE
+    // firing, and unconditionally (no same-value early return): even when
+    // `indentWidth` itself lands back at its previous value, an active
+    // override still needs clearing and reporting.
+    indentWidthOverride = undefined;
+    fireChange();
+  }
+
+  function stepIndentWidth(delta: number): void {
+    indentWidthOverride = clampIndentWidth(getIndentWidth() + delta);
+    fireChange();
+  }
+
   function resolveTargetDirectory(): Uri | undefined {
     if (!rootUri) return undefined;
     if (selectedId && directoryUris.has(selectedId)) return selectedId;
@@ -377,6 +474,9 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
     getRootUri: () => rootUri,
     getShowHidden: () => showHidden,
     setShowHidden,
+    getIndentWidth,
+    setIndentWidth,
+    stepIndentWidth,
     getSelectedId: () => selectedId,
     setSelectedId,
     getExpandedIds: () => Array.from(expanded),

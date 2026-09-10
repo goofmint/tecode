@@ -52,6 +52,7 @@ function createStore(tree: FakeTree, rootUri: Uri | undefined) {
     ignore: createIgnoreChecker(),
     showMessage: () => {},
     showHidden: false,
+    indentWidth: 1,
   });
 }
 
@@ -112,6 +113,26 @@ describe("ExplorerView (Task 3.3, Req 11.2)", () => {
     expect(lastProps()?.["selectedId"]).toBe("file:///workspace/src");
     expect(lastProps()?.["expandedIds"]).toEqual(["file:///workspace/src"]);
     expect(lastProps()?.["focusContextKey"]).toBe(EXPLORER_FOCUS_CONTEXT_KEY);
+  });
+
+  test("passes the store's getIndentWidth() through to Tree, live (Issue #121)", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const { renderOnce } = await testRender(
+      <ExplorerView store={store} Tree={Tree} onOpenFile={() => {}} />,
+      { width: 30, height: 5 },
+    );
+    await renderOnce();
+    expect(lastProps()?.["indentWidth"]).toBe(store.getIndentWidth());
+
+    // Not threaded through `viewProps` (unlike `width`) — the store's own
+    // `onDidChange` -> `forceRender()` is what picks up a change, exactly
+    // like every other store-derived prop here (`selectedId`/
+    // `expandedIds`).
+    act(() => store.setIndentWidth(5));
+    await renderOnce();
+    expect(lastProps()?.["indentWidth"]).toBe(5);
   });
 
   test("onSelect from Tree updates the store's selection", async () => {

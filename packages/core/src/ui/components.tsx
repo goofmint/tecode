@@ -285,18 +285,34 @@ export interface TreeProps {
    * root `<box>`'s content width — e.g. the sidebar's content width net of
    * its own border, `shell.tsx`'s `Sidebar`), not just the label's own
    * budget: each row's per-label budget is computed in the render loop as
-   * `width - 2 * node.depth - 2` (the indent's `"  ".repeat(node.depth)`
-   * plus the 2-column glyph — both always exactly 2 columns per level, this
-   * module's TSDoc), and only `node.label` is ever passed through {@link
-   * truncateToWidth} — the indent and glyph are never truncated, since
-   * cutting either would destroy the very alignment this prop exists to
-   * protect. A budget of `0` or less (nesting deep enough that indent +
-   * glyph alone consume the whole row) truncates the label to `""`
-   * (`truncateToWidth`'s own `maxWidth <= 0` case) rather than wrapping or
-   * slicing a negative length — the row still renders (indent + glyph, no
-   * label), it just carries no visible name.
+   * `width - indentWidth * node.depth - 2` (the indent's `" ".repeat(indent
+   * * node.depth)` plus the 2-column glyph — the glyph is always exactly 2
+   * columns per level; the indent's own per-level width is {@link
+   * indentWidth}, this module's TSDoc), and only `node.label` is ever
+   * passed through {@link truncateToWidth} — the indent and glyph are never
+   * truncated, since cutting either would destroy the very alignment this
+   * prop exists to protect. A budget of `0` or less (nesting deep enough
+   * that indent + glyph alone consume the whole row) truncates the label to
+   * `""` (`truncateToWidth`'s own `maxWidth <= 0` case) rather than
+   * wrapping or slicing a negative length — the row still renders (indent +
+   * glyph, no label), it just carries no visible name.
    */
   width?: number;
+  /**
+   * Terminal columns each depth level indents a row by (Issue #121: the
+   * explorer's own `explorer.indentWidth` setting/commands drive this
+   * caller-side; `tecode.ui.Tree` itself stays a dumb renderer with no
+   * config/store dependency of its own). Multiplies `node.depth` to build
+   * each row's indent string (the render loop's own `" ".repeat(indent *
+   * node.depth)`) and folds into {@link width}'s own truncation-budget
+   * formula the exact same way (`indentWidth * node.depth + 2` — the
+   * trailing `+ 2` is the glyph, unaffected by this prop). Optional;
+   * omitted (the default) falls back to `2` — the exact fixed value every
+   * caller rendered at before this prop existed, so leaving it unset
+   * renders byte-for-byte identically to pre-#121 behavior (including
+   * `components.snapshot.test.tsx`'s existing width/indent assertions).
+   */
+  indentWidth?: number;
 }
 
 /** One node of {@link Tree}'s CURRENTLY VISIBLE (i.e. every ancestor is
@@ -468,13 +484,20 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
         // (TreeProps.width's own TSDoc) — `props.width` absent keeps the
         // pre-#104 behavior of handing the whole row string to `<text>`
         // unbounded, wrapping exactly as before.
-        // The prefix the label is drawn after: `"  ".repeat(depth)` plus the
-        // 2-column glyph. Subtracted from the row width for the budget AND
-        // passed as the label's start column, so a tab inside a label
-        // advances to the stop it will really land on rather than one
-        // measured from column 0 (which would over-measure it and truncate
-        // a label that fits).
-        const prefixWidth = 2 * node.depth + 2;
+        // Issue #121: `indent` generalizes the previously-fixed 2-column
+        // indent step to `props.indentWidth`, falling back to `2` when
+        // unset (TreeProps.indentWidth's own TSDoc) — preserves every
+        // pre-#121 caller's rendering exactly.
+        // The prefix the label is drawn after: `" ".repeat(indent *
+        // depth)` plus the 2-column glyph. Subtracted from the row width
+        // for the budget AND passed as the label's start column, so a tab
+        // inside a label advances to the stop it will really land on
+        // rather than one measured from column 0 (which would over-measure
+        // it and truncate a label that fits) — both MUST use the same
+        // `prefixWidth`, or the truncation point drifts from the indent
+        // actually drawn (Issue #104's regression).
+        const indent = props.indentWidth ?? 2;
+        const prefixWidth = indent * node.depth + 2;
         const label =
           props.width !== undefined
             ? truncateToWidth(node.label, props.width - prefixWidth, "…", undefined, prefixWidth)
@@ -492,7 +515,7 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
               props.onSelect?.(node.id);
             }}
           >
-            {"  ".repeat(node.depth) + glyph + label}
+            {" ".repeat(indent * node.depth) + glyph + label}
           </text>
         );
       })}

@@ -235,6 +235,107 @@ describe("Tree (tecode.ui.Tree)", () => {
     });
   });
 
+  describe("indentWidth (Issue #121): the per-level indent step is configurable", () => {
+    test("indentWidth omitted renders the original fixed 2-column indent per depth level (no regression)", async () => {
+      const nodes: TreeNode[] = [
+        { id: "root", label: "src", hasChildren: true, children: [{ id: "child", label: "a.ts" }] },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(
+        <Tree nodes={nodes} expandedIds={["root"]} />,
+        { width: 30, height: 6 },
+      );
+      await renderOnce();
+      const lines = captureCharFrame().split("\n");
+      // depth 1 * the default indentWidth (2) = a 2-column indent, plus the
+      // leaf's own 2-column blank glyph ("  ") = 4 blank columns before the
+      // label — unchanged from before this prop existed.
+      expect(lines[1]!.startsWith("    a.ts")).toBe(true);
+    });
+
+    test("indentWidth: 0 collapses the per-level indent to nothing without breaking the row", async () => {
+      const nodes: TreeNode[] = [
+        { id: "root", label: "src", hasChildren: true, children: [{ id: "child", label: "a.ts" }] },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(
+        <Tree nodes={nodes} expandedIds={["root"]} indentWidth={0} />,
+        { width: 30, height: 6 },
+      );
+      await renderOnce();
+      const lines = captureCharFrame().split("\n");
+      // No indent at all — the child's row starts directly with its own
+      // (leaf) glyph "  " then the label, exactly like an un-nested
+      // top-level node would.
+      expect(lines[1]!.startsWith("  a.ts")).toBe(true);
+    });
+
+    test("indentWidth changes the label's truncation budget by the exact same prefixWidth used for the drawn indent (Issue #104 regression guard)", async () => {
+      const nodes: TreeNode[] = [
+        {
+          id: "root",
+          label: "r",
+          hasChildren: true,
+          children: [
+            {
+              id: "mid",
+              label: "m",
+              hasChildren: true,
+              children: [{ id: "leaf", label: "a-long-enough-label-to-overflow.ts" }],
+            },
+          ],
+        },
+      ];
+
+      // depth 2, indentWidth 3 -> prefixWidth = 3 * 2 + 2 = 8.
+      async function renderLeafRow(width: number): Promise<string> {
+        const { renderOnce, captureCharFrame } = await testRender(
+          <Tree nodes={nodes} expandedIds={["root", "mid"]} indentWidth={3} width={width} />,
+          { width: 20, height: 6 },
+        );
+        await renderOnce();
+        return captureCharFrame().split("\n")[2]!; // row 2: root(0), mid(1), leaf(2)
+      }
+
+      // A row width exactly equal to prefixWidth (8) leaves a ZERO label
+      // budget: `truncateToWidth` returns "" (its own documented `maxWidth
+      // <= 0` case) — no label content, no ellipsis, just the 8-column
+      // indent+glyph prefix.
+      const atPrefix = await renderLeafRow(8);
+      expect(atPrefix.slice(0, 8)).toBe("        ");
+      expect(atPrefix).not.toContain("…");
+
+      // One column more (9) gives the label budget exactly 1 — just enough
+      // room for a bare ellipsis (`truncateToWidth`'s own documented
+      // "maxWidth exactly cellWidth(ellipsis)" case). This transition
+      // happening at EXACTLY prefixWidth/prefixWidth+1 proves the budget
+      // really is `width - prefixWidth`, computed from the SAME
+      // indentWidth (3) and depth (2) that drew the 8-column indent+glyph
+      // prefix above — not two independently-derived numbers that could
+      // drift apart (Issue #104's original regression).
+      const atPrefixPlusOne = await renderLeafRow(9);
+      expect(atPrefixPlusOne.slice(0, 8)).toBe("        ");
+      expect(atPrefixPlusOne[8]).toBe("…");
+    });
+
+    test("an extremely large indentWidth does not crash the render", async () => {
+      const nodes: TreeNode[] = [
+        { id: "root", label: "src", hasChildren: true, children: [{ id: "child", label: "a.ts" }] },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(
+        <Tree nodes={nodes} expandedIds={["root"]} indentWidth={100_000} width={20} />,
+        { width: 20, height: 6 },
+      );
+      await renderOnce();
+      // depth 1 * indentWidth 100,000 alone dwarfs the 20-column width
+      // budget — the label's own budget is deeply negative, so
+      // `truncateToWidth` returns "" (TreeProps.width's own TSDoc) rather
+      // than throwing or slicing a negative-length string. Reaching this
+      // assertion at all (no thrown RangeError out of `" ".repeat`) is
+      // this test's main point.
+      const lines = captureCharFrame().split("\n");
+      expect(lines[1]).not.toContain("…");
+    });
+  });
+
   describe("keyboard nav while focused (Task 3.3, Req 11.2)", () => {
     const NODES: TreeNode[] = [
       {
