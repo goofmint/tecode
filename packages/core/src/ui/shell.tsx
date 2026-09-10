@@ -76,7 +76,12 @@ import { clampPanelHeight } from "./panelHeight";
 import { clampSidebarWidth } from "./sidebarWidth";
 import type { SidebarPair, SlotRegistry, SlotViewEntry } from "./slotRegistry";
 import { toColorInput, useTheme } from "./theme";
-import { computeEditorViewportHeight, type EditorAreaChrome } from "./viewport";
+import {
+  computeEditorViewportHeight,
+  computeSidebarViewportHeight,
+  type EditorAreaChrome,
+  type SidebarChrome,
+} from "./viewport";
 
 /* ------------------------------------------------------------------ */
 /* Shared reactive-subscription hooks                                  */
@@ -328,6 +333,19 @@ export interface SidebarProps {
    * `workbench.sidebarWidth`'s `settings.json`. Same raw-width contract as
    * {@link onWidthDrag}. */
   onWidthDragEnd?: (desiredWidth: number) => void;
+  /** Whether `Shell`'s bottom `Panel` is currently visible, and its height
+   * when it is (`layoutState.ts`'s `LayoutState.panelVisible`/
+   * `panelHeight`) — Issue #125, mirroring `EditorAreaProps.panelVisible`/
+   * `panelHeight`'s own TSDoc verbatim: `Panel` is `Sidebar`'s SIBLING at
+   * the `Shell` level (design.md §8.1's component tree), not a descendant,
+   * but both sit in the same flex column above `StatusBar`, so `Panel`'s
+   * height still eats into the sidebar's own effective content height the
+   * same way it already does for `EditorArea`. Omitted (a caller/test that
+   * constructs `Sidebar` directly, without `Shell`): treated as "no
+   * panel", matching every other optional-dependency fallback in this
+   * module. */
+  panelVisible?: boolean;
+  panelHeight?: number;
 }
 
 /** Columns `Sidebar`'s own `border={["right"]}` occupies (Issue #104 Phase
@@ -339,6 +357,15 @@ export interface SidebarProps {
  * `PANEL_BORDER_HEIGHT`'s own "always drawn while visible, so always
  * reserved" framing, for the horizontal axis instead of the vertical one. */
 const SIDEBAR_BORDER_WIDTH = 1;
+
+/** Rows `Sidebar`'s own title row (`{view?.title ? <text>...` below)
+ * occupies once the active `sidebar.view` entry carries a `title` (Issue
+ * #125) — same "always drawn while its condition holds, so always reserved
+ * when it does" framing this module's `TAB_BAR_HEIGHT`/`STATUS_BAR_HEIGHT`
+ * constants use (defined further down, in the `EditorArea`/`StatusBar`
+ * sections) for their own chrome: a single, unbordered `<text>` row, so
+ * exactly `1`. */
+const SIDEBAR_TITLE_HEIGHT = 1;
 
 /** The sidebar (Req 6.1, 6.2, 6.4): renders the `sidebar.view` paired with
  * `activeView`, requesting lazy activation if it has no component yet
@@ -382,7 +409,27 @@ const SIDEBAR_BORDER_WIDTH = 1;
  * anything. `onMouseDragEnd` is the COMMIT signal
  * (`sidebarWidthSettingsWriter.ts`'s "debounced, commit-only" contract) —
  * `Shell`'s own `onWidthDragEnd` handler both applies the final clamped
- * width AND persists it, unlike every intermediate `onWidthDrag` tick. */
+ * width AND persists it, unlike every intermediate `onWidthDrag` tick.
+ *
+ * **`viewProps.height` (Issue #125)**: same `RegisteredView`-`viewProps`
+ * mechanism as `width` above, extended to the vertical axis —
+ * `useLiveTerminalDimensions()?.height` (the same live-resize subscription
+ * `EditorArea` already uses below) feeds `computeSidebarViewportHeight`
+ * (`viewport.ts`) alongside a `SidebarChrome` built from the EXACT same
+ * conditions this render's JSX uses to decide whether to draw that chrome —
+ * the title row's `view?.title` check and the panel's `props.panelVisible`
+ * check are read from the identical expressions the JSX below branches on,
+ * so the two can never drift out of sync by so much as one row (the same
+ * discipline `EditorAreaChrome`'s own TSDoc documents for `EditorArea`).
+ * The explorer's `tecode.ui.Tree` reads this as its own `height` prop
+ * (`components.tsx`'s `TreeProps.height` TSDoc) to virtualize its rows and
+ * scroll-follow the selection instead of overflowing past the sidebar's
+ * real content height (Issue #125's root cause). No live terminal
+ * (`useLiveTerminalDimensions()` returns `undefined`, e.g. a caller/test
+ * that constructs `Sidebar` outside a real/headless `CliRenderer`): `height`
+ * is left out of `viewProps` entirely, and `Tree` falls back to its own
+ * unvirtualized "render every node" behavior — unchanged from before this
+ * prop existed. */
 export function Sidebar(props: SidebarProps): ReactNode {
   const theme = useTheme();
   const pairs = useSidebarPairs(props.slotRegistry);
@@ -392,6 +439,10 @@ export function Sidebar(props: SidebarProps): ReactNode {
   // it is read/written only from mouse-event callbacks, never rendered, so
   // there is nothing for a re-render to reflect.
   const draggingBorderRef = useRef(false);
+  // Issue #125 — see this component's own TSDoc's "viewProps.height".
+  // Called unconditionally, before the `!props.visible` early return below,
+  // matching every other hook call in this component (Rules of Hooks).
+  const terminalHeight = useLiveTerminalDimensions()?.height;
 
   if (!props.visible) return null;
 
@@ -407,7 +458,21 @@ export function Sidebar(props: SidebarProps): ReactNode {
   }
 
   const contentWidth = Math.max(0, props.width - SIDEBAR_BORDER_WIDTH);
-  const viewProps = { width: contentWidth };
+  // Issue #125 — see this component's own TSDoc's "viewProps.height": every
+  // field below is read from the SAME condition the JSX further down uses
+  // to decide whether to draw that piece of chrome this render, so this can
+  // never silently drift out of sync with what actually gets drawn.
+  const sidebarChrome: SidebarChrome = {
+    titleRow: view?.title ? SIDEBAR_TITLE_HEIGHT : 0,
+    panel: props.panelVisible ? (props.panelHeight ?? 0) : 0,
+    statusBar: STATUS_BAR_HEIGHT,
+  };
+  const contentHeight =
+    terminalHeight !== undefined ? computeSidebarViewportHeight(terminalHeight, sidebarChrome) : undefined;
+  const viewProps =
+    contentHeight !== undefined
+      ? { width: contentWidth, height: contentHeight }
+      : { width: contentWidth };
 
   // This component's own TSDoc's "Drag-resizing the right border" — the
   // border column this render draws on, and the raw-width formula every
@@ -1359,6 +1424,8 @@ export function Shell(props: ShellProps): ReactNode {
           activeView={layout.activeView}
           onWidthDrag={handleSidebarWidthDrag}
           onWidthDragEnd={handleSidebarWidthDragEnd}
+          panelVisible={layout.panelVisible}
+          panelHeight={layout.panelHeight}
         />
         <EditorArea
           tabs={editorTabs}

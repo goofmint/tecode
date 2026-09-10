@@ -48,6 +48,11 @@ type TreeComponentProps = Record<string, unknown> & {
    * straight through from {@link ExplorerViewProps.width} — see that
    * field's own TSDoc. */
   width?: number;
+  /** `tecode.ui.Tree`'s own viewport height (Issue #125), forwarded
+   * straight through from {@link ExplorerViewProps.height} — see that
+   * field's own TSDoc; the same "duck-typed, never imported" precedent as
+   * `width` above. */
+  height?: number;
   /** `tecode.ui.Tree`'s own per-level indent step (Issue #121), read fresh
    * from `store.getIndentWidth()` on every render — see the `width` field
    * above's own precedent for why this is duck-typed rather than imported
@@ -84,6 +89,23 @@ export interface ExplorerViewProps {
    * this file's own tests' fake `Tree`).
    */
   width?: number;
+  /**
+   * The sidebar's real content height in terminal rows (Issue #125),
+   * forwarded straight through to `tecode.ui.Tree`'s own `height` prop
+   * (`@tecode/core`'s `components.tsx`'s `TreeProps.height` TSDoc) so a
+   * tree taller than the sidebar virtualizes and scroll-follows the
+   * selection instead of overflowing past it. Optional, and — like `width`
+   * above — OFF by default: `index.ts` registers this view with no fixed
+   * value (the sidebar's content height isn't known until render time), so
+   * `shell.tsx`'s `Sidebar` supplies it per render via `RegisteredView`'s
+   * `viewProps` (`createExplorerViewComponent`'s own TSDoc below explains
+   * how that reaches this closed-over component at all — the exact same
+   * path `width` already uses). `undefined` is passed through to `Tree`
+   * as-is, preserving today's unvirtualized rendering for any render this
+   * component is mounted without a `Sidebar` above it (e.g. this file's own
+   * tests' fake `Tree`).
+   */
+  height?: number;
 }
 
 /** `explorerFocus` (Req 4.6, 11.2) — `tecode.ui.Tree`'s own
@@ -129,6 +151,7 @@ export function ExplorerView(props: ExplorerViewProps): ReactNode {
       expandedIds={store.getExpandedIds()}
       focusContextKey={EXPLORER_FOCUS_CONTEXT_KEY}
       width={props.width}
+      height={props.height}
       // Issue #121: read fresh from the store on every render — NOT
       // threaded through `viewProps` the way `width` is (that field's own
       // TSDoc's "Issue #104 Phase 3" paragraph): `indentWidth` changes via
@@ -157,27 +180,29 @@ export function ExplorerView(props: ExplorerViewProps): ReactNode {
  * of whatever the caller (`shell.tsx`'s `Sidebar`, which passes none for a
  * `sidebar.view`) hands it as its own component props.
  *
- * **The one exception — `width` (Issue #104 Phase 3)**: `store`/`Tree`/
- * `onOpenFile` are all fixed at `activate(ctx)` time, long before the
- * sidebar's real width is known, so they stay closed-over exactly as
- * above. The sidebar's content width, by contrast, is only known at RENDER
- * time (`layout.sidebarWidth`, reactive React state) and changes over the
- * component's lifetime — `Sidebar` hands it down fresh on every render via
- * `RegisteredView`'s `viewProps` (`shell.tsx`'s `Sidebar` TSDoc), the same
- * mechanism `ActivityBar`'s `viewProps={{ active }}` and `Panel`'s
- * `viewProps={{ height, width }}` already use. The returned component
- * therefore does read its OWN `rawProps` for this one field — pulling
- * `width` out and passing it alongside the closed-over `props` — rather
- * than ignoring every render-time prop across the board.
+ * **The one exception — `width`/`height` (Issue #104 Phase 3, Issue
+ * #125)**: `store`/`Tree`/`onOpenFile` are all fixed at `activate(ctx)`
+ * time, long before the sidebar's real width/height are known, so they
+ * stay closed-over exactly as above. The sidebar's content width/height, by
+ * contrast, are only known at RENDER time (`layout.sidebarWidth`, reactive
+ * React state, plus the live terminal height — `shell.tsx`'s `Sidebar`
+ * TSDoc's "viewProps.height") and change over the component's lifetime —
+ * `Sidebar` hands both down fresh on every render via `RegisteredView`'s
+ * `viewProps`, the same mechanism `ActivityBar`'s `viewProps={{ active }}`
+ * and `Panel`'s `viewProps={{ height, width }}` already use. The returned
+ * component therefore does read its OWN `rawProps` for these two fields —
+ * pulling `width`/`height` out and passing them alongside the closed-over
+ * `props` — rather than ignoring every render-time prop across the board.
  */
 export function createExplorerViewComponent(props: ExplorerViewProps): ComponentType {
   return (rawProps: Record<string, unknown>) => {
-    // `?? props.width`, not a bare `width={width}`: the spread above already
-    // carries a registration-time `width` if the caller supplied one, and
-    // overwriting it with `undefined` on every render where `rawProps` has
-    // none would silently discard it. A real render-time width still wins —
-    // it is the live one.
+    // `?? props.width`/`?? props.height`, not a bare `width={width}`: the
+    // spread above already carries a registration-time value if the caller
+    // supplied one, and overwriting it with `undefined` on every render
+    // where `rawProps` has none would silently discard it. A real
+    // render-time value still wins — it is the live one.
     const width = typeof rawProps["width"] === "number" ? rawProps["width"] : undefined;
-    return <ExplorerView {...props} width={width ?? props.width} />;
+    const height = typeof rawProps["height"] === "number" ? rawProps["height"] : undefined;
+    return <ExplorerView {...props} width={width ?? props.width} height={height ?? props.height} />;
   };
 }
