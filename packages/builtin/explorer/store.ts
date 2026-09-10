@@ -263,8 +263,14 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
   // `showHidden` above), plus a session-only override (mirrors
   // `selectedId` above's own "non-persistent, plain closure variable, no
   // deps seed" shape) — see `ExplorerStore.getIndentWidth`'s TSDoc for how
-  // the two combine.
-  let indentWidth = deps.indentWidth;
+  // the two combine. Run through `clampIndentWidth` here too (CodeRabbit
+  // follow-up), not just in `setIndentWidth`/`stepIndentWidth` below:
+  // `deps.indentWidth` comes straight from `index.ts`'s `api.config.get`
+  // read of `explorer.indentWidth`, whose manifest schema (`manifest.ts`)
+  // deliberately has no `minimum`, so a hand-edited `settings.json` (e.g.
+  // `-1`) would otherwise reach `getIndentWidth()` unclamped and, from
+  // there, `Tree`'s `" ".repeat(indentWidth * node.depth)`.
+  let indentWidth = clampIndentWidth(deps.indentWidth);
   let indentWidthOverride: number | undefined;
 
   if (rootUri) relativeDirByUri.set(rootUri, "");

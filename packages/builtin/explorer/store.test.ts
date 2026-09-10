@@ -451,5 +451,10 @@ describe("createExplorerStore (Task 3.3, Req 11.2)", () => {
       expect(store.getIndentWidth()).toBe(2);
       expect(fired).toBe(true);
     });
+
+    test("a negative constructed initial value is clamped to 0, not returned as-is (CodeRabbit follow-up: manifest.ts's schema has no minimum, so a hand-edited settings.json can hand this in)", () => {
+      const { store } = createStore({}, { indentWidth: -1 });
+      expect(store.getIndentWidth()).toBe(0);
+    });
   });
 });

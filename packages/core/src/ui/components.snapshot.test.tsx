@@ -334,6 +334,89 @@ describe("Tree (tecode.ui.Tree)", () => {
       const lines = captureCharFrame().split("\n");
       expect(lines[1]).not.toContain("…");
     });
+
+    test("a negative indentWidth does not throw building \" \".repeat() (CodeRabbit follow-up: ExplorerStore clamps its own config value, but nothing clamped a direct Tree caller before this)", async () => {
+      const nodes: TreeNode[] = [
+        { id: "root", label: "src", hasChildren: true, children: [{ id: "child", label: "a.ts" }] },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(
+        <Tree nodes={nodes} expandedIds={["root"]} indentWidth={-5} />,
+        { width: 30, height: 6 },
+      );
+      await renderOnce();
+      // Negative normalizes to 0 (same floor as ExplorerStore's own
+      // `clampIndentWidth`) — the child's row starts directly with its own
+      // leaf glyph "  " then the label, exactly like `indentWidth: 0`.
+      const lines = captureCharFrame().split("\n");
+      expect(lines[1]!.startsWith("  a.ts")).toBe(true);
+    });
+
+    test("Infinity does not throw building \" \".repeat() at depth 1", async () => {
+      const nodes: TreeNode[] = [
+        { id: "root", label: "src", hasChildren: true, children: [{ id: "child", label: "a.ts" }] },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(
+        <Tree nodes={nodes} expandedIds={["root"]} indentWidth={Infinity} />,
+        { width: 30, height: 6 },
+      );
+      await renderOnce();
+      // Non-finite normalizes to 0, same as a negative value above.
+      const lines = captureCharFrame().split("\n");
+      expect(lines[1]!.startsWith("  a.ts")).toBe(true);
+    });
+
+    test("a fractional indentWidth derives the drawn indent and the label's truncation budget from the SAME truncated-toward-zero value", async () => {
+      const nodes: TreeNode[] = [
+        {
+          id: "root",
+          label: "r",
+          hasChildren: true,
+          children: [{ id: "leaf", label: "a-long-enough-label-to-overflow.ts" }],
+        },
+      ];
+
+      // depth 1, indentWidth 3.9 -> truncated to 3 -> prefixWidth = 3*1+2 = 5,
+      // matching the same "at prefixWidth leaves a zero label budget, one
+      // more gives exactly a bare ellipsis" probe the integer indentWidth
+      // test above uses (Issue #104 regression guard) — if `" ".repeat()`
+      // and `prefixWidth` derived from two independently-truncated values
+      // instead of one shared normalized value, this pair of assertions
+      // would drift apart rather than landing exactly at 5/6.
+      async function renderLeafRow(width: number): Promise<string> {
+        const { renderOnce, captureCharFrame } = await testRender(
+          <Tree nodes={nodes} expandedIds={["root"]} indentWidth={3.9} width={width} />,
+          { width: 20, height: 6 },
+        );
+        await renderOnce();
+        return captureCharFrame().split("\n")[1]!;
+      }
+
+      const atPrefix = await renderLeafRow(5);
+      expect(atPrefix.slice(0, 5)).toBe("     ");
+      expect(atPrefix).not.toContain("…");
+
+      const atPrefixPlusOne = await renderLeafRow(6);
+      expect(atPrefixPlusOne.slice(0, 5)).toBe("     ");
+      expect(atPrefixPlusOne[5]).toBe("…");
+    });
+
+    test("a value past the render-safe ceiling does not throw Invalid string length", async () => {
+      const nodes: TreeNode[] = [
+        { id: "root", label: "src", hasChildren: true, children: [{ id: "child", label: "a.ts" }] },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(
+        <Tree nodes={nodes} expandedIds={["root"]} indentWidth={Number.MAX_SAFE_INTEGER} width={20} />,
+        { width: 20, height: 6 },
+      );
+      await renderOnce();
+      // Clamped to the ceiling rather than passed through as-is — depth 1 *
+      // the clamped ceiling still dwarfs the 20-column width budget, so the
+      // label's own budget is deeply negative and `truncateToWidth` returns
+      // "" (same reasoning as the pre-existing `100_000` case above).
+      // Reaching this assertion at all (no thrown RangeError) is the point.
+      const lines = captureCharFrame().split("\n");
+      expect(lines[1]).not.toContain("…");
+    });
   });
 
   describe("keyboard nav while focused (Task 3.3, Req 11.2)", () => {
