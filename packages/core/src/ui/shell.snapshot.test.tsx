@@ -787,6 +787,73 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     expect(captureCharFrame()).not.toContain("FIRST_FILE_CONTENT");
   });
 
+  test("a right-click on a tab's column does not switch tabs (CodeRabbit, PR #140)", async () => {
+    // Same wiring the keyboard test above proves (`Tabs`' `<tab-select>` ->
+    // `EditorArea`'s `onSelectTab` -> `Shell`'s `onSelectEditorTab`), but
+    // driven through `components.tsx`'s `onMouseDown` hit-test instead of
+    // `moveRight`/`selectCurrent` — a real `@opentui/core` `MouseEvent`
+    // dispatched straight at the rendered `TabSelectRenderable`, matching
+    // `shell.sidebarResize.test.tsx`'s `processMouseEvent` idiom (see that
+    // file's TSDoc for why: it exercises this module's own handler wiring
+    // without re-proving OpenTUI's ANSI-parsing/hit-testing pipeline).
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs({
+        "/workspace/a.ts": "FIRST_FILE_CONTENT",
+        "/workspace/b.ts": "SECOND_FILE_CONTENT",
+      }),
+    });
+
+    const { renderOnce, renderer, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => {
+      await documents.openDocument(pathToUri("/workspace/a.ts"));
+      await documents.openDocument(pathToUri("/workspace/b.ts"));
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(captureCharFrame()).toContain("FIRST_FILE_CONTENT");
+
+    const tabSelect = findTabSelect(renderer.root);
+    expect(tabSelect).toBeDefined();
+    // One column into the second tab's span — `tabSelect.x` is the strip's
+    // own absolute left edge (`components.tsx`'s `onMouseDown` TSDoc), so
+    // `+ TAB_WIDTH` lands on the second tab's first column and `+ 1` keeps
+    // it comfortably clear of that boundary.
+    const secondTabColumn = tabSelect!.x + TAB_WIDTH + 1;
+    act(() => {
+      tabSelect!.processMouseEvent(
+        new OpenTuiMouseEvent(tabSelect!, {
+          type: "down",
+          // Secondary button: `@opentui/core` delivers a `down` for every
+          // button to whichever renderable the pointer hit, so the handler
+          // has to filter rather than assume it only ever sees clicks.
+          button: 2,
+          x: secondTabColumn,
+          y: 0,
+          modifiers: { shift: false, alt: false, ctrl: false },
+        }),
+      );
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(captureCharFrame()).toContain("FIRST_FILE_CONTENT");
+    expect(captureCharFrame()).not.toContain("SECOND_FILE_CONTENT");
+  });
+
   test("clicking past the last tab's column leaves the active document unchanged (Issue #138)", async () => {
     // The out-of-range half of `components.tsx`'s `onMouseDown` hit-test:
     // an `index` that resolves past `tabs.length` must be a no-op, not

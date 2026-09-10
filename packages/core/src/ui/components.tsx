@@ -878,6 +878,11 @@ export function Tabs(rawProps: Record<string, unknown>): ReactNode {
         if (option && typeof option.value === "string") props.onSelect?.(option.value);
       }}
       onMouseDown={(event: OpenTuiMouseEvent) => {
+        // Primary button only (CodeRabbit, PR #140): the vendored
+        // `@opentui/core@0.1.107` delivers a `down` for EVERY button to
+        // whichever renderable the pointer hit, so without this guard a
+        // right- or middle-click anywhere on the strip switched tabs.
+        if (event.button !== 0) return;
         // `MouseEvent.x` is a GLOBAL terminal column, not one relative to
         // this renderable (`shell.tsx`'s `Sidebar` TSDoc documents the
         // same fact for its own border-drag, verified there against the
