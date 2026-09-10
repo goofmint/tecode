@@ -62,11 +62,22 @@ import {
   EXPLORER_DELETE_COMMAND_ID,
   EXPLORER_FOCUS_COMMAND_ID,
   EXPLORER_NEW_FILE_COMMAND_ID,
+  EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID,
   EXPLORER_NEW_FOLDER_COMMAND_ID,
   EXPLORER_RENAME_COMMAND_ID,
   EXPLORER_SHOW_HIDDEN_CONFIG_KEY,
   EXPLORER_VIEW_ID,
 } from "./manifest";
+
+/** `@tecode/core`'s `ui/openFileCommand.ts`'s own `OPEN_FILE_COMMAND_ID`
+ * (`"workbench.action.files.openUri"`) — `packages/builtin` may never
+ * import `@tecode/core` (this suite's own house convention, `createFakeApi`'s
+ * TSDoc), so this is a hand-kept duplicate, matching `index.ts`'s own
+ * `OPEN_FILE_COMMAND_ID` duplicate and this file's existing
+ * `` `workbench.view.${EXPLORER_VIEW_ID}` `` precedent below (Issue #120:
+ * `explorer.newFile`/`newFileFromEditor` deferred-create tests need to spy
+ * on this command instead of asserting a real `fs.write`). */
+const OPEN_FILE_COMMAND_ID = "workbench.action.files.openUri";
 
 function uriToPath(uri: Uri): string {
   return fileURLToPath(uri);
@@ -380,21 +391,23 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
   });
 
   describe("explorer.newFile", () => {
-    test("creates an empty file at the workspace root and surfaces no error", async () => {
+    test("Issue #120: does NOT create a file on disk, and opens the target uri as a (deferred, empty) buffer instead", async () => {
       dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
       const fixture = createFixture(pathToUri(dir));
       fixture.setNextInputValue("new-file.ts");
 
-      await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
-      await waitFor(() => {
-        try {
-          statSync(join(dir!, "new-file.ts"));
-          return true;
-        } catch {
-          return false;
-        }
+      const openedUris: unknown[] = [];
+      fixture.api.commands.register(OPEN_FILE_COMMAND_ID, (...args) => {
+        openedUris.push(args[0]);
       });
 
+      await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
+
+      // No `fs.write` ever happened — creation is deferred to first save
+      // (Issue #88's empty-non-dirty-buffer mechanism + `DocumentManager.
+      // save`'s temp-write/rename, both already in place).
+      expect(await nodeReaddir(dir)).toEqual([]);
+      expect(openedUris).toEqual([pathToUri(join(dir, "new-file.ts"))]);
       expect(fixture.getMessages().filter((m) => m.kind === "error")).toEqual([]);
       fixture.dispose();
     });
@@ -437,21 +450,6 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
       fixture.dispose();
     });
 
-    test("a write failure (nonexistent target directory) surfaces via showMessage error", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      // rootUri points somewhere that does not exist on disk at all —
-      // `resolveTargetDirectory()` still resolves to it (nothing
-      // selected), so the real `fs.write` call itself fails.
-      const missingRoot = pathToUri(join(dir, "does-not-exist"));
-      const fixture = createFixture(missingRoot);
-      fixture.setNextInputValue("file.ts");
-
-      await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
-
-      expect(fixture.getMessages().some((m) => m.kind === "error")).toBe(true);
-      fixture.dispose();
-    });
-
     test("no folder open (rootUri undefined) shows an info message instead of crashing", async () => {
       const fixture = createFixture(undefined);
       fixture.setNextInputValue("file.ts");
@@ -483,12 +481,48 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
       // `joinChildUri` call site guards against.
       fixture.setNextInputValue("..");
 
+      const openedUris: unknown[] = [];
+      fixture.api.commands.register(OPEN_FILE_COMMAND_ID, (...args) => {
+        openedUris.push(args[0]);
+      });
+
       await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
 
       expect(fixture.getMessages().some((m) => m.kind === "error")).toBe(true);
-      // Nothing was created — in particular, no `fs.write` call ever
-      // reached the (would-be escaped) parent directory.
+      // Nothing was created, and the escaped path was never even opened —
+      // in particular, `OPEN_FILE_COMMAND_ID` was never reached for it.
       expect(await nodeReaddir(dir)).toEqual([]);
+      expect(openedUris).toEqual([]);
+      fixture.dispose();
+    });
+  });
+
+  describe("explorer.newFileFromEditor (Issue #120)", () => {
+    test("shares the same deferred-create behavior as explorer.newFile: no disk write, opens the target uri", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      const fixture = createFixture(pathToUri(dir));
+      fixture.setNextInputValue("from-editor.ts");
+
+      const openedUris: unknown[] = [];
+      fixture.api.commands.register(OPEN_FILE_COMMAND_ID, (...args) => {
+        openedUris.push(args[0]);
+      });
+
+      await fixture.api.commands.execute(EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID);
+
+      expect(await nodeReaddir(dir)).toEqual([]);
+      expect(openedUris).toEqual([pathToUri(join(dir, "from-editor.ts"))]);
+      expect(fixture.getMessages().filter((m) => m.kind === "error")).toEqual([]);
+      fixture.dispose();
+    });
+
+    test("no folder open (rootUri undefined) shows an info message instead of crashing", async () => {
+      const fixture = createFixture(undefined);
+      fixture.setNextInputValue("file.ts");
+
+      await fixture.api.commands.execute(EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID);
+
+      expect(fixture.getMessages().some((m) => m.kind === "info")).toBe(true);
       fixture.dispose();
     });
   });

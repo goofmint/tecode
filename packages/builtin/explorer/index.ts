@@ -3,11 +3,11 @@
  * design.md §13's `explorer` design). Builds one {@link ExplorerStore} per
  * activation (`./store.ts`), registers `ExplorerView` into `"sidebar.view"`
  * (`./ExplorerView.tsx`), subscribes `workspace.fs.watch` to keep the tree
- * live, and implements the five commands `manifest.ts` declares
- * (`focus`/`newFile`/`newFolder`/`rename`/`delete`) over `showInputBox`/
- * `showQuickPick`. Only imports `@tecode/api` plus this package's own
- * local `./store`/`./ExplorerView`/`../shared` files (the ESLint layering
- * rule) — every read/write goes through `ctx.api`.
+ * live, and implements the six commands `manifest.ts` declares
+ * (`focus`/`newFile`/`newFileFromEditor`/`newFolder`/`rename`/`delete`) over
+ * `showInputBox`/`showQuickPick`. Only imports `@tecode/api` plus this
+ * package's own local `./store`/`./ExplorerView`/`../shared` files (the
+ * ESLint layering rule) — every read/write goes through `ctx.api`.
  *
  * **`workspace.fs.watch`, one subscription per LOADED directory**: `Req
  * 11.2`'s "tree view over `workspace.fs.readdir` + `watch`" — `@tecode/
@@ -28,11 +28,13 @@
  *
  * **Never throws, out of this module** (design.md §14): every command
  * handler either delegates to `ExplorerStore` methods (already
- * never-throwing, `store.ts`'s TSDoc) or wraps its own `workspace.fs.*`
- * call in a `try`/`catch` that reports via `window.showMessage(...,
- * "error")` — matching Req 11.2's "create/rename/delete with input-box
- * prompts and error surfacing" and design.md §14's "File save I/O error ->
- * status-bar error" row for the same class of failure.
+ * never-throwing, `store.ts`'s TSDoc), wraps its own `workspace.fs.*` call
+ * in a `try`/`catch` that reports via `window.showMessage(..., "error")` —
+ * matching Req 11.2's "create/rename/delete with input-box prompts and
+ * error surfacing" and design.md §14's "File save I/O error -> status-bar
+ * error" row for the same class of failure — or (`explorer.newFile`/
+ * `newFileFromEditor` only, Issue #120) delegates to `OPEN_FILE_COMMAND_ID`,
+ * which is itself never-throwing (`openFileCommand.ts`'s TSDoc).
  *
  * **Sidebar header shows the open folder's name (Issue #103)**: `./
  * rootTitle.ts`'s `rootFolderName` derives the workspace root's own
@@ -51,6 +53,7 @@ import {
   EXPLORER_DELETE_COMMAND_ID,
   EXPLORER_FOCUS_COMMAND_ID,
   EXPLORER_NEW_FILE_COMMAND_ID,
+  EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID,
   EXPLORER_NEW_FOLDER_COMMAND_ID,
   EXPLORER_RENAME_COMMAND_ID,
   EXPLORER_SHOW_HIDDEN_CONFIG_KEY,
@@ -133,9 +136,31 @@ function registerFocusCommand(ctx: ExtensionContext): void {
   );
 }
 
-/** Registers `explorer.newFile`/`newFolder` (Req 11.2). Both share the
- * same "resolve target directory -> prompt -> validate -> `fs.write`/
- * `mkdir` -> reload -> select" shape, parameterized only by `kind`. */
+/** Registers `explorer.newFile`/`newFileFromEditor`/`newFolder` (Req 11.2;
+ * Issue #120). All three share the same "resolve target directory ->
+ * prompt -> validate" shape, parameterized only by `kind` — but `kind ===
+ * "file"` and `kind === "folder"` part ways after validation:
+ *
+ * - **`"folder"`** keeps Issue #120's untouched behavior: `fs.mkdir` (its
+ *   own `try`/`catch` reporting via `showMessage(..., "error")` on
+ *   failure), then `store.reload(dirUri)` + `store.setSelectedId(uri)` so
+ *   the new folder shows up selected in the tree immediately.
+ * - **`"file"`** (Issue #120's actual fix): creation is DEFERRED to first
+ *   save rather than happening here. This just calls
+ *   `api.commands.execute(OPEN_FILE_COMMAND_ID, uri)`, which opens `uri` as
+ *   an empty, non-dirty buffer for a path that does not exist on disk yet
+ *   (Issue #88's mechanism) — no `fs.write`, so there is nothing here that
+ *   can fail and nothing to wrap in `try`/`catch`; the file only actually
+ *   gets written the first time the user saves (`DocumentManager.save`'s
+ *   own temp-write-then-rename, already in place and already reported via
+ *   its own log/sink on failure — this module adds no new error handling
+ *   for that). `store.reload`/`setSelectedId` are skipped here too: the
+ *   store's tree only knows about entries that actually exist on disk
+ *   (`workspace.fs.readdir`-backed), so it has nothing to discover yet.
+ *   `explorer.newFile` (sidebar) and `explorer.newFileFromEditor` (command
+ *   palette, reachable without the explorer sidebar focused) both register
+ *   through this same closure with `kind: "file"`, so the deferred-create
+ *   logic lives in exactly one place. */
 function registerCreateCommands(ctx: ExtensionContext, store: ExplorerStore): void {
   const { api } = ctx;
 
@@ -159,7 +184,8 @@ function registerCreateCommands(ctx: ExtensionContext, store: ExplorerStore): vo
         // Explicit re-check right at the `joinChildUri` call site (this
         // module's `validateEntryName` TSDoc's "code review fix") —
         // `validateInput` above only gates the input box UI, not a
-        // programmatic `api.commands.execute` call.
+        // programmatic `api.commands.execute` call. This guards the file
+        // branch too: an invalid name must never reach `OPEN_FILE_COMMAND_ID`.
         const nameError = validateEntryName(trimmedName, siblingNames);
         if (nameError) {
           api.window.showMessage(nameError, "error");
@@ -167,14 +193,17 @@ function registerCreateCommands(ctx: ExtensionContext, store: ExplorerStore): vo
         }
 
         const uri = joinChildUri(dirUri, trimmedName);
+
+        if (kind === "file") {
+          // Issue #120: no `fs.write` here — see this function's TSDoc.
+          await api.commands.execute(OPEN_FILE_COMMAND_ID, uri);
+          return;
+        }
+
         try {
-          if (kind === "file") await api.workspace.fs.write(uri, new Uint8Array());
-          else await api.workspace.fs.mkdir(uri);
+          await api.workspace.fs.mkdir(uri);
         } catch (cause) {
-          api.window.showMessage(
-            `Could not create ${kind === "file" ? "file" : "folder"}: ${describeError(cause)}`,
-            "error",
-          );
+          api.window.showMessage(`Could not create folder: ${describeError(cause)}`, "error");
           return;
         }
 
@@ -185,6 +214,7 @@ function registerCreateCommands(ctx: ExtensionContext, store: ExplorerStore): vo
   }
 
   registerCreate(EXPLORER_NEW_FILE_COMMAND_ID, "file", "New file name");
+  registerCreate(EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID, "file", "New file name");
   registerCreate(EXPLORER_NEW_FOLDER_COMMAND_ID, "folder", "New folder name");
 }
 
