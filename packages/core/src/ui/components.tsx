@@ -74,6 +74,34 @@ export interface ListItem {
 }
 
 /**
+ * Whether ANY of `items` carries a (non-empty-per-`some`'s own truthiness
+ * check) `description` — issue #122's shared predicate. OpenTUI's
+ * `<select>` renders every option across TWO rows, not one, the instant a
+ * single option in the whole list has a `description` (verified against the
+ * vendored `@opentui/core@0.1.107` `SelectRenderable`'s rendering: it is a
+ * per-`<select>` `showDescription` flag, not a per-option one) — so this
+ * must stay a single boolean over the WHOLE array, exactly as `List` already
+ * computed it inline before this fix, not a per-item predicate.
+ *
+ * Exported and given its own generic `{ description?: string }` element
+ * type — rather than staying inline in {@link List} — so BOTH of this
+ * predicate's callers can share it: `List`'s own `items` (typed
+ * {@link ListItem}) below, and `modalOverlay.tsx`'s `QuickPickBody`, which
+ * builds its `listHeight` from the very same `listItems` array before `List`
+ * ever mounts. Issue #122's root cause was exactly this duplication done
+ * wrong: `components.tsx` decided a 3-item Save/Discard/Cancel prompt needed
+ * 2 rows per item (every item there sets `description`), but
+ * `modalOverlay.tsx`'s `listHeight` still assumed 1 row per item — sizing
+ * `List`'s `<select>` to 3 rows for content that actually needs 6, so only
+ * the first item and a half were ever visible. A single shared helper makes
+ * that kind of skew a build-time impossibility: whichever caller changes the
+ * predicate, both callers see the same answer.
+ */
+export function hasDescription(items: readonly { description?: string }[]): boolean {
+  return items.some((item) => item.description);
+}
+
+/**
  * A caller-supplied size constraint for {@link List}'s underlying
  * `<select>` (issue #93: "the display does not update when scrolling
  * within the modal"). Deliberately just the handful of Yoga layout
@@ -160,7 +188,7 @@ export function List(rawProps: Record<string, unknown>): ReactNode {
       style={props.style}
       selectedIndex={selectedIndex >= 0 ? selectedIndex : undefined}
       focused={props.focused}
-      showDescription={items.some((item) => item.description)}
+      showDescription={hasDescription(items)}
       backgroundColor={toColorInput(theme.colors["sideBar.background"])}
       textColor={toColorInput(theme.colors["sideBar.foreground"])}
       selectedBackgroundColor={toColorInput(theme.colors["list.activeSelectionBackground"])}
