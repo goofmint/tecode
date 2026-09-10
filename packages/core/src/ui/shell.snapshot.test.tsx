@@ -58,7 +58,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
-import { TabSelectRenderable, type BoxRenderable } from "@opentui/core";
+import {
+  MouseEvent as OpenTuiMouseEvent,
+  TabSelectRenderable,
+  type BoxRenderable,
+  type TextRenderable,
+} from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { createCommandRegistry } from "../commands/registry";
 import { createDocumentManager, type DocumentManagerFs } from "../buffer/documentManager";
@@ -71,8 +76,9 @@ import { createEditorSessionService } from "./editorSession";
 import { createFindService } from "./findService";
 import { ContextFocusTracker } from "./focus";
 import { createLayoutStateService, type LayoutStateFs } from "./layoutState";
+import { registerSidebarVisibilityCommand } from "./sidebarVisibilityCommands";
 import { createSlotRegistry } from "./slotRegistry";
-import { Shell } from "./shell";
+import { ACTIVITY_BAR_WIDTH, Shell, SIDEBAR_COLLAPSE_GLYPH, SIDEBAR_EXPAND_GLYPH } from "./shell";
 import { ThemeProvider } from "./theme";
 
 function createRecordingSink() {
@@ -303,6 +309,183 @@ describe("Shell — workbench.view.<id> command switches the sidebar (Req 6.2)",
     await act(async () => { await renderOnce(); });
 
     expect(captureCharFrame()).toContain("Search Panel");
+  });
+});
+
+/** Depth-first search for the `<box>` whose resolved `x`/`width` match
+ * `ActivityBar`'s own span (`[0, ACTIVITY_BAR_WIDTH)`) — mirrors
+ * `shell.sidebarResize.test.tsx`'s `findSidebarBox` idiom, just anchored to
+ * the OTHER end of that same row. */
+function findActivityBarBox(node: unknown): BoxRenderable | undefined {
+  const candidate = node as { x?: number; width?: number; getChildren?: () => unknown[] };
+  if (candidate?.x === 0 && candidate.width === ACTIVITY_BAR_WIDTH) {
+    return candidate as BoxRenderable;
+  }
+  for (const child of candidate?.getChildren?.() ?? []) {
+    const found = findActivityBarBox(child);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** `ActivityBar`'s dedicated sidebar-visibility toggle glyph — ALWAYS its
+ * last rendered child (`shell.tsx`'s `ActivityBar` JSX: zero or more
+ * per-pair icon nodes, then the flex spacer, then this toggle `<text>`,
+ * in that fixed order, regardless of how many pairs are registered).
+ * Verified against the real rendered tree structurally, by position,
+ * rather than by matching the glyph's own text content: `@opentui/core`'s
+ * `TextRenderable.content` getter does not reflect a plain-string JSX
+ * child's committed text synchronously in this headless test renderer
+ * (confirmed empirically) — `captureCharFrame()` is this file's own
+ * established way to assert on actual rendered text, used below instead
+ * for the glyph's visible content. */
+function activityBarToggle(activityBar: BoxRenderable): TextRenderable {
+  const children = activityBar.getChildren();
+  return children[children.length - 1] as TextRenderable;
+}
+
+/** A real `@opentui/core` `MouseEvent` "down" click on `target` — mirrors
+ * `shell.sidebarResize.test.tsx`'s own `mouseEvent` helper (this file's
+ * TSDoc's "coverage gap" reasoning applies identically here: a real
+ * `Renderable.processMouseEvent` call, not `testRender`'s ANSI-driven
+ * `mockMouse`). `x`/`y` are irrelevant here — unlike `Sidebar`'s
+ * border-drag math, neither `ActivityBar` handler below reads the event's
+ * coordinates. */
+function clickText(target: TextRenderable): void {
+  target.processMouseEvent(
+    new OpenTuiMouseEvent(target, {
+      type: "down",
+      button: 0,
+      x: 0,
+      y: 0,
+      modifiers: { shift: false, alt: false, ctrl: false },
+    }),
+  );
+}
+
+describe("Shell — ActivityBar sidebar-visibility toggle (Issue #135)", () => {
+  test("clicking the dedicated toggle glyph flips sidebarVisible, and the glyph itself updates", async () => {
+    const { slotRegistry, layoutState, context } = createHarness();
+    await layoutState.ready;
+    expect(layoutState.get().sidebarVisible).toBe(true); // DEFAULT_LAYOUT_STATE
+
+    const { renderOnce, renderer, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => { await renderOnce(); });
+
+    // Sidebar starts visible — the toggle renders the COLLAPSE glyph.
+    expect(captureCharFrame()).toContain(SIDEBAR_COLLAPSE_GLYPH);
+    expect(captureCharFrame()).not.toContain(SIDEBAR_EXPAND_GLYPH);
+
+    const activityBar = findActivityBarBox(renderer.root)!;
+    clickText(activityBarToggle(activityBar));
+    await act(async () => { await renderOnce(); });
+
+    expect(layoutState.get().sidebarVisible).toBe(false);
+    // The glyph itself flips to EXPAND now that the sidebar is hidden —
+    // proving the toggle's rendered state, not just the underlying
+    // LayoutState, tracks the click. One more frame is needed for the
+    // rendered cell grid to catch up with the already-committed React
+    // state, exactly like `shell.sidebarResize.test.tsx`'s own "One more
+    // frame for Yoga's layout pass to catch up" (`layoutState.get()`
+    // reflects the new value on the very tick `update()` runs; the
+    // headless renderer's own cell buffer reflects it one `renderOnce()`
+    // later).
+    await act(async () => { await renderOnce(); });
+    expect(captureCharFrame()).toContain(SIDEBAR_EXPAND_GLYPH);
+    expect(captureCharFrame()).not.toContain(SIDEBAR_COLLAPSE_GLYPH);
+
+    clickText(activityBarToggle(activityBar));
+    await act(async () => { await renderOnce(); });
+
+    expect(layoutState.get().sidebarVisible).toBe(true);
+  });
+
+  test("re-clicking the already-active view's icon no longer collapses the sidebar (Issue #135 — old VS Code-style toggle-on-reclick behavior is retired)", async () => {
+    const { slotRegistry, layoutState, context, commands } = createHarness();
+    await layoutState.ready;
+    // No `component` (undefined) so `ActivityBar` renders this pair as a
+    // plain `<text>` glyph (this module's own branch: `item?.component` is
+    // only truthy for `noopComponent`-style registrations elsewhere in
+    // this file), rendered as the FIRST child of the activity bar box —
+    // easy to locate structurally, same idiom as `activityBarToggle`
+    // above for the LAST child.
+    slotRegistry.registerView("activityBar.item", "search", undefined, {
+      title: "Search",
+      icon: "S",
+    });
+    slotRegistry.registerView("sidebar.view", "search", () => <text>Search Panel</text>);
+
+    const { renderOnce, renderer } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} commands={commands} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => { await renderOnce(); });
+
+    const searchIcon = findActivityBarBox(renderer.root)!.getChildren()[0] as TextRenderable;
+
+    // First click: selects "search" (not yet active) — activates the view
+    // AND ensures the sidebar is visible, exactly like `selectSidebarView`'s
+    // still-current "switch and show" behavior.
+    clickText(searchIcon);
+    await act(async () => { await renderOnce(); });
+    expect(layoutState.get().activeView).toBe("search");
+    expect(layoutState.get().sidebarVisible).toBe(true);
+
+    // Second click on the SAME, now-active icon: the old behavior toggled
+    // `sidebarVisible` shut here. It must not anymore — the sidebar stays
+    // visible, and the active view is unchanged.
+    clickText(searchIcon);
+    await act(async () => { await renderOnce(); });
+    expect(layoutState.get().sidebarVisible).toBe(true);
+    expect(layoutState.get().activeView).toBe("search");
+
+    // A third click, for good measure — still no collapse.
+    clickText(searchIcon);
+    await act(async () => { await renderOnce(); });
+    expect(layoutState.get().sidebarVisible).toBe(true);
+  });
+
+  test("workbench.action.toggleSidebarVisibility flips sidebarVisible from the command palette/a keybinding", async () => {
+    const { slotRegistry, layoutState, context, commands } = createHarness();
+    await layoutState.ready;
+    expect(layoutState.get().sidebarVisible).toBe(true);
+
+    registerSidebarVisibilityCommand(commands, { layoutState });
+
+    const { renderOnce } = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} commands={commands} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => { await renderOnce(); });
+
+    await act(async () => {
+      await commands.execute("workbench.action.toggleSidebarVisibility");
+    });
+    await act(async () => { await renderOnce(); });
+
+    expect(layoutState.get().sidebarVisible).toBe(false);
+
+    await act(async () => {
+      await commands.execute("workbench.action.toggleSidebarVisibility");
+    });
+    await act(async () => { await renderOnce(); });
+
+    expect(layoutState.get().sidebarVisible).toBe(true);
   });
 });
 

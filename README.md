@@ -338,6 +338,26 @@ Create/rename/delete have no default keybinding — reachable via the
 command palette only (`explorer/manifest.ts`'s own TSDoc: Req 11.2 asks
 for the capability, not a specific shortcut per action).
 
+### Sidebar visibility (core, Issue #135)
+
+The sidebar is collapsed/expanded through a dedicated toggle at the bottom
+of the activity bar — a plain `<`/`>` glyph (`<` while the sidebar is
+visible, clicking it collapses; `>` while hidden, clicking it expands) —
+or the `workbench.action.toggleSidebarVisibility` command:
+
+| Key | When | Command |
+|---|---|---|
+| `ctrl+b` | — | Toggle Sidebar Visibility |
+
+Re-clicking an already-active activity-bar view icon (e.g. clicking the
+explorer icon while the explorer is already showing) no longer collapses
+the sidebar — it used to, VS Code-style, but that overloaded a single
+click target with two unrelated meanings ("switch view" and "hide
+sidebar") and made the sidebar impossible to reopen without also changing
+the active view. Selecting a view now always just switches to it and
+makes sure the sidebar is visible; collapsing/expanding is exclusively the
+dedicated toggle's job.
+
 ### Sidebar width (core, Issue #105)
 
 The sidebar's width — 30 columns by default — is adjustable three ways:
@@ -574,7 +594,7 @@ user binding means the user's own `keybindings.json` always wins, with no
 special-casing needed to override a fallback entry.
 
 The bundled fallback keymap
-(`packages/core/src/keymap/keybindings.fallback.json`) ships three
+(`packages/core/src/keymap/keybindings.fallback.json`) ships four
 entries today:
 
 | Key | Command | When |
@@ -582,13 +602,19 @@ entries today:
 | `ctrl+g` | `workbench.action.showCommands` | — |
 | `ctrl+e` | `explorer.focus` | — |
 | `ctrl+l` | `editor.action.deleteLine` | `editorTextFocus` |
+| `ctrl+b` | `workbench.action.toggleSidebarVisibility` | — |
 
-Each patches a real `ctrl+shift+<letter>` ambiguity that a legacy
-terminal collapses to the same raw control byte as its unshifted
+The first three each patch a real `ctrl+shift+<letter>` ambiguity that a
+legacy terminal collapses to the same raw control byte as its unshifted
 counterpart (`ctrl+shift+p`/`ctrl+shift+e`/`ctrl+shift+k` respectively —
 `packages/cli/src/fallbackKeybindingsCompleteness.test.ts` enumerates the
 full hazard set and proves every one of them has either an unambiguous
-alternate binding already, or a fallback entry like these).
+alternate binding already, or a fallback entry like these). `ctrl+b`
+(Issue #135) is different in kind: `workbench.action.toggleSidebarVisibility`
+has no separate `defaults`-layer binding to disambiguate — this fallback
+entry is its ONLY default keybinding, placed here rather than in the
+`defaults` layer simply because this is the layer this codebase's other
+core-owned, non-per-extension keybindings already live in.
 
 This file is user-overridable, separately from `keybindings.json`
 (`packages/core/src/host/paths.ts`'s `getUserFallbackKeybindingsPath`): a

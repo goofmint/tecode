@@ -49,6 +49,7 @@ import {
   registerModalCommands,
   registerOpenFileCommand,
   registerShowPanelCommand,
+  registerSidebarVisibilityCommand,
   registerSidebarWidthCommands,
   registerTabCommands,
   registerTecodeAlias,
@@ -213,6 +214,14 @@ export interface AssemblyRoot {
    * above. Disposed alongside every other startup-owned subscription in
    * {@link wireProcessExit}. */
   showPanelCommand: Disposable;
+  /** The `workbench.action.toggleSidebarVisibility` command registration
+   * (Issue #135, `ui/sidebarVisibilityCommands.ts`) — registered directly
+   * on `commands` for the same privilege-boundary reason as
+   * {@link showPanelCommand} above. `shell.tsx`'s `ActivityBar` dedicated
+   * toggle glyph reaches it through `commands.execute`, exactly like the
+   * fallback keybinding does. Disposed alongside every other startup-owned
+   * subscription in {@link wireProcessExit}. */
+  sidebarVisibilityCommand: Disposable;
   config: ConfigService;
   context: ContextService;
   api: Tecode;
@@ -886,6 +895,14 @@ export function buildAssemblyRoot(
   // only callers today, reaching it purely through `tecode.commands.execute`.
   const showPanelCommand = registerShowPanelCommand(commands, { layoutState });
 
+  // `workbench.action.toggleSidebarVisibility` (Issue #135, `ui/
+  // sidebarVisibilityCommands.ts`'s TSDoc): another PRIVILEGED registration
+  // straight on `commands`, same privilege-boundary reasoning as
+  // `showPanelCommand` above — `shell.tsx`'s `ActivityBar` dedicated toggle
+  // glyph reaches it through `commands.execute`, and its fallback
+  // keybinding (`keybindings.fallback.json`) reaches it the same way.
+  const sidebarVisibilityCommand = registerSidebarVisibilityCommand(commands, { layoutState });
+
   // `workbench.action.increase/decreaseSidebarWidth` (Issue #105, `ui/
   // sidebarWidthCommands.ts`'s TSDoc): another PRIVILEGED registration
   // straight on `commands`, same privilege-boundary reasoning as
@@ -1129,6 +1146,7 @@ export function buildAssemblyRoot(
     terminal,
     terminalSessionTracker,
     showPanelCommand,
+    sidebarVisibilityCommand,
     config,
     context,
     api,
@@ -1439,6 +1457,7 @@ export interface ShutdownRoot {
    * real child process). */
   terminal: Pick<TerminalService, "dispose">;
   showPanelCommand: Pick<Disposable, "dispose">;
+  sidebarVisibilityCommand: Pick<Disposable, "dispose">;
   findService: Pick<Disposable, "dispose">;
   editorSession: Pick<Disposable, "dispose">;
   editorLangIdSync: Pick<Disposable, "dispose">;
@@ -1556,6 +1575,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       // is not load-bearing beyond "runs during shutdown at all".
       root.terminal.dispose();
       root.showPanelCommand.dispose();
+      root.sidebarVisibilityCommand.dispose();
       root.themeSelectCommand.dispose();
       root.openFileCommand.dispose();
       root.tabCommands.dispose();
