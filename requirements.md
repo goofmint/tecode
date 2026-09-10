@@ -180,7 +180,7 @@ The following points were open in the draft specification and are resolved here 
 1. **editor-core** SHALL provide: cursor movement, selection, insert/delete, line operations (duplicate, move, delete, toggle comment), undo/redo, in-buffer find/replace, indentation, bracket auto-closing, multi-cursor via `ctrl+d` (add selection to next find match), and save.
 2. **explorer** SHALL provide: a directory tree, opening files, create/rename/delete, and `.gitignore`-aware visibility that degrades gracefully depending on whether the `git` CLI is available.
 3. **command-palette** SHALL provide: command search on `ctrl+shift+p` and fuzzy file quick-open on `ctrl+p`.
-4. **themes-default** SHALL provide two themes equivalent to VS Code's Dark Modern and Light Modern.
+4. **themes-default** SHALL provide, embedded directly in the binary, one theme equivalent to VS Code's Dark Modern, as the built-in default theme (Issue #124). Additional themes — including one equivalent to VS Code's Light Modern — SHALL ship as plain JSON files in the repository's top-level `themes/` directory, loadable by copying them into the user themes directory (`~/.config/tecode/themes/`, or the Windows equivalent), where THE system SHALL discover, register, and make each one selectable via `workbench.colorTheme` exactly like a manifest-declared theme.
 5. **languages-basic** SHALL provide the language set of Requirement 8.
 6. **statusbar** SHALL display: cursor line/column, language ID, EOL style, dirty state, and the active theme name.
 7. **keybindings-editor** SHALL provide commands to open `keybindings.json` and to show the currently resolved bindings in a quick pick.

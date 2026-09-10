@@ -105,6 +105,7 @@ import { renderShellHeadless, renderShellToTerminal, type RenderShell } from "./
 import { createTerminalSessionTracker, type TerminalSessionTracker } from "./terminalSessionTracker";
 import { createBuiltinThemeAssetsFs } from "./themeAssetsFs";
 import { detectTerminalCapabilities, resolveKittyKeyboardSupport } from "./terminalCapabilities";
+import { scanUserThemes, type UserThemesFs } from "./userThemes";
 // `web-tree-sitter`'s OWN Emscripten runtime wasm (Finding 4, NOTICE.md's
 // "Compiled-mode finding for Task 4.4") — distinct from any grammar's
 // `.wasm` and needed by `Parser.init()` itself, BEFORE any grammar loads.
@@ -1166,6 +1167,22 @@ export interface RunDeferredPhaseOptions {
    * `createHermeticFs`, which blocks scanning the *real* user extensions
    * directory during an in-process test). */
   fs?: DiscoveryFs;
+  /**
+   * Overrides `scanUserThemes`'s `themesDir` (Req 11.4, Issue #124) —
+   * production never sets this (`scanUserThemes` then defaults to the
+   * real `getUserThemesDir()`); tests use it for hermeticity. A plain
+   * `HOME`/`APPDATA` override is NOT reliable for this on POSIX in an
+   * in-process test — `main.test.ts`'s `createHermeticDiscoveryFs` TSDoc
+   * documents Bun's `os.homedir()` ignoring a runtime `process.env.HOME`
+   * mutation — so this explicit seam is this option's only reliable
+   * hermeticity lever, matching {@link fs} above's same "production never
+   * sets this; tests use it for hermeticity" shape.
+   */
+  userThemesDir?: string;
+  /** Overrides `scanUserThemes`'s filesystem seam directly — tests use
+   * this (instead of, or together with, {@link userThemesDir}) to
+   * simulate a read failure on a specific file. */
+  userThemesFs?: UserThemesFs;
 }
 
 /**
@@ -1173,7 +1190,11 @@ export interface RunDeferredPhaseOptions {
  * `queueMicrotask` by {@link runTecode} after the first frame): discover →
  * validate → register every extension (`loadExtensions`), fire
  * `onStartup` activations, then open the argv-resolved initial file
- * (firing `onLanguage:*` via `documents.openDocument`).
+ * (firing `onLanguage:*` via `documents.openDocument`). Also scans
+ * `~/.config/tecode/themes/*.json` for user themes (Req 11.4, Issue #124,
+ * `userThemes.ts`'s `scanUserThemes`) and feeds them into `themeRegistry`
+ * alongside every manifest-declared theme — see this function's body for
+ * why that is a separate step from `loadExtensions`' own discovery.
  *
  * Exported separately from {@link runTecode} (which drives the full CLI,
  * including `process.exit` in headless mode) so it can be exercised
@@ -1225,6 +1246,27 @@ export async function runDeferredPhase(
     loadResult.pendingThemes,
     buildExtensionDirMap(loadResult.loaded),
   );
+  applyConfiguredTheme(root.config, root.themeService);
+
+  // User themes (Req 11.4, Issue #124, design.md §9): a SEPARATE scan of
+  // `~/.config/tecode/themes/*.json` (`userThemes.ts`'s `scanUserThemes`)
+  // rather than a `loadExtensions`-discovered extension — a user theme is
+  // just a JSON file, not an extension with a `manifest.ts`/`index.ts`. Fed
+  // into the SAME `themeRegistry.loadContributions` every other theme goes
+  // through (this module's TSDoc: "no new distribution or loading
+  // mechanism"), then `applyConfiguredTheme` is re-applied once more —
+  // a safe no-op if `workbench.colorTheme` already resolved to a built-in
+  // (the overwhelmingly common case) or still resolves to nothing (an
+  // unknown id), but what actually activates a user theme selected via
+  // `workbench.colorTheme` in `settings.json`. `scanUserThemes` never
+  // rejects (its own TSDoc); an empty or entirely-absent themes directory
+  // yields `{ pending: [], extensionDirs: {} }`, a harmless no-op call.
+  const userThemes = await scanUserThemes({
+    log: root.log,
+    themesDir: options.userThemesDir,
+    fs: options.userThemesFs,
+  });
+  await root.themeRegistry.loadContributions(userThemes.pending, userThemes.extensionDirs);
   applyConfiguredTheme(root.config, root.themeService);
 
   // Feed every `contributes.languages` entry discovered by `loadExtensions`

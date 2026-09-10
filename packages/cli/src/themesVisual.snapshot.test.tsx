@@ -1,21 +1,29 @@
 /**
- * Visual rendering tests for the two built-in themes (Task 2.7, Req 7.3,
- * 11.4, 13.4; design.md §16): the Shell and a syntax-highlighted buffer,
- * rendered under `themes-default`'s real Dark Modern and Light Modern
- * themes through OpenTUI's headless test renderer (`shell.snapshot.test.tsx`'s
- * top-of-file TSDoc documents the `testRender`/`captureCharFrame`/
- * `captureSpans` API this follows — no `toMatchSnapshot`, every assertion
- * reads the real rendered cell grid/spans).
+ * Visual rendering tests for Dark Modern (the one embedded built-in theme)
+ * and a fixture user theme, Light Modern (Task 2.7, Req 7.3, 11.4, 13.4;
+ * design.md §16; Issue #124): the Shell and a syntax-highlighted buffer,
+ * rendered under both real themes through OpenTUI's headless test
+ * renderer (`shell.snapshot.test.tsx`'s top-of-file TSDoc documents the
+ * `testRender`/`captureCharFrame`/`captureSpans` API this follows — no
+ * `toMatchSnapshot`, every assertion reads the real rendered cell grid/
+ * spans).
  *
  * Lives in `packages/cli` (not `@tecode/core`) because it needs
- * `@tecode/builtin`'s real theme data, and `core` may not import `builtin`
- * — same layering reason `themeSelectDefaultThemes.test.ts` gives.
+ * `@tecode/builtin`'s real Dark Modern data plus the repository's
+ * top-level `themes/light-modern.json`, and `core` may not import
+ * `builtin` — same layering reason `themeSelectDefaultThemes.test.ts`
+ * gives.
  *
- * Both themes are loaded through the exact production path
- * (`createThemeRegistry` + `collectBuiltinPendingThemes` +
- * `createBuiltinThemeAssetsFs`'s embedded-asset overlay, `main.ts`'s own
- * sync-phase wiring) rather than re-parsing the JSON files directly, so a
- * regression in that loading path would fail this test too.
+ * **Only Dark Modern is embedded now** (Issue #124): loaded through the
+ * exact production path (`createThemeRegistry` + `collectBuiltinPendingThemes`
+ * + `createBuiltinThemeAssetsFs`'s embedded-asset overlay, `main.ts`'s own
+ * sync-phase wiring). Light Modern is no longer a `themes-default`
+ * contribution — this suite loads it exactly the way a real user theme
+ * would be: a second `ThemeRegistry.loadContributions` call pointed at
+ * the repository's own top-level `themes/` directory (the same file
+ * README.md tells a user to copy to `~/.config/tecode/themes/`), through
+ * `ThemeRegistry`'s ordinary real-`fs.readFile` path — no embedded asset
+ * involved for it at all.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -38,14 +46,15 @@ import {
   toColorInput,
   type LayoutStateFs,
 } from "@tecode/core";
-import {
-  builtinManifests,
-  builtinThemeAssets,
-  DARK_MODERN_THEME_ID,
-  LIGHT_MODERN_THEME_ID,
-} from "@tecode/builtin";
+import { builtinManifests, builtinThemeAssets, DARK_MODERN_THEME_ID } from "@tecode/builtin";
 import { collectBuiltinPendingThemes } from "./main";
 import { createBuiltinThemeAssetsFs } from "./themeAssetsFs";
+
+/** The fixture user theme's id, per `userThemes.ts`'s id-derivation rule
+ * (the filename stem of `themes/light-modern.json`) — see
+ * `themeSelectDefaultThemes.test.ts`'s identical fixture for the full
+ * "why" (this module's own TSDoc). */
+const LIGHT_MODERN_USER_THEME_ID = "light-modern";
 
 /** Matches `editorView.snapshot.test.tsx`'s own `flatten` helper: one entry per
  * rendered text span, across every row of the captured frame. */
@@ -85,25 +94,38 @@ function createShellHarness() {
   return { slotRegistry, layoutState, context, commands };
 }
 
-/** Loads both built-in themes through the real production path (this
+/** Loads Dark Modern through the real production path, plus the fixture
+ * Light Modern user theme through `ThemeRegistry`'s ordinary real-`fs`
+ * path against the repository's top-level `themes/` directory (this
  * module's TSDoc), returning each theme's fully {@link ResolvedTheme} by
  * id. */
-async function loadBuiltinThemes(): Promise<Record<string, ResolvedTheme>> {
+async function loadThemes(): Promise<Record<string, ResolvedTheme>> {
   const themeRegistry = createThemeRegistry({ fs: createBuiltinThemeAssetsFs(builtinThemeAssets) });
   const { pending, extensionDirs } = collectBuiltinPendingThemes(builtinManifests);
   await themeRegistry.loadContributions(pending, extensionDirs);
+
+  await themeRegistry.loadContributions(
+    [
+      {
+        extensionId: "fixture.user-themes",
+        theme: { id: LIGHT_MODERN_USER_THEME_ID, label: "Light Modern", path: "light-modern.json" },
+      },
+    ],
+    { "fixture.user-themes": `${import.meta.dir}/../../../themes` },
+  );
+
   return {
     [DARK_MODERN_THEME_ID]: themeRegistry.get(DARK_MODERN_THEME_ID)!.theme,
-    [LIGHT_MODERN_THEME_ID]: themeRegistry.get(LIGHT_MODERN_THEME_ID)!.theme,
+    [LIGHT_MODERN_USER_THEME_ID]: themeRegistry.get(LIGHT_MODERN_USER_THEME_ID)!.theme,
   };
 }
 
-const THEME_IDS = [DARK_MODERN_THEME_ID, LIGHT_MODERN_THEME_ID];
+const THEME_IDS = [DARK_MODERN_THEME_ID, LIGHT_MODERN_USER_THEME_ID];
 
-describe("Shell renders under both built-in themes (Req 7.3, 11.4, design.md §16)", () => {
+describe("Shell renders under Dark Modern and a fixture user theme (Req 7.3, 11.4, design.md §16, Issue #124)", () => {
   for (const themeId of THEME_IDS) {
     test(`${themeId}: the StatusBar/SideBar/EditorArea regions paint this theme's own resolved colors`, async () => {
-      const theme = (await loadBuiltinThemes())[themeId]!;
+      const theme = (await loadThemes())[themeId]!;
       const { slotRegistry, layoutState, context } = createShellHarness();
       await layoutState.ready;
 
@@ -134,8 +156,8 @@ describe("Shell renders under both built-in themes (Req 7.3, 11.4, design.md §1
     });
   }
 
-  test("Dark Modern and Light Modern paint visibly different statusBar.background for the same Shell tree", async () => {
-    const themes = await loadBuiltinThemes();
+  test("Dark Modern and the fixture user theme paint visibly different statusBar.background for the same Shell tree", async () => {
+    const themes = await loadThemes();
     const bgFor = async (theme: ResolvedTheme) => {
       const { slotRegistry, layoutState, context } = createShellHarness();
       await layoutState.ready;
@@ -156,11 +178,11 @@ describe("Shell renders under both built-in themes (Req 7.3, 11.4, design.md §1
     };
 
     const darkHits = await bgFor(themes[DARK_MODERN_THEME_ID]!);
-    const lightHits = await bgFor(themes[LIGHT_MODERN_THEME_ID]!);
+    const lightHits = await bgFor(themes[LIGHT_MODERN_USER_THEME_ID]!);
     expect(darkHits.length).toBeGreaterThan(0);
     expect(lightHits.length).toBeGreaterThan(0);
     expect(darkHits[0]).not.toBe(
-      JSON.stringify(toColorInput(themes[LIGHT_MODERN_THEME_ID]!.colors["statusBar.background"])),
+      JSON.stringify(toColorInput(themes[LIGHT_MODERN_USER_THEME_ID]!.colors["statusBar.background"])),
     );
   });
 });
@@ -201,10 +223,10 @@ function HighlightedBuffer({ theme }: { theme: ResolvedTheme }) {
   );
 }
 
-describe("A highlighted buffer resolves every base capture through both built-in themes (Req 8.1, 11.4)", () => {
+describe("A highlighted buffer resolves every base capture through both themes (Req 8.1, 11.4, Issue #124)", () => {
   for (const themeId of THEME_IDS) {
     test(`${themeId}: every base capture name renders with this theme's own tokenColors foreground`, async () => {
-      const theme = (await loadBuiltinThemes())[themeId]!;
+      const theme = (await loadThemes())[themeId]!;
 
       const { renderOnce, captureSpans } = await testRender(<HighlightedBuffer theme={theme} />, {
         width: 40,
@@ -229,11 +251,11 @@ describe("A highlighted buffer resolves every base capture through both built-in
     });
   }
 
-  test("keyword/string/comment render with visibly different foregrounds between Dark Modern and Light Modern", async () => {
-    const themes = await loadBuiltinThemes();
+  test("keyword/string/comment render with visibly different foregrounds between Dark Modern and the fixture user theme", async () => {
+    const themes = await loadThemes();
     for (const name of ["keyword", "string", "comment"] as CaptureName[]) {
       const darkFg = resolveCaptureStyle(themes[DARK_MODERN_THEME_ID]!.tokens, name)!.foreground;
-      const lightFg = resolveCaptureStyle(themes[LIGHT_MODERN_THEME_ID]!.tokens, name)!.foreground;
+      const lightFg = resolveCaptureStyle(themes[LIGHT_MODERN_USER_THEME_ID]!.tokens, name)!.foreground;
       expect(darkFg).toBeDefined();
       expect(lightFg).toBeDefined();
       expect(darkFg).not.toEqual(lightFg);
