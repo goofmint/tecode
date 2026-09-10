@@ -12,6 +12,7 @@ import { createConfigService, type ConfigServiceFs } from "./service";
 import {
   CORE_CONFIGURATION,
   DEFAULT_COLOR_THEME_ID,
+  DEFAULT_PANEL_HEIGHT,
   DEFAULT_SIDEBAR_WIDTH,
   registerCoreConfiguration,
 } from "./coreDefaults";
@@ -44,14 +45,16 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     expect(config.get<boolean>("editor.insertSpaces")).toBe(true);
     expect(config.get<string>("workbench.colorTheme")).toBe(DEFAULT_COLOR_THEME_ID);
     expect(config.get<number>("workbench.sidebarWidth")).toBe(DEFAULT_SIDEBAR_WIDTH);
+    expect(config.get<number>("workbench.panelHeight")).toBe(DEFAULT_PANEL_HEIGHT);
   });
 
-  test("CORE_CONFIGURATION declares exactly the five documented keys", () => {
+  test("CORE_CONFIGURATION declares exactly the six documented keys", () => {
     expect(Object.keys(CORE_CONFIGURATION.properties).sort()).toEqual([
       "editor.insertSpaces",
       "editor.lineNumbers",
       "editor.tabSize",
       "workbench.colorTheme",
+      "workbench.panelHeight",
       "workbench.sidebarWidth",
     ]);
     expect(CORE_CONFIGURATION.properties["editor.lineNumbers"]).toMatchObject({
@@ -74,6 +77,10 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
       type: "number",
       default: DEFAULT_SIDEBAR_WIDTH,
     });
+    expect(CORE_CONFIGURATION.properties["workbench.panelHeight"]).toMatchObject({
+      type: "number",
+      default: DEFAULT_PANEL_HEIGHT,
+    });
   });
 
   test("DEFAULT_SIDEBAR_WIDTH stays in sync with layoutState.ts's real DEFAULT_LAYOUT_STATE.sidebarWidth (Issue #105)", () => {
@@ -82,6 +89,12 @@ describe("registerCoreConfiguration (Req 9.5)", () => {
     // own TSDoc) — this is the drift guard that duplication's TSDoc
     // promises.
     expect(DEFAULT_SIDEBAR_WIDTH).toBe(DEFAULT_LAYOUT_STATE.sidebarWidth);
+  });
+
+  test("DEFAULT_PANEL_HEIGHT stays in sync with layoutState.ts's real DEFAULT_LAYOUT_STATE.panelHeight (Issue #118)", () => {
+    // Same drift guard as DEFAULT_SIDEBAR_WIDTH above, for the vertical
+    // counterpart (`coreDefaults.ts`'s own TSDoc).
+    expect(DEFAULT_PANEL_HEIGHT).toBe(DEFAULT_LAYOUT_STATE.panelHeight);
   });
 
   test("disposing the registration removes the defaults", async () => {
