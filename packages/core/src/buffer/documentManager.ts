@@ -28,15 +28,22 @@
  *    auto-reloaded into a `dirty === false` buffer. A `dirty` buffer is
  *    left untouched; it only gets a `notifyUser` warning. There is no
  *    three-way merge/diff UI in this MVP.
- * 3. **Disk signature (`mtimeMs`+`size`) as a self-loop filter** — this
- *    document's OWN save must not look like an external change. A cheap
- *    signature comparison is the first-pass filter; only a signature
+ * 3. **Disk signature (`mtimeMs`+`size`+content hash) as a self-loop
+ *    filter and a save-conflict check** — this document's OWN save must
+ *    not look like an external change. `handleExternalChangeEvent` uses
+ *    the cheap `mtimeMs`/`size` pair as a first-pass filter; only a
  *    mismatch triggers an actual re-read and content comparison against
  *    the buffer, so the manager's own save (which refreshes the tracked
  *    signature right after its `rename` succeeds) never round-trips
- *    through a spurious reload.
+ *    through a spurious reload. `saveNow`'s own pre-`rename` conflict
+ *    check, by contrast, compares CONTENT — a SHA-256 hash of the last
+ *    known-good disk bytes (`DiskSignature`'s own TSDoc) — since
+ *    `mtimeMs`/`size` alone cannot distinguish "unchanged" from "an
+ *    external rewrite that happened to land at the same size and the same
+ *    (possibly coarse) timestamp" (CodeRabbit PR #128).
  */
 
+import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Disposable, Event, FileChangeEvent, Listener, Uri } from "@tecode/api";
@@ -276,6 +283,32 @@ function describeError(err: unknown): string {
 }
 
 /**
+ * A tracked document's last-known disk state (Issue #119, CodeRabbit PR
+ * #128 finding "content-derived save-conflict detection"): `mtimeMs`/`size`
+ * stay the cheap first-pass filter `handleExternalChangeEvent` checks
+ * before ever reading a byte, while `hash` is what `saveNow` now compares
+ * against before its `rename` — two external writes can land at the same
+ * size and even the same `mtimeMs` (coarse filesystem clocks, or a test
+ * double), which `mtimeMs`/`size` alone cannot tell apart from "nothing
+ * changed". `hash` is a SHA-256 hex digest of the content, never the
+ * content itself — this map must not hold a second full copy of every open
+ * document's text in memory.
+ */
+interface DiskSignature {
+  mtimeMs: number;
+  size: number;
+  hash: string;
+}
+
+/** SHA-256 hex digest of `text`, used as the content-derived half of a
+ * {@link DiskSignature} (CodeRabbit PR #128). `node:crypto` is a Node/Bun
+ * standard-library module already imported by this file's real filesystem
+ * seam's sibling imports — no external dependency added. */
+function hashText(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
  * Build a `DocumentManager` (Req 5.5, design.md §7.2).
  */
 export function createDocumentManager(deps: DocumentManagerDeps): DocumentManager {
@@ -302,7 +335,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
    * file (Req 5.6/Issue #88's ENOENT-opens-empty path) or it was closed;
    * every comparison below treats "unknown" as "assume changed" rather
    * than silently skipping the check. */
-  const diskSignatures = new Map<Uri, { mtimeMs: number; size: number }>();
+  const diskSignatures = new Map<Uri, DiskSignature>();
   /** One filesystem watch per currently open document, keyed by the
    * document's own uri (registered against its PARENT directory — see
    * `DocumentManagerDeps.watch`'s TSDoc) — disposed on `close(uri)` and on
@@ -403,12 +436,12 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     // the file actually exists — `undefined` (no entry ever set) for the
     // ENOENT/new-file path below, since there is no disk state yet to
     // remember.
-    let initialSignature: { mtimeMs: number; size: number } | undefined;
+    let initialSignature: DiskSignature | undefined;
     try {
       const stat = await fs.stat(path);
       readonly = stat.size >= LARGE_FILE_THRESHOLD_BYTES;
       text = await fs.readFile(path, "utf8");
-      initialSignature = { mtimeMs: stat.mtimeMs, size: stat.size };
+      initialSignature = { mtimeMs: stat.mtimeMs, size: stat.size, hash: hashText(text) };
     } catch (cause) {
       if (errorCode(cause) !== "ENOENT") {
         const err: HostError = {
@@ -489,6 +522,12 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     externalChangeChains.set(uri, next);
   }
 
+  /** Bound on {@link handleExternalChangeEvent}'s stat/read stabilization
+   * retries (CodeRabbit PR #128) — a file that keeps changing on every
+   * single attempt is pathological (some other process rewriting it in a
+   * tight loop), not something this handler should spin on forever. */
+  const EXTERNAL_CHANGE_READ_ATTEMPTS = 3;
+
   /**
    * One watch event's worth of work (Issue #119): `stat` the target,
    * decide whether anything actually changed, and either reload a clean
@@ -498,6 +537,29 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
    * every branch that can fail (`stat`, `readFile`) is caught and reported
    * through `log`, matching this module's other guarded-boundary
    * functions.
+   *
+   * **TOCTOU between `stat` and `readFile` (CodeRabbit PR #128)**: a plain
+   * "stat, then await readFile" pairs content read AFTER a write with a
+   * signature captured BEFORE it, if that write lands mid-`readFile` —
+   * `saveNow`'s later comparison would then see a mismatched, stale
+   * signature and wrongly refuse a perfectly safe save. So every content
+   * read here re-`stat`s afterward and only trusts the pair when the two
+   * stats agree; a mismatch discards the content and retries the whole
+   * stat/read step (bounded by {@link EXTERNAL_CHANGE_READ_ATTEMPTS} —
+   * exceeding it fails safe: no reload, no signature update, and the next
+   * watch event gets another chance).
+   *
+   * **Racing `saveNow`'s own signature write (CodeRabbit PR #128)**: this
+   * handler can also lose a race the OTHER direction — `saveNow` finishing
+   * its `rename` and refreshing `diskSignatures` while THIS handler is
+   * still awaiting an earlier `readFile`/`stat`. Naively writing this
+   * handler's own (now stale) view back over `saveNow`'s fresher signature
+   * would make the NEXT `save()` see a fabricated conflict. `knownAtEntry`/
+   * `commitSignature` below implement a compare-and-set: `diskSignatures`
+   * is only written when it still holds the exact object this handler
+   * started with, so a concurrent `saveNow` (or another instance of this
+   * same handler, though `externalChangeChains` already serializes those)
+   * always wins over a stale write.
    */
   async function handleExternalChangeEvent(uri: Uri, document: CoreDocument): Promise<void> {
     // The document may have been closed (or replaced by a fresh open of
@@ -507,6 +569,15 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     if (documentsMap.get(uri) !== document) return;
 
     const path = uriToPath(uri);
+    // Captured once, up front: the compare-and-set target for every
+    // `diskSignatures` write below (this function's own TSDoc, "Racing
+    // saveNow's own signature write").
+    const knownAtEntry = diskSignatures.get(uri);
+    const commitSignature = (next: DiskSignature): void => {
+      if (diskSignatures.get(uri) !== knownAtEntry) return;
+      diskSignatures.set(uri, next);
+    };
+
     let stat: { mtimeMs: number; size: number };
     try {
       stat = await fs.stat(path);
@@ -527,21 +598,62 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
       return;
     }
 
-    const known = diskSignatures.get(uri);
+    const known = knownAtEntry;
     if (known && known.mtimeMs === stat.mtimeMs && known.size === stat.size) {
       // Signature unchanged: the cheap first-pass filter (this module's
       // TSDoc on `diskSignatures`) — never even reads the file's bytes.
       return;
     }
 
-    let diskText: string;
-    try {
-      diskText = await fs.readFile(path, "utf8");
-    } catch (cause) {
-      logSafely("warning", {
-        message: `Failed to read "${uri}" after an external change: ${describeError(cause)}`,
-        path: uri,
-      });
+    // Stat/read stabilization loop (this function's own TSDoc, "TOCTOU
+    // between stat and readFile"): `statBefore` is the pre-read stat each
+    // attempt reads against; an attempt is accepted only once a re-`stat`
+    // right after `readFile` reports the exact same pair.
+    let diskText: string | undefined;
+    let stableStat: { mtimeMs: number; size: number } | undefined;
+    let statBefore = stat;
+    for (let attempt = 0; attempt < EXTERNAL_CHANGE_READ_ATTEMPTS; attempt++) {
+      let text: string;
+      try {
+        text = await fs.readFile(path, "utf8");
+      } catch (cause) {
+        logSafely("warning", {
+          message: `Failed to read "${uri}" after an external change: ${describeError(cause)}`,
+          path: uri,
+        });
+        return;
+      }
+
+      let statAfter: { mtimeMs: number; size: number };
+      try {
+        statAfter = await fs.stat(path);
+      } catch (cause) {
+        if (errorCode(cause) !== "ENOENT") {
+          logSafely("warning", {
+            message: `Failed to check "${uri}" for external changes: ${describeError(cause)}`,
+            path: uri,
+          });
+          return;
+        }
+        // Deleted between the read and the re-stat: same "leave it alone
+        // and warn" contract as the initial stat's own ENOENT branch above.
+        notifyUserSafely(`"${uri}" was deleted on disk.`);
+        return;
+      }
+
+      if (statAfter.mtimeMs === statBefore.mtimeMs && statAfter.size === statBefore.size) {
+        diskText = text;
+        stableStat = statAfter;
+        break;
+      }
+      // Unstable: the file changed again while being read. Discard this
+      // attempt's content and retry against the freshly observed stat.
+      statBefore = statAfter;
+    }
+    if (diskText === undefined || stableStat === undefined) {
+      // Exceeded the retry budget without ever observing a stable
+      // stat/content pair — fail safe (this function's own TSDoc): no
+      // reload, no signature update. The next watch event tries again.
       return;
     }
 
@@ -550,21 +662,21 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
       // self-loop suppression, this module's TSDoc) but the bytes did not:
       // just refresh the signature so the next GENUINE external edit is
       // still detected, without disturbing the buffer or firing anything.
-      diskSignatures.set(uri, { mtimeMs: stat.mtimeMs, size: stat.size });
+      commitSignature({ mtimeMs: stableStat.mtimeMs, size: stableStat.size, hash: hashText(diskText) });
       return;
     }
 
     if (document.dirty) {
       // Never clobber unsaved edits (design decision #2, this module's
       // top-level notes): warn only, and deliberately do NOT update the
-      // signature — `saveNow`'s own stat comparison must still see this
+      // signature — `saveNow`'s own comparison must still see this
       // mismatch and refuse to overwrite the newer disk content.
       notifyUserSafely(`"${uri}" was changed on disk.`);
       return;
     }
 
     document.reloadFromDisk(diskText);
-    diskSignatures.set(uri, { mtimeMs: stat.mtimeMs, size: stat.size });
+    commitSignature({ mtimeMs: stableStat.mtimeMs, size: stableStat.size, hash: hashText(diskText) });
     fire(reloadListeners, document, "onDidReload");
   }
 
@@ -622,21 +734,34 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     try {
       const stat = await fs.stat(path);
       targetMode = stat.mode;
-      // Issue #119: refuse to blindly overwrite a file that changed on
-      // disk since we last knew about it — either the watch-driven check
-      // already warned about it while this document stayed dirty (and
-      // deliberately left the signature stale, this module's TSDoc), or
-      // no watch is even wired up and this is the first time anyone
-      // noticed. `known === undefined` ("we have no tracked signature at
-      // all", Req 5.6/Issue #88's new-file path) is NOT a conflict — that
-      // is the pre-existing "first save creates the file" contract this
-      // check must leave untouched.
+      // Issue #119 / CodeRabbit (PR #128): refuse to blindly overwrite a
+      // file that changed on disk since we last knew about it — either the
+      // watch-driven check already warned about it while this document
+      // stayed dirty (and deliberately left the signature stale, this
+      // module's TSDoc), or no watch is even wired up and this is the
+      // first time anyone noticed. `known === undefined` ("we have no
+      // tracked signature at all", Req 5.6/Issue #88's new-file path) is
+      // NOT a conflict — that is the pre-existing "first save creates the
+      // file" contract this check must leave untouched.
+      //
+      // `mtimeMs`/`size` alone are NOT a reliable conflict signal: an
+      // external rewrite can land at the same size and the same (possibly
+      // coarse, or test-double-supplied) `mtimeMs`, which that comparison
+      // cannot tell apart from "nothing changed" — silently letting this
+      // save clobber the newer bytes on the `rename` below. So the actual
+      // check compares CONTENT: read the file now and hash it, then
+      // compare against `known.hash` (this module's `DiskSignature`
+      // TSDoc). A mismatch aborts the write entirely, before the temp file
+      // is ever created.
       const known = diskSignatures.get(uri);
-      if (known && (known.mtimeMs !== stat.mtimeMs || known.size !== stat.size)) {
-        notifyUserSafely(
-          `Cannot save: "${uri}" changed on disk since it was last read. Reload to see the latest content before saving again.`,
-        );
-        return false;
+      if (known) {
+        const diskText = await fs.readFile(path, "utf8");
+        if (hashText(diskText) !== known.hash) {
+          notifyUserSafely(
+            `Cannot save: "${uri}" changed on disk since it was last read. Reload to see the latest content before saving again.`,
+          );
+          return false;
+        }
       }
     } catch (cause) {
       if (errorCode(cause) !== "ENOENT") {
@@ -703,7 +828,13 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     // drops the (now unknown) signature rather than aborting.
     try {
       const postSaveStat = await fs.stat(path);
-      diskSignatures.set(uri, { mtimeMs: postSaveStat.mtimeMs, size: postSaveStat.size });
+      // `text` IS exactly the bytes just renamed into place — hash that
+      // directly rather than re-reading the file a second time.
+      diskSignatures.set(uri, {
+        mtimeMs: postSaveStat.mtimeMs,
+        size: postSaveStat.size,
+        hash: hashText(text),
+      });
     } catch {
       diskSignatures.delete(uri);
     }

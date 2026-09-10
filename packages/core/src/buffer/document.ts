@@ -211,7 +211,7 @@ function typingHintFor(edits: readonly TextEdit[]): TypingCoalesceHint | undefin
 export function createDocument(options: CreateDocumentOptions): CoreDocument {
   const { uri, languageId, text, sink, log } = options;
   const readonlyFlag = options.readonly ?? false;
-  const eol = detectEol(text);
+  let eol = detectEol(text);
   const buffer = createLineBuffer(text, eol);
   const clock = options.clock ?? createSystemClock();
   const undoStack = createUndoStack({ clock });
@@ -403,6 +403,16 @@ export function createDocument(options: CreateDocumentOptions): CoreDocument {
       start: { line: 0, character: 0 },
       end: { line: lastLineBefore, character: buffer.getLine(lastLineBefore).length },
     };
+    // CodeRabbit (PR #128): disk's EOL style may have switched (LF <->
+    // CRLF) since this document was last loaded/reloaded. `LineBuffer.
+    // applyEdits` reconstructs length/offset bookkeeping — and `getText()`
+    // always rejoins — using the buffer's OWN `eol`, not whatever `text`
+    // actually contains, so both the buffer's and this document's `eol`
+    // must be updated to match BEFORE applying the full-range replace
+    // below, or `getText()` would keep emitting the stale line-ending
+    // style and no longer match disk byte-for-byte.
+    eol = detectEol(text);
+    buffer.setEol(eol);
     const [applied] = buffer.applyEdits([{ range: fullRange, newText: text }]);
 
     version += 1;
@@ -447,7 +457,9 @@ export function createDocument(options: CreateDocumentOptions): CoreDocument {
     get readonly() {
       return readonlyFlag;
     },
-    eol,
+    get eol() {
+      return eol;
+    },
     applyEdits,
     transaction,
     onDidChange,

@@ -33,7 +33,7 @@ import {
 } from "@tecode/core";
 import pkg from "../package.json";
 import { resolveStartupTarget } from "./argv";
-import { buildAssemblyRoot, runDeferredPhase } from "./main";
+import { buildAssemblyRoot, createShutdown, runDeferredPhase } from "./main";
 
 /** A {@link DiscoveryFs} backed by the real filesystem, except the real
  * user extensions directory, which is always reported as missing
@@ -593,8 +593,18 @@ test("Issue #119 end to end: buildAssemblyRoot wires documents to the REAL fs.wa
       expect(doc.dirty).toBe(false);
       expect(reloadCount).toBe(1);
     } finally {
-      root.documents.dispose();
-      root.config.dispose();
+      // CodeRabbit (PR #128): a bare `documents.dispose()` + `config.
+      // dispose()` leaves every other startup-owned subscription/service
+      // this test's `buildAssemblyRoot` call registered (`highlightService`,
+      // `editorSession`, `editorLangIdSync`, `themeConfigSync`,
+      // `themeSelectCommand`, `languageRegistry`, every command
+      // registration, ...) still live — this direct call has no automatic
+      // teardown the way a real run's `wireProcessExit` provides. Reuse
+      // the SAME disposal set production shutdown uses (`createShutdown`'s
+      // `performShutdown`) instead of hand-listing it a second time here,
+      // so this test can never drift out of sync with what shutdown
+      // actually disposes.
+      await createShutdown(root)();
     }
   } finally {
     if (savedHome === undefined) delete process.env["HOME"];

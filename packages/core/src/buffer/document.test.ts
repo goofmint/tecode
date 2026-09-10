@@ -920,6 +920,48 @@ describe("createDocument — reloadFromDisk (Issue #119, internal-only external-
     expect(doc.getText()).toBe("completely different content");
   });
 
+  test("CodeRabbit (PR #128): reload from LF to CRLF updates document.eol and getText() matches disk byte-for-byte", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "one\ntwo\nthree",
+      sink,
+      log,
+    });
+    expect(doc.eol).toBe("\n");
+
+    doc.reloadFromDisk("one\r\ntwo\r\nthree");
+
+    expect(doc.eol).toBe("\r\n");
+    expect(doc.getText()).toBe("one\r\ntwo\r\nthree");
+    expect(doc.lineCount).toBe(3);
+    expect(doc.getLine(0)).toBe("one");
+    expect(doc.getLine(1)).toBe("two");
+    expect(doc.getLine(2)).toBe("three");
+  });
+
+  test("CodeRabbit (PR #128): reload from CRLF to LF updates document.eol and getText() matches disk byte-for-byte", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "one\r\ntwo\r\nthree",
+      sink,
+      log,
+    });
+    expect(doc.eol).toBe("\r\n");
+
+    doc.reloadFromDisk("one\ntwo\nthree");
+
+    expect(doc.eol).toBe("\n");
+    expect(doc.getText()).toBe("one\ntwo\nthree");
+    expect(doc.lineCount).toBe(3);
+    expect(doc.getLine(0)).toBe("one");
+    expect(doc.getLine(1)).toBe("two");
+    expect(doc.getLine(2)).toBe("three");
+  });
+
   test("reloadFromDisk never appears on @tecode/api's Document shape (internal-only, matches markSaved)", () => {
     const { log, sink } = baseDeps();
     const doc = createDocument({
