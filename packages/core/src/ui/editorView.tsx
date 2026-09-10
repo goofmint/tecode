@@ -689,7 +689,11 @@ export function EditorView(props: EditorViewProps): ReactNode {
   // this render's OTHER cursor-position inputs changing, and the sync
   // effect must re-read `positionedNodeRef.current`'s freshly-relaid
   // `screenX`/`screenY` when that happens.
-  const terminalDimensions = useTerminalDimensions();
+  // Subscribed for the RE-RENDER, not for the value (CodeRabbit, PR #132):
+  // the sync effect below reads `screenX`/`screenY` live and has no
+  // dependency array, so it just needs *a* render to happen after a resize
+  // relays the text plane. Nothing here reads the returned dimensions.
+  useTerminalDimensions();
   // Phase 2 (Issue #123): read through the SAME shared `ContextService`
   // `terminalFocus`/`explorerFocus`/every other region's focus state
   // already lives in (`focus.tsx`'s `useFocusContextService`) — not this
@@ -717,13 +721,13 @@ export function EditorView(props: EditorViewProps): ReactNode {
       // "干渉を起こさないことだけを保証する" — this component makes no
       // attempt to manage any OTHER region's cursor, only to get out of
       // the way of it).
-      renderer.setCursorPosition(0, 0, false);
+      renderer.setCursorPosition(1, 1, false);
       return;
     }
 
     const node = positionedNodeRef.current;
     if (!node || !primary) {
-      renderer.setCursorPosition(0, 0, false);
+      renderer.setCursorPosition(1, 1, false);
       return;
     }
 
@@ -738,7 +742,9 @@ export function EditorView(props: EditorViewProps): ReactNode {
     // effect — this seam is guarded the same "never throw past here" way
     // `editor/inputRouter.ts`'s own `routeKeyEvent`/`insertText` are.
     if (cursorLine < 0 || cursorLine >= document.lineCount) {
-      renderer.setCursorPosition(0, 0, false);
+      // 1-based origin (`cursorPosition.ts`'s TSDoc) — 0 is clamped up to 1
+      // by the renderer anyway, so say what is actually meant.
+      renderer.setCursorPosition(1, 1, false);
       return;
     }
     const position = computeHardwareCursorPosition({
@@ -760,18 +766,20 @@ export function EditorView(props: EditorViewProps): ReactNode {
     // flag's value — there is no on-screen cell to show a cursor at in
     // that case either way.
     renderer.setCursorPosition(position.x, position.y, HARDWARE_CURSOR_VISIBLE && position.visible);
-  }, [
-    renderer,
-    focusContext,
-    isFocused,
-    primary?.active.line,
-    primary?.active.character,
-    scrollTop,
-    endLine,
-    gutterWidth,
-    terminalDimensions.width,
-    terminalDimensions.height,
-  ]);
+    // NO dependency array, deliberately (CodeRabbit, PR #132): every input
+    // above is read live — `positionedNodeRef.current`'s `screenX`/
+    // `screenY`, and `document.getLine(cursorLine)` — and both can change
+    // without any value a dependency list could name changing with them.
+    // A same-UTF-16-length replacement re-renders through
+    // `useLineTicks(document)` while `primary.active.line`/`.character`
+    // stay put, yet the caret's CELL column moves whenever the replaced
+    // text differs in width (an ASCII run becoming CJK, `cellWidthUpTo`'s
+    // whole reason for existing). A sidebar resize moves `screenX` with
+    // the terminal's own dimensions unchanged. Listing those would mean
+    // re-deriving, as dependencies, the very quantities this effect exists
+    // to compute. Running on every render is cheap — one `getLine`, one
+    // width scan, one `setCursorPosition` — and cannot go stale.
+  });
 
   // Unmount cleanup (CodeRabbit, PR #132): the sync effect above has no
   // cleanup function of its own, so it only ever runs again on a RE-RENDER

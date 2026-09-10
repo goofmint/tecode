@@ -467,6 +467,54 @@ describe("EditorView — editorTextFocus context key (Req 4.6)", () => {
 });
 
 describe("EditorView — hardware cursor reset on unmount (CodeRabbit, PR #132)", () => {
+  test("a same-length replacement that changes cell width still moves the hardware cursor (CodeRabbit, PR #132)", async () => {
+    // The sync effect deliberately has no dependency array: this edit
+    // re-renders through `useLineTicks(document)` while `primary.active
+    // .line`/`.character` and the terminal dimensions all stay put, yet
+    // replacing ASCII with CJK doubles the caret's CELL column. A
+    // dependency list naming only the selection would have left the
+    // renderer on the pre-edit position.
+    const { ContextFocusTracker } = await import("./focus");
+    const { createContextService } = await import("../keymap/context");
+    const context = createContextService();
+    const document = createTestDocument("abcd");
+    const state = stateWith(document.uri, [cursorAt(0, 4)]);
+
+    let capturedNode: { focus(): void } | undefined;
+    const { renderOnce, renderer } = await testRender(
+      <ContextFocusTracker context={context}>
+        <EditorView
+          document={document}
+          state={state}
+          viewportHeight={5}
+          onTextPlaneNode={(node) => {
+            capturedNode = node ?? undefined;
+          }}
+        />
+      </ContextFocusTracker>,
+      { width: 30, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    act(() => {
+      capturedNode!.focus();
+    });
+    const before = renderer.getCursorState().x;
+
+    // Same UTF-16 length (4 -> 4), double the cells (4 -> 8).
+    act(() => {
+      document.applyEdits([
+        { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } }, newText: "あいうえ".slice(0, 4) },
+      ]);
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(renderer.getCursorState().x).toBeGreaterThan(before);
+  });
+
   test("unmounting a still-focused EditorView resets the renderer's cursor position", async () => {
     const { ContextFocusTracker } = await import("./focus");
     const { createContextService } = await import("../keymap/context");
@@ -509,9 +557,14 @@ describe("EditorView — hardware cursor reset on unmount (CodeRabbit, PR #132)"
     // Focused, with a real caret position on line 2 -> the renderer holds a
     // non-origin cursor position (still invisible, HARDWARE_CURSOR_VISIBLE
     // is false — only the position is asserted here).
+    // Strictly greater than the 1-based ORIGIN (CodeRabbit, PR #132): `> 0`
+    // also passes at `(1, 1)`, so a sync that never ran at all would have
+    // satisfied it and the reset assertion below would prove nothing. The
+    // caret sits on line 2, character 3, so both coordinates must have
+    // moved past the origin.
     const focusedCursor = renderer.getCursorState();
-    expect(focusedCursor.x).toBeGreaterThan(0);
-    expect(focusedCursor.y).toBeGreaterThan(0);
+    expect(focusedCursor.x).toBeGreaterThan(1);
+    expect(focusedCursor.y).toBeGreaterThan(1);
 
     act(() => {
       hide();
