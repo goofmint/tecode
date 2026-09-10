@@ -94,16 +94,17 @@
  * to `DEFAULT_VIEWPORT_HEIGHT` below, unchanged.
  */
 
-import { memo, useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useRenderer, useTerminalDimensions } from "@opentui/react";
 import { RenderableEvents, type RGBA } from "@opentui/core";
 import type { CaptureName, Range, Selection, Style } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { ConfigService } from "../config/service";
 import type { HighlightService, HighlightSpan } from "../languages/highlightService";
-import { cellWidthUpTo } from "./cellWidth";
+import { computeHardwareCursorPosition } from "./cursorPosition";
 import { useHighlightRevision, useLineTicks, type EditorState } from "./editorState";
 import type { FocusableNode, FocusEmitter } from "./focus";
-import { useFocusTracking } from "./focus";
+import { useFocusContextService, useFocusTracking } from "./focus";
 import { resolveCaptureStyle } from "./themeLoader";
 import { computeVisibleLineRange, gutterDigitWidth, revealLine } from "./viewport";
 import { styleToTextColors, toColorInput, useTheme } from "./theme";
@@ -111,6 +112,40 @@ import { styleToTextColors, toColorInput, useTheme } from "./theme";
 /** Rows available to the text plane when no `viewportHeight` prop is given
  * (this module's TSDoc — a placeholder ahead of real layout measurement). */
 const DEFAULT_VIEWPORT_HEIGHT = 20;
+
+/**
+ * Whether `EditorView` makes the terminal's HARDWARE cursor
+ * (`CliRenderer.setCursorPosition`, Issue #123) actually visible, and —
+ * governed by the exact same constant — whether {@link buildLineRuns}
+ * still draws its OWN caret as an inverted-background text run (this
+ * module's top-of-file TSDoc's layer 4). One flag drives BOTH: flipping it
+ * to `true` makes the real terminal cursor visible (third argument to
+ * `setCursorPosition`, in the sync effect below) AND suppresses the drawn
+ * run in the SAME render (`buildLineRuns`'s `isCursorCell` branch below) —
+ * never two independently-drifting toggles that could show both at once or
+ * neither.
+ *
+ * Defaults to `false`: the hardware cursor is kept invisible and only its
+ * POSITION is synced (Issue #123's actual fix — an IME reads a terminal's
+ * reported cursor position to place its preedit string regardless of
+ * whether that cursor is drawn visibly), while the existing drawn caret
+ * keeps rendering exactly as it did before this issue — no visual
+ * regression for a terminal/IME combination this codebase has not verified
+ * against real hardware.
+ *
+ * **Why this might need to become `true`**: whether a terminal emulator's
+ * IME preedit actually FOLLOWS an INVISIBLE cursor (`visible: false`) is
+ * terminal-dependent and not guaranteed by any spec — some emulators may
+ * only place preedit text at the cursor once that cursor is also drawn
+ * (`visible: true`), in which case leaving this `false` would reproduce
+ * Issue #123's bug on exactly those terminals despite the position now
+ * being correct. Only real-machine testing across the terminals tecode
+ * targets can settle this; if it finds such a terminal, flip this single
+ * constant to `true` and accept the resulting double-cursor look (the real
+ * hardware cursor plus, until this flag also suppresses it, the drawn run)
+ * as the deliberate tradeoff for correct IME placement there.
+ */
+const HARDWARE_CURSOR_VISIBLE = false;
 
 /** A shared empty-array reference for a line with no `highlightService`
  * wired in at all — avoids allocating a fresh empty array per visible line
@@ -324,7 +359,13 @@ function buildLineRuns(params: {
     // match > selection > other find matches > base text. Highlight
     // foreground sits at the base-text tier (`resolveSegmentFg`'s TSDoc) —
     // every tier below cursor uses it, with only the background changing.
-    if (isCursorCell) {
+    // `!HARDWARE_CURSOR_VISIBLE` (Issue #123, that constant's own TSDoc):
+    // this drawn, inverted-background run is what stands in for a cursor
+    // while the real terminal cursor is kept invisible; once that flag
+    // flips to `true` the real hardware cursor takes over and this branch
+    // is skipped, falling through to whatever lower-priority tier the cell
+    // would otherwise render as.
+    if (isCursorCell && !HARDWARE_CURSOR_VISIBLE) {
       runs.push({ text: segment, fg: colors.cursorFg, bg: colors.cursorBg });
     } else if (isActiveMatch) {
       runs.push({ text: segment, fg: resolveSegmentFg(start, end), bg: colors.findMatchBg });
@@ -470,6 +511,18 @@ const EditorLineRow = memo(function EditorLineRow(props: EditorLineRowProps): Re
   );
 }, editorLineRowPropsEqual);
 
+/** The narrow slice of an OpenTUI `Renderable` the hardware-cursor sync
+ * effect below needs (Issue #123) — `Renderable.screenX`/`screenY`
+ * (`Renderable.d.ts`), the absolute terminal cell the text plane's own
+ * `<box>` currently renders at. Deliberately as minimal a structural
+ * interface as {@link FocusEmitter}/{@link FocusableNode} (`focus.tsx`) are
+ * for the same node — this module never needs to call anything else on it,
+ * so it never asks the type system for anything else. */
+interface PositionedNode {
+  screenX: number;
+  screenY: number;
+}
+
 /** A small local "am I focused" tracker, separate from
  * {@link useFocusTracking} (which only reports into the context service, per
  * its own TSDoc) — `EditorView` additionally needs the boolean itself, to
@@ -565,10 +618,25 @@ export function EditorView(props: EditorViewProps): ReactNode {
   const contextFocusRef = useFocusTracking("editorTextFocus");
   const [isFocused, isFocusedRef] = useIsFocused();
   const onTextPlaneNode = props.onTextPlaneNode;
+  // The text plane's own OpenTUI node, read for its `screenX`/`screenY`
+  // (Issue #123's hardware-cursor sync effect below) — a plain ref, not
+  // React state, since a screen-position CHANGE never needs to trigger a
+  // re-render by itself (the effect re-reads it directly after every
+  // render that could have moved it; see that effect's own dependency
+  // list).
+  const positionedNodeRef = useRef<PositionedNode | null>(null);
+  // The real OpenTUI node this ref attaches to satisfies `FocusableNode`
+  // AND `PositionedNode` at once (both are narrow structural VIEWS of the
+  // same underlying `Renderable`, `focus.tsx`'s own convention) — declaring
+  // the callback's parameter as their intersection lets this one ref
+  // callback feed both `positionedNodeRef` below and every existing
+  // `FocusableNode`-typed consumer (`contextFocusRef`/`isFocusedRef`/
+  // `onTextPlaneNode`) without a cast.
   const textPlaneRef = useCallback(
-    (node: FocusableNode | null) => {
+    (node: (FocusableNode & PositionedNode) | null) => {
       contextFocusRef(node);
       isFocusedRef(node);
+      positionedNodeRef.current = node;
       onTextPlaneNode?.(node);
     },
     [contextFocusRef, isFocusedRef, onTextPlaneNode],
@@ -597,6 +665,113 @@ export function EditorView(props: EditorViewProps): ReactNode {
 
   const digitWidth = gutterDigitWidth(lineCount);
   const gutterWidth = showLineNumbers ? digitWidth + 1 : 0;
+
+  // Hardware terminal cursor sync (Issue #123 — "the IME's unconfirmed
+  // string renders at the bottom of the terminal instead of at the
+  // caret"): `renderer.setCursorPosition` is OpenTUI's own primitive for
+  // moving the REAL terminal cursor an IME positions its preedit string
+  // against — this codebase never called it at all before this issue, so
+  // the emulator always drew preedit wherever its cursor last happened to
+  // sit, almost always the bottom of the screen. `useRenderer()` mirrors
+  // `modalOverlay.tsx`'s own direct (unguarded) use of the same hook: both
+  // components are only ever mounted under a live `CliRenderer` (`Shell`'s
+  // composition root in production, `testRender` in every test that
+  // actually renders `EditorView` — see `cursorPosition.ts`'s TSDoc for how
+  // that was verified), so there is no "no renderer mounted" case to guard
+  // against here, unlike `shell.tsx`'s `EditorArea`/`Panel`, which even a
+  // bare unit test can construct outside any renderer at all.
+  const renderer = useRenderer();
+  // `useTerminalDimensions()` (`@opentui/react`, same import as
+  // `modalOverlay.tsx`) reactively tracks the live terminal's own
+  // column/row count — included below purely as a dependency-array signal:
+  // a resize can move the text plane's `screenX`/`screenY` (a sidebar
+  // reflowing, `EditorArea`'s own chrome changing height) without any of
+  // this render's OTHER cursor-position inputs changing, and the sync
+  // effect must re-read `positionedNodeRef.current`'s freshly-relaid
+  // `screenX`/`screenY` when that happens.
+  const terminalDimensions = useTerminalDimensions();
+  // Phase 2 (Issue #123): read through the SAME shared `ContextService`
+  // `terminalFocus`/`explorerFocus`/every other region's focus state
+  // already lives in (`focus.tsx`'s `useFocusContextService`) — not this
+  // component's own local `isFocused` (though the two always agree, since
+  // both derive from the identical `FOCUSED`/`BLURRED` events on the exact
+  // same node) — so this effect reads cursor OWNERSHIP the same way
+  // `shell.tsx`'s `EditorArea` do-not-steal guard already does, rather than
+  // introducing a second, editor-view-local notion of "do I have focus"
+  // that could drift from it.
+  const focusContext = useFocusContextService();
+  useLayoutEffect(() => {
+    // `setCursorPosition` is a real `CliRenderer` method (`renderer.d.ts`)
+    // in every environment this component actually runs in (this effect's
+    // own top comment) — still guarded defensively, per this task's own
+    // instruction, against a future/foreign `renderer` implementation that
+    // omits it rather than assuming the method is always present.
+    if (typeof renderer.setCursorPosition !== "function") return;
+
+    const editorTextFocus = focusContext?.get<boolean>("editorTextFocus") ?? false;
+    if (!editorTextFocus) {
+      // Cursor ownership belongs to whatever DOES have focus right now
+      // (the terminal panel's own pty, the explorer, a modal input, ...) —
+      // hide ours so an editor-owned hardware cursor never lingers on
+      // screen once this component's text plane loses focus (Phase 2's
+      // "干渉を起こさないことだけを保証する" — this component makes no
+      // attempt to manage any OTHER region's cursor, only to get out of
+      // the way of it).
+      renderer.setCursorPosition(0, 0, false);
+      return;
+    }
+
+    const node = positionedNodeRef.current;
+    if (!node || !primary) {
+      renderer.setCursorPosition(0, 0, false);
+      return;
+    }
+
+    const cursorLine = primary.active.line;
+    // `document.getLine` THROWS a `RangeError` for an out-of-bounds line
+    // (`lineBuffer.ts`'s own `getLine`) — unlike the render body above,
+    // which only ever calls it for a `line` `computeVisibleLineRange`
+    // already clamped into `[0, lineCount)`, `primary.active.line` is
+    // whatever `EditorState.selections` currently holds, with no such
+    // guarantee re-checked here. A stale selection racing a shrinking
+    // document (Req 5.4's undo/redo, a large delete) must not crash this
+    // effect — this seam is guarded the same "never throw past here" way
+    // `editor/inputRouter.ts`'s own `routeKeyEvent`/`insertText` are.
+    if (cursorLine < 0 || cursorLine >= document.lineCount) {
+      renderer.setCursorPosition(0, 0, false);
+      return;
+    }
+    const position = computeHardwareCursorPosition({
+      screenX: node.screenX,
+      screenY: node.screenY,
+      gutterWidth,
+      cursorLine,
+      scrollTop,
+      endLine,
+      lineText: document.getLine(cursorLine),
+      character: primary.active.character,
+      tabSize: props.config?.get<number>("editor.tabSize"),
+    });
+    // `HARDWARE_CURSOR_VISIBLE` (this module's own top-of-file TSDoc) is
+    // the single flag governing whether the real cursor is actually drawn;
+    // `position.visible` (this render's OWN "is the caret's line even on
+    // screen" fact, `cursorPosition.ts`'s TSDoc) independently forces it
+    // invisible when the caret is scrolled off screen, regardless of that
+    // flag's value — there is no on-screen cell to show a cursor at in
+    // that case either way.
+    renderer.setCursorPosition(position.x, position.y, HARDWARE_CURSOR_VISIBLE && position.visible);
+  }, [
+    renderer,
+    focusContext,
+    isFocused,
+    primary?.active.line,
+    primary?.active.character,
+    scrollTop,
+    endLine,
+    gutterWidth,
+    terminalDimensions.width,
+    terminalDimensions.height,
+  ]);
 
   // Resolved once per render (not per line), and only actually a *new*
   // object when the theme or focus state changes — `EditorLineRow`'s memo
@@ -654,14 +829,12 @@ export function EditorView(props: EditorViewProps): ReactNode {
   );
 }
 
-/** The prefix-sum cell column of `position.character` within `lineText`
- * (design.md §8.3's "wide characters ... measured with cell-width
- * utilities so cursor columns map to terminal cells correctly") — exported
- * for the future key-routing task (2.2) to compute where a click or a
- * cursor move actually lands, without duplicating {@link cellWidthUpTo}'s
- * import here. `tabSize` is forwarded as-is (see `cellWidth.ts`'s TSDoc on
- * why a tab's cell width isn't a fixed constant); it defaults the same way
- * `cellWidthUpTo` does. */
-export function cursorCellColumn(lineText: string, character: number, tabSize?: number): number {
-  return cellWidthUpTo(lineText, character, tabSize);
-}
+/** Re-exported for backward compatibility: every existing import of
+ * `cursorCellColumn` (`ui/index.ts`, `core/index.ts`, the future
+ * key-routing task 2.2 this function was originally added for) keeps
+ * resolving through `editorView.tsx` exactly as before. The implementation
+ * itself now lives in `cursorPosition.ts` — see that module's own TSDoc for
+ * why (Issue #123: {@link computeHardwareCursorPosition} needs to reuse it,
+ * and defining it there instead of importing it back from here avoids a
+ * module cycle). */
+export { cursorCellColumn } from "./cursorPosition";

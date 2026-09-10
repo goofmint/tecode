@@ -292,3 +292,152 @@ describe("End-to-end editing scenario (Task 2.10, Req 13.1, design.md §15, §16
     15_000,
   );
 });
+
+/** Like this module's own `flatten` above, but also tracks each span's
+ * ABSOLUTE rendered terminal column (`col`) — matching
+ * `editorView.snapshot.test.tsx`'s own `flatten` helper (`col` is a running
+ * sum of each row's preceding spans' `width`, so it reflects whatever cell
+ * width OpenTUI itself measured for those spans, independent of this
+ * codebase's own `cellWidth.ts` math). Scoped to this describe block only —
+ * the scenario test above never needs `col`, so its own `flatten` is left
+ * untouched rather than growing a field only this suite reads. */
+function flattenWithColumns(
+  frame: CapturedFrame,
+): Array<{ row: number; col: number; text: string; bg: unknown }> {
+  const out: Array<{ row: number; col: number; text: string; bg: unknown }> = [];
+  frame.lines.forEach((line, row) => {
+    let col = 0;
+    for (const span of line.spans) {
+      out.push({ row, col, text: span.text, bg: span.bg });
+      col += span.width;
+    }
+  });
+  return out;
+}
+
+describe("Hardware cursor placement lands on the drawn caret's own cell (Issue #123)", () => {
+  let homeDir: string | undefined;
+  let workspaceDir: string | undefined;
+  let harness: EditingHarness | undefined;
+
+  afterEach(async () => {
+    await harness?.dispose();
+    harness = undefined;
+    if (homeDir) await rm(homeDir, { recursive: true, force: true });
+    if (workspaceDir) await rm(workspaceDir, { recursive: true, force: true });
+    homeDir = undefined;
+    workspaceDir = undefined;
+  });
+
+  test(
+    "the drawn caret's column jumps by 2 cells (not 1) past a full-width character, and a multi-code-point IME commit still inserts as one edit (Issue #110 non-regression)",
+    async () => {
+      homeDir = await mkdtemp(join(tmpdir(), "tecode-e2e-cursor-home-"));
+      workspaceDir = await mkdtemp(join(tmpdir(), "tecode-e2e-cursor-ws-"));
+      // A `.txt` file (unregistered extension, `languageId` falls back to
+      // `"plaintext"` — `documentManager.ts`'s own default) rather than
+      // this file's own `.ts` fixture: nothing here needs real syntax
+      // highlighting, so skipping it avoids the real `web-tree-sitter`
+      // parse/`waitForHighlightChange` wait entirely.
+      const filePath = join(workspaceDir, "sample.txt");
+      const lines = ["ab古cd", "second line"];
+      await writeFixtureFile(filePath, lines.join("\n"));
+
+      harness = await buildEditingHarness({ workspaceRoot: workspaceDir, homeDir });
+      const { root } = harness;
+
+      const document = await root.documents.openDocument(pathToUri(filePath));
+      expect(document.languageId).toBe("plaintext");
+
+      const { renderOnce, renderer, captureSpans, captureCharFrame } = await renderEditingShell(root, {
+        width: 120,
+        height: 20,
+      });
+      await act(async () => {
+        await renderOnce();
+      });
+
+      const focused = focusEditorText(renderer.root, root.context);
+      expect(focused, "expected the editor's text plane to become focused").toBe(true);
+
+      const cursorBg = toColorInput(root.themeService.get().colors["editorCursor.foreground"]);
+      const cursorSpanOf = (frame: CapturedFrame): { row: number; col: number; text: string } => {
+        const matches = flattenWithColumns(frame).filter(
+          (s) => JSON.stringify(s.bg) === JSON.stringify(cursorBg),
+        );
+        expect(matches, "expected exactly one cursor-colored cell").toHaveLength(1);
+        return matches[0]!;
+      };
+
+      // --- Caret right BEFORE the full-width "古" (character index 2:
+      // "a"=0, "b"=1, "古"=2) — the block cursor highlights the character
+      // it sits before, so this run's OWN text is "古" itself. ---
+      const beforeWide = { line: 0, character: 2 };
+      act(() => {
+        root.api.editor.setSelections([
+          { start: beforeWide, end: beforeWide, anchor: beforeWide, active: beforeWide },
+        ]);
+      });
+      await act(async () => {
+        await renderOnce();
+      });
+      const wideCursor = cursorSpanOf(captureSpans());
+      expect(wideCursor.text).toBe("古");
+
+      // --- Caret right AFTER "古", before "c" (character index 3) ---
+      const afterWide = { line: 0, character: 3 };
+      act(() => {
+        root.api.editor.setSelections([
+          { start: afterWide, end: afterWide, anchor: afterWide, active: afterWide },
+        ]);
+      });
+      await act(async () => {
+        await renderOnce();
+      });
+      const afterWideCursor = cursorSpanOf(captureSpans());
+      expect(afterWideCursor.text).toBe("c");
+
+      // The caret's document CHARACTER index advanced by exactly 1 (2 ->
+      // 3), but its rendered terminal COLUMN must advance by 2 — "古" is a
+      // full-width glyph OpenTUI itself renders as 2 cells wide
+      // (`cellWidth.ts`'s own "CJK ... count as 2 cells, not 1"). A caret
+      // placement that instead measured "古" as 1 cell would land this
+      // assertion on 1, one cell short of where the glyph actually sits —
+      // exactly the class of bug `cursorPosition.ts`'s `cursorCellColumn`
+      // reuse (via `cellWidthUpTo`) exists to avoid for the HARDWARE
+      // cursor, verified here against the independently-measured DRAWN
+      // caret.
+      expect(afterWideCursor.col - wideCursor.col).toBe(2);
+      expect(afterWideCursor.row).toBe(wideCursor.row);
+
+      // --- Issue #110 non-regression: a multi-code-point IME commit
+      // (delivered as one key event whose `sequence` carries the whole
+      // confirmed string, `inputRouter.test.ts`'s own "shape @opentui/core
+      // actually produces" fixture) still inserts as ONE edit, at BOTH
+      // this component's ref-based caret tracking and the underlying
+      // `editor/inputRouter.ts` batching this task must not touch. ---
+      const imeTarget = { line: 1, character: 6 }; // "second" | " line" — inside line 1
+      act(() => {
+        root.api.editor.setSelections([
+          { start: imeTarget, end: imeTarget, anchor: imeTarget, active: imeTarget },
+        ]);
+      });
+      await act(async () => {
+        await renderOnce();
+      });
+
+      act(() => {
+        sendKey(root, keyOf({ name: "", sequence: "日本語" }));
+      });
+      await act(async () => {
+        await renderOnce();
+      });
+
+      expect(document.getLine(1)).toBe("second日本語 line");
+      expect(root.api.editor.selections).toHaveLength(1);
+      expect(root.api.editor.selections[0]!.active).toEqual({ line: 1, character: 9 });
+      expect(captureCharFrame()).toContain("second日本語 line");
+    },
+    15_000,
+  );
+});
