@@ -1144,4 +1144,128 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     manager.close(uri);
     expect(() => manager.dispose()).not.toThrow();
   });
+
+  test("CodeRabbit PR #128: a watch event is detected as an external change even when mtimeMs/size are unchanged", async () => {
+    const path = join(dir, "same-signature-watch.txt");
+    await writeFile(path, "original!", "utf8"); // 9 chars
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+
+    // A test double that always reports the SAME mtimeMs, regardless of
+    // the file's real content — the metadata-only "fast path" this
+    // finding calls out must never be trusted to skip a real content
+    // check, in the watch-driven path just as much as in `saveNow`'s own
+    // (finding 4's test above).
+    const fixedMtimeFs: DocumentManagerFs = {
+      stat: async (p) => {
+        const real = await fsStat(p);
+        return { size: real.size, mode: real.mode, mtimeMs: 0 };
+      },
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: (p, mode) => fsChmod(p, mode),
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({ log, sink, fs: fixedMtimeFs, watch });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    expect(doc.getText()).toBe("original!");
+
+    // Externally rewrite to content of the exact same byte length
+    // ("original!" and "different" are both 9 chars) — `mtimeMs` (always
+    // 0 via `fixedMtimeFs`) and `size` both stay identical to what was
+    // last recorded; only the CONTENT differs. A metadata-only fast path
+    // would miss this entirely and never reload.
+    await writeFile(path, "different", "utf8");
+
+    const reloaded = new Promise<string>((resolve) => {
+      const sub = manager.onDidReload((d) => {
+        sub.dispose();
+        resolve(d.getText());
+      });
+    });
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+
+    expect(await reloaded).toBe("different");
+    expect(doc.dirty).toBe(false);
+  });
+
+  test("CodeRabbit PR #128: save() aborts (and does not recreate the file) when a KNOWN file was deleted externally", async () => {
+    const path = join(dir, "deleted-before-save.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+    // No `watch` injected — the save-time conflict check must catch this
+    // purely off the signature captured at open() time.
+    const manager = createDocumentManager({
+      log,
+      sink,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "edited" },
+    ]);
+
+    // Externally delete the file the buffer's stale snapshot still
+    // believes exists.
+    await fsUnlink(path);
+
+    const ok = await manager.save(uri);
+    expect(ok).toBe(false);
+    expect(doc.dirty).toBe(true);
+    expect(warnings.length).toBeGreaterThan(0);
+    // Must not have silently recreated the file from the stale buffer.
+    await expect(fsStat(path)).rejects.toBeDefined();
+  });
+
+  test("CodeRabbit PR #128: an external write landing after the hash check but before rename aborts the save without renaming", async () => {
+    const path = join(dir, "race-before-rename.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+
+    // `chmod` runs right after the temp file is prepared, immediately
+    // before this module's pre-rename reconfirmation — the perfect hook
+    // to simulate an external write landing in exactly that gap.
+    const raceFs: DocumentManagerFs = {
+      stat: (p) => fsStat(p),
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: async (p, mode) => {
+        await writeFile(path, "raced externally", "utf8");
+        await fsChmod(p, mode);
+      },
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({
+      log,
+      sink,
+      fs: raceFs,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "buffered" },
+    ]);
+
+    const ok = await manager.save(uri);
+    expect(ok).toBe(false);
+    expect(doc.dirty).toBe(true);
+    expect(warnings.length).toBeGreaterThan(0);
+    // The rename must never have happened: disk still holds the race
+    // winner's content, not the stale buffer's bytes.
+    expect(await readFile(path, "utf8")).toBe("raced externally");
+    // No stray temp file left behind either.
+    const entries = await readdir(dir);
+    expect(entries).toEqual(["race-before-rename.txt"]);
+  });
 });
