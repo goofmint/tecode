@@ -773,6 +773,36 @@ export function EditorView(props: EditorViewProps): ReactNode {
     terminalDimensions.height,
   ]);
 
+  // Unmount cleanup (CodeRabbit, PR #132): the sync effect above has no
+  // cleanup function of its own, so it only ever runs again on a RE-RENDER
+  // — if `EditorView` is unmounted while its text plane is still focused
+  // (a tab closing without a prior blur, mirroring `focus.tsx`'s own
+  // "detaching a still-focused node" gap), no further render happens to
+  // pick up the loss of focus and re-hide the cursor. `useFocusTracking`'s
+  // own detach handling (`focus.tsx`) only resets the `editorTextFocus`
+  // CONTEXT KEY on unmount, not the renderer's actual cursor position —
+  // those are two separate pieces of state. Left alone, the LAST position
+  // this effect wrote stays on the renderer forever: `HARDWARE_CURSOR_
+  // VISIBLE` being `false` keeps it invisible, but an IME that reads a
+  // terminal's reported cursor position regardless of visibility (this
+  // module's own `HARDWARE_CURSOR_VISIBLE` TSDoc) could still place its
+  // preedit string at this now-destroyed editor's stale caret instead of
+  // wherever focus actually lands next. Resetting to the renderer's origin,
+  // invisible, matches the sync effect's own "not focused"/"no primary
+  // selection" branches above.
+  useLayoutEffect(
+    () => () => {
+      if (typeof renderer.setCursorPosition === "function") {
+        // (1, 1), not (0, 0): `setCursorPosition` takes 1-based, CUP-style
+        // coordinates (`cursorPosition.ts`'s own TSDoc, verified against
+        // `EditBufferRenderable.renderCursor`'s `+ 1`), so 1 IS the origin
+        // here — passing 0 just gets clamped back up to 1 by the renderer.
+        renderer.setCursorPosition(1, 1, false);
+      }
+    },
+    [renderer],
+  );
+
   // Resolved once per render (not per line), and only actually a *new*
   // object when the theme or focus state changes — `EditorLineRow`'s memo
   // comparator relies on this reference staying stable across renders that
