@@ -208,6 +208,30 @@ describe("ExplorerView (Task 3.3, Req 11.2)", () => {
     expect(lastProps()?.["width"]).toBeUndefined();
   });
 
+  test("forwards height through to Tree (Issue #125)", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const { renderOnce } = await testRender(
+      <ExplorerView store={store} Tree={Tree} onOpenFile={() => {}} height={12} />,
+      { width: 30, height: 5 },
+    );
+    await renderOnce();
+    expect(lastProps()?.["height"]).toBe(12);
+  });
+
+  test("omits height from Tree's props when ExplorerView isn't given one (unchanged behavior)", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const { renderOnce } = await testRender(
+      <ExplorerView store={store} Tree={Tree} onOpenFile={() => {}} />,
+      { width: 30, height: 5 },
+    );
+    await renderOnce();
+    expect(lastProps()?.["height"]).toBeUndefined();
+  });
+
   test("a registration-time width survives a render that carries none, and a render-time width still wins (Issue #104 review)", async () => {
     // `ExplorerViewProps.width` is optional but real, so a caller MAY fix a
     // width at `activate()` time. The wrapper spreads `props` and then sets
@@ -303,5 +327,47 @@ describe("createExplorerViewComponent (Issue #104 Phase 3)", () => {
     await renderOnce();
 
     expect(lastProps()?.["width"]).toBeUndefined();
+  });
+
+  test("forwards a render-time `height` (e.g. Sidebar's viewProps) into ExplorerView/Tree (Issue #125)", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const component = createExplorerViewComponent({ store, Tree, onOpenFile: () => {} });
+    const Component = component as unknown as (p: Record<string, unknown>) => ReactNode;
+
+    const { renderOnce } = await testRender(<Component height={9} />, { width: 30, height: 5 });
+    await renderOnce();
+
+    expect(lastProps()?.["height"]).toBe(9);
+  });
+
+  test("a registration-time height survives a render that carries none, and a render-time height still wins", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const component = createExplorerViewComponent({ store, Tree, onOpenFile: () => {}, height: 7 });
+    const Component = component as unknown as (p: Record<string, unknown>) => ReactNode;
+
+    const bare = await testRender(<Component />, { width: 30, height: 5 });
+    await bare.renderOnce();
+    expect(lastProps()?.["height"]).toBe(7);
+
+    const live = await testRender(<Component height={9} />, { width: 30, height: 5 });
+    await live.renderOnce();
+    expect(lastProps()?.["height"]).toBe(9);
+  });
+
+  test("a non-numeric `height` in rawProps is ignored rather than forwarded as-is", async () => {
+    const store = createStore({ "a.ts": null }, ROOT);
+    await store.reload(ROOT);
+    const { Tree, lastProps } = createFakeTree();
+    const component = createExplorerViewComponent({ store, Tree, onOpenFile: () => {} });
+    const Component = component as unknown as (p: Record<string, unknown>) => ReactNode;
+
+    const { renderOnce } = await testRender(<Component height="9" />, { width: 30, height: 5 });
+    await renderOnce();
+
+    expect(lastProps()?.["height"]).toBeUndefined();
   });
 });

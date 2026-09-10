@@ -30,6 +30,7 @@ import { truncateToWidth } from "./cellWidth";
 import type { FocusableNode } from "./focus";
 import { useFocusTracking } from "./focus";
 import { toColorInput, useTheme } from "./theme";
+import { computeVisibleLineRange, revealLine } from "./viewport";
 
 /* ------------------------------------------------------------------ */
 /* Bridging @tecode/api's ComponentType to a real React element         */
@@ -313,6 +314,34 @@ export interface TreeProps {
    * `components.snapshot.test.tsx`'s existing width/indent assertions).
    */
   indentWidth?: number;
+  /**
+   * Bounds `Tree`'s own height and turns on virtualized, scroll-following
+   * rendering instead of materializing every visible (all-ancestors-
+   * expanded) node as a `<text>` row (Issue #125: with no vertical
+   * viewport at all, a tree taller than the sidebar's real content height
+   * simply overflows past it uncontrolled — the same "opt a caller INTO
+   * bounded rendering" shape {@link ListStyle} used for Issue #93's `List`
+   * and {@link width} used for Issue #104's truncation). Optional, and OFF
+   * by default: omitting it keeps Tree's original "render every node in
+   * the flattened list" behavior unchanged, so every pre-existing caller
+   * (including `components.snapshot.test.tsx`) renders byte-for-byte
+   * unchanged.
+   *
+   * The caller-supplied value is the sidebar's real, already-chrome-
+   * subtracted content height in terminal rows (`shell.tsx`'s `Sidebar` —
+   * see `viewport.ts`'s `computeSidebarViewportHeight`), not some
+   * arbitrary size `Tree` picks for itself — the same "the caller measures,
+   * `Tree` just trusts the number" division of responsibility {@link width}
+   * already uses. When given, only the `[startLine, endLine)` window
+   * `computeVisibleLineRange` (`viewport.ts`) picks out of the flattened,
+   * depth-first visible-node list is ever rendered as a `<text>` row — the
+   * same virtualization `editorView.tsx` already does for document lines,
+   * applied here to tree rows instead — and the window follows the
+   * selection via `revealLine`, the identical minimal-movement scroll
+   * adjustment `editorView.tsx` uses to keep the cursor on screen (this
+   * module's `Tree` TSDoc's "Scroll following the selection").
+   */
+  height?: number;
 }
 
 /**
@@ -425,6 +454,28 @@ function flattenVisibleNodes(
  * available on `@opentui/core`'s `KeyEvent` shape here — this component
  * simply does not act on it, the same "not our key, ignore it" discipline
  * `editor/inputRouter.ts` documents for its own fallthrough scope).
+ *
+ * **Scroll following the selection** (Issue #125, {@link TreeProps.height}'s
+ * own TSDoc): with `height` given, a local `scrollTop` `useState` — Tree has
+ * no caller-owned scroll field of its own to read/write, unlike
+ * `editorView.tsx`'s `EditorState.scrollTop` — holds the current scroll
+ * position across renders. Every render re-derives the EFFECTIVE position
+ * fresh from that state via `revealLine` (never resets to `0`): an
+ * out-of-view selection scrolls the minimum amount needed to bring it back
+ * on screen, an already-visible one leaves the position untouched, and no
+ * selection at all just clamps the existing position into range — the exact
+ * same minimal-movement policy `editorView.tsx`'s own `scrollTop`
+ * derivation already applies to the cursor. Only the `[startLine, endLine)`
+ * window `computeVisibleLineRange` (`viewport.ts`) then picks out of `flat`
+ * is ever mapped to a `<text>` row (the render loop below iterates
+ * `visibleNodes`, not `flat`, but otherwise stays untouched — same
+ * `key={node.id}`, same `prefixWidth`/`truncateToWidth` truncation). When
+ * the derived position differs from the current `scrollTop` state, it is
+ * written back so the NEXT render starts from it instead of re-deriving
+ * from a stale value every time; this is a bounded render-phase state
+ * update (React re-renders once more before committing, never loops) —
+ * bounded because `revealLine` converges: once the selection is back on
+ * screen, `effectiveScrollTop === scrollTop` and the write-back stops firing.
  */
 export function Tree(rawProps: Record<string, unknown>): ReactNode {
   const props = rawProps as TreeProps;
@@ -463,6 +514,41 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
   );
 
   const flat = useMemo(() => flattenVisibleNodes(props.nodes, expanded), [props.nodes, expanded]);
+
+  // Issue #125 — see this component's own TSDoc's "Scroll following the
+  // selection" for the full rationale. `scrollTop` is local (not part of
+  // `props`/`expanded`) since, unlike `editorView.tsx`'s `EditorState`, Tree
+  // has no caller-owned scroll field to read/write.
+  const [scrollTop, setScrollTop] = useState(0);
+  // `props.height === undefined`: skip every bit of this (this component's
+  // `TreeProps.height` TSDoc's "opt a caller INTO bounded rendering") —
+  // `visibleNodes` below falls back to `flat` in full, unchanged from
+  // before this prop existed.
+  let visibleNodes = flat;
+  if (props.height !== undefined) {
+    const selectedIndex = props.selectedId ? flat.findIndex((n) => n.id === props.selectedId) : -1;
+    // Derived fresh every render from the CURRENT `scrollTop` state (never
+    // reset to 0): `revealLine` only moves the window the minimum amount
+    // needed to keep the selection on screen — an already-visible selection
+    // leaves it untouched. No selection at all: keep the existing position,
+    // merely clamped into range, mirroring `editorView.tsx`'s own
+    // `revealTargetLine !== undefined ? revealLine(...) : clamp` fallback
+    // for when there is no cursor to reveal.
+    const effectiveScrollTop =
+      selectedIndex >= 0
+        ? revealLine(selectedIndex, scrollTop, props.height, flat.length)
+        : Math.max(0, Math.min(scrollTop, Math.max(0, flat.length - 1)));
+    // Writes the derived position back so the NEXT render starts from it
+    // instead of re-deriving from a stale `scrollTop` value every time —
+    // this is what makes the viewport "stick" once it has scrolled. A
+    // render where nothing moved (`effectiveScrollTop === scrollTop`) never
+    // calls this, so it converges rather than looping.
+    if (effectiveScrollTop !== scrollTop) {
+      setScrollTop(effectiveScrollTop);
+    }
+    const { startLine, endLine } = computeVisibleLineRange(effectiveScrollTop, props.height, flat.length);
+    visibleNodes = flat.slice(startLine, endLine);
+  }
 
   const handleKeyDown = useCallback(
     (key: KeyEvent) => {
@@ -514,8 +600,25 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
   );
 
   return (
-    <box ref={rootRef} focusable focused={props.focused} onKeyDown={handleKeyDown} style={{ flexDirection: "column" }}>
-      {flat.map((node) => {
+    <box
+      ref={rootRef}
+      focusable
+      focused={props.focused}
+      onKeyDown={handleKeyDown}
+      // Issue #125: bounded + clipped only when `height` opts into it — an
+      // explicit `height`/`overflow: "hidden"` is belt-and-suspenders
+      // alongside `visibleNodes`' own slicing above (which already renders
+      // at most `props.height` rows), matching `editorView.tsx`'s own
+      // virtualized text-plane box. Omitted `height`: the exact same style
+      // object shape as before this prop existed, so every pre-existing
+      // caller renders byte-for-byte unchanged.
+      style={
+        props.height !== undefined
+          ? { flexDirection: "column", height: props.height, overflow: "hidden" }
+          : { flexDirection: "column" }
+      }
+    >
+      {visibleNodes.map((node) => {
         const isExpanded = expanded.has(node.id);
         const isSelected = props.selectedId === node.id;
         const glyph = node.hasChildren ? (isExpanded ? "▾ " : "▸ ") : "  ";

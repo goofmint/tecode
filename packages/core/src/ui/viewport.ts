@@ -152,3 +152,55 @@ export function computeEditorViewportHeight(terminalHeight: number, chrome: Edit
   const available = Math.trunc(terminalHeight) - Math.trunc(consumed);
   return Math.max(1, available);
 }
+
+/**
+ * The chrome `shell.tsx`'s `Sidebar` draws ABOVE/AROUND its active
+ * `sidebar.view`'s content, as row counts (Issue #125, mirroring
+ * {@link EditorAreaChrome}'s own "derive every field from the EXACT same
+ * condition used to decide whether to render that region" discipline, so
+ * this can never silently drift out of sync with what `Sidebar` actually
+ * draws this render). See `shell.tsx`'s `Sidebar` for where each field's
+ * value comes from.
+ *
+ * Deliberately excludes `Sidebar`'s own `border={["right"]}` — that border
+ * eats one COLUMN of its children's content width (`shell.tsx`'s
+ * `SIDEBAR_BORDER_WIDTH`), not a row of vertical space, so it plays no part
+ * in a row-count computation like this one.
+ */
+export interface SidebarChrome {
+  /** The sidebar's own title row (`Sidebar`'s `{view?.title ? <text>...`)
+   * — rendered when the active `sidebar.view` entry carries a `title`, `0`
+   * rows otherwise. */
+  titleRow: number;
+  /** `Shell`'s bottom `Panel` — `Panel` is `Sidebar`'s SIBLING, not its
+   * descendant (design.md §8.1's component tree), but both sit in the same
+   * flex column above `StatusBar`, so `Panel`'s height still eats into the
+   * terminal's overall row budget the same way it already does for
+   * `EditorArea` (`EditorAreaChrome.panel`'s own TSDoc applies verbatim
+   * here). `0` when `layout.panelVisible` is false. */
+  panel: number;
+  /** `StatusBar` — always rendered, so always reserved in practice, but
+   * still supplied by the caller (not hardcoded here), matching
+   * `EditorAreaChrome.statusBar`'s own "never drifts from what's actually
+   * drawn" discipline. */
+  statusBar: number;
+}
+
+/**
+ * Rows left for the active `sidebar.view`'s own content once `Sidebar`'s
+ * own chrome is subtracted from the real terminal height (Issue #125 —
+ * `tecode.ui.Tree` has no vertical viewport of its own, so a tree taller
+ * than the sidebar's actual content height simply overflows uncontrolled;
+ * see `TreeProps.height`'s own TSDoc). Same shape as
+ * {@link computeEditorViewportHeight} — sums `chrome`'s fields, subtracts
+ * from `terminalHeight`, and clamps to a minimum of `1` so a terminal too
+ * short (or too much chrome) to fit even one content row still gets a
+ * usable, positive height rather than `0`/negative (which
+ * `computeVisibleLineRange` would otherwise turn into an empty, fully
+ * blank window).
+ */
+export function computeSidebarViewportHeight(terminalHeight: number, chrome: SidebarChrome): number {
+  const consumed = chrome.titleRow + chrome.panel + chrome.statusBar;
+  const available = Math.trunc(terminalHeight) - Math.trunc(consumed);
+  return Math.max(1, available);
+}

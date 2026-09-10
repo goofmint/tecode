@@ -616,6 +616,111 @@ describe("Tree (tecode.ui.Tree)", () => {
     });
   });
 
+  describe("height (Issue #125): viewport + scroll following the selection", () => {
+    function flatNodes(count: number): TreeNode[] {
+      return Array.from({ length: count }, (_, i) => ({ id: `n${i}`, label: `n${i}` }));
+    }
+
+    test("more nodes than height: only the visible window renders, not the whole list", async () => {
+      const { renderOnce, captureCharFrame } = await testRender(<Tree nodes={flatNodes(20)} height={5} />, {
+        width: 20,
+        height: 20,
+      });
+      await renderOnce();
+      const frame = captureCharFrame();
+      // scrollTop starts at 0 (no selection to reveal) -> rows [0, 5) visible.
+      expect(frame).toContain("n0");
+      expect(frame).toContain("n4");
+      expect(frame).not.toContain("n5");
+      expect(frame).not.toContain("n19");
+    });
+
+    test("height omitted still renders every node (unchanged behavior)", async () => {
+      const { renderOnce, captureCharFrame } = await testRender(<Tree nodes={flatNodes(20)} />, {
+        width: 20,
+        height: 30,
+      });
+      await renderOnce();
+      const frame = captureCharFrame();
+      for (let i = 0; i < 20; i++) expect(frame).toContain(`n${i}`);
+    });
+
+    test("moving selection below the visible window scrolls it into view and keeps it there", async () => {
+      let captured: FocusableNode | null = null;
+
+      function Harness(): ReturnType<typeof Tree> {
+        const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+        return (
+          <Tree
+            nodes={flatNodes(20)}
+            height={5}
+            selectedId={selectedId}
+            treeRef={(node: FocusableNode | null) => (captured = node)}
+            onSelect={(id: string) => setSelectedId(id)}
+          />
+        );
+      }
+
+      const { renderOnce, captureCharFrame } = await testRender(<Harness />, { width: 20, height: 20 });
+      await renderOnce();
+
+      async function press(name: string): Promise<void> {
+        await act(() => {
+          (captured as unknown as { onKeyDown?: (key: KeyEvent) => void })?.onKeyDown?.(keyEvent(name));
+        });
+        await renderOnce();
+      }
+
+      // 1st down (no selection) lands on n0; the next 6 walk to n6, which is
+      // below the initial [0, 5) window — the viewport must scroll to keep
+      // it visible.
+      for (let i = 0; i < 7; i++) await press("down");
+
+      const frame = captureCharFrame();
+      expect(frame).toContain("n6");
+      expect(frame).not.toContain("n0");
+    });
+
+    test("deep nesting whose prefixWidth exceeds width inside a virtualized window still renders a blank, not broken, label (Issue #104 regression guard)", async () => {
+      const nodes: TreeNode[] = [
+        {
+          id: "a",
+          label: "a",
+          hasChildren: true,
+          children: [
+            {
+              id: "b",
+              label: "b",
+              hasChildren: true,
+              children: [
+                {
+                  id: "c",
+                  label: "c",
+                  hasChildren: true,
+                  children: [{ id: "d", label: "a-long-enough-label-to-overflow.ts" }],
+                },
+              ],
+            },
+          ],
+        },
+      ];
+      const { renderOnce, captureCharFrame } = await testRender(
+        <Tree nodes={nodes} expandedIds={["a", "b", "c"]} width={5} height={4} />,
+        { width: 20, height: 20 },
+      );
+      await renderOnce();
+      const lines = captureCharFrame().split("\n");
+      // Flat, visible order is a(depth0)/b(depth1)/c(depth2)/d(depth3), all
+      // 4 fit inside height=4 with scrollTop 0, so row 3 is the depth-3 leaf
+      // "d": indent 2*3=6 + its own blank glyph "  " = 8 fixed prefix
+      // columns, already wider than the 5-column width — its label budget
+      // (5 - 8 = -3) is negative, so `truncateToWidth` returns "" (this
+      // module's TreeProps.width TSDoc), same as the non-virtualized case.
+      expect(lines[3]!.slice(0, 8)).toBe("        ");
+      expect(lines[3]).not.toContain("…");
+    });
+  });
+
   describe("focusContextKey (Task 3.3, Req 4.6, 11.2)", () => {
     test("reports focus gain/loss on the root box to the given context key", async () => {
       const context = createContextService();

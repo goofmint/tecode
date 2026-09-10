@@ -7,13 +7,16 @@
 import { describe, expect, test } from "bun:test";
 import {
   computeEditorViewportHeight,
+  computeSidebarViewportHeight,
   computeVisibleLineRange,
   gutterDigitWidth,
   revealLine,
   type EditorAreaChrome,
+  type SidebarChrome,
 } from "./viewport";
 
 const NO_CHROME: EditorAreaChrome = { tabBar: 0, findWidget: 0, panel: 0, statusBar: 0 };
+const NO_SIDEBAR_CHROME: SidebarChrome = { titleRow: 0, panel: 0, statusBar: 0 };
 
 describe("computeVisibleLineRange (design.md §8.3's virtualized text layer)", () => {
   test("a full window in the middle of a long document", () => {
@@ -160,5 +163,45 @@ describe("computeEditorViewportHeight (Issue #92; design.md §8.1-§8.3)", () =>
 
   test("non-integer terminal heights are truncated, not rounded or left fractional", () => {
     expect(computeEditorViewportHeight(24.9, NO_CHROME)).toBe(24);
+  });
+});
+
+describe("computeSidebarViewportHeight (Issue #125)", () => {
+  test("no chrome at all: every terminal row goes to the sidebar's content", () => {
+    expect(computeSidebarViewportHeight(24, NO_SIDEBAR_CHROME)).toBe(24);
+  });
+
+  test("the title row alone is subtracted when the active view carries a title", () => {
+    const chrome: SidebarChrome = { titleRow: 1, panel: 0, statusBar: 0 };
+    expect(computeSidebarViewportHeight(20, chrome)).toBe(19);
+  });
+
+  test("the status bar alone is subtracted, always (it's always drawn)", () => {
+    const chrome: SidebarChrome = { titleRow: 0, panel: 0, statusBar: 1 };
+    expect(computeSidebarViewportHeight(20, chrome)).toBe(19);
+  });
+
+  test("an open panel is subtracted on top of the title row and status bar", () => {
+    const chrome: SidebarChrome = { titleRow: 1, panel: 8, statusBar: 1 };
+    expect(computeSidebarViewportHeight(20, chrome)).toBe(10);
+  });
+
+  test("a closed panel (panel: 0) leaves the title row/status bar as the only chrome", () => {
+    const chrome: SidebarChrome = { titleRow: 1, panel: 0, statusBar: 1 };
+    expect(computeSidebarViewportHeight(20, chrome)).toBe(18);
+  });
+
+  test("clamp: chrome consuming the entire terminal still yields at least 1 row, never 0 or negative", () => {
+    const chrome: SidebarChrome = { titleRow: 1, panel: 8, statusBar: 1 };
+    // Exactly as much chrome as terminal height (10 == 1+8+1).
+    expect(computeSidebarViewportHeight(10, chrome)).toBe(1);
+    // Chrome taller than the terminal itself.
+    expect(computeSidebarViewportHeight(5, chrome)).toBe(1);
+    expect(computeSidebarViewportHeight(0, chrome)).toBe(1);
+    expect(computeSidebarViewportHeight(-10, chrome)).toBe(1);
+  });
+
+  test("non-integer terminal heights are truncated, not rounded or left fractional", () => {
+    expect(computeSidebarViewportHeight(24.9, NO_SIDEBAR_CHROME)).toBe(24);
   });
 });
