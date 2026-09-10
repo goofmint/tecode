@@ -17,6 +17,7 @@ import type {
   Editor,
   ExtensionContext,
   LanguageContribution,
+  Range,
   Selection,
   Tecode,
   TextEdit,
@@ -40,6 +41,14 @@ function createFakeApi(initialLines: string[]) {
   const lines = [...initialLines];
   let selections: Selection[] = [cursorAt(0, 0)];
   const appliedEdits: TextEdit[][] = [];
+  // Minimal `tecode.editor.find` fake (Issue #117 regression coverage) — only
+  // `isOpen` and a single "active match" are modeled, exactly what
+  // `editor.action.findAccept`'s handler (`index.ts`) needs: `close()` to
+  // hide the widget, and `jumpToActiveMatch()` to write `selections` and
+  // report success/no-op via its return value, matching the real
+  // `FindService.jumpToActiveMatch` contract (`findService.ts`).
+  let findIsOpen = false;
+  let findActiveMatch: Range | undefined;
   const commandHandlers = new Map<string, CommandHandler>();
   const configValues = new Map<string, unknown>([
     ["editor.tabSize", 4],
@@ -188,6 +197,27 @@ function createFakeApi(initialLines: string[]) {
         if (next.length === 0) return;
         selections = [...next];
       },
+      find: {
+        open: () => {
+          findIsOpen = true;
+        },
+        close: () => {
+          findIsOpen = false;
+        },
+        setQuery: () => {},
+        setReplaceQuery: () => {},
+        toggleCaseSensitive: () => {},
+        next: () => {},
+        previous: () => {},
+        replaceCurrent: () => {},
+        replaceAll: () => {},
+        jumpToActiveMatch: (): boolean => {
+          if (!findActiveMatch) return false;
+          const match = findActiveMatch;
+          selections = [{ start: match.start, end: match.end, anchor: match.start, active: match.end }];
+          return true;
+        },
+      },
     },
     ui: undefined as never,
     config: {
@@ -233,6 +263,13 @@ function createFakeApi(initialLines: string[]) {
     setConfig,
     getSelections: () => selections,
     languageContributions,
+    isFindOpen: () => findIsOpen,
+    openFind: () => {
+      findIsOpen = true;
+    },
+    setFindActiveMatch: (match: Range | undefined) => {
+      findActiveMatch = match;
+    },
   };
 }
 
@@ -693,5 +730,36 @@ describe("editor-core activate() — clipboard copy/cut/paste (Issue #91)", () =
     expect(applyEditsCalls).toBe(0);
     expect(clipboardReadCalls).toBe(0);
     expect(clipboardWriteCalls).toBe(0);
+  });
+});
+
+describe("editor-core activate() — editor.action.findAccept (Issue #117)", () => {
+  test("with an active match, moves the selection onto it and closes the find widget", async () => {
+    const { api, openFind, setFindActiveMatch, isFindOpen, getSelections } = activateFixture(["foo bar foo"]);
+    openFind();
+    setFindActiveMatch({ start: pos(0, 8), end: pos(0, 11) });
+
+    await api.commands.execute("editor.action.findAccept");
+
+    expect(isFindOpen()).toBe(false);
+    expect(getSelections()).toEqual([
+      { start: pos(0, 8), end: pos(0, 11), anchor: pos(0, 8), active: pos(0, 11) },
+    ]);
+  });
+
+  // CodeRabbit finding (Issue #117): with zero matches, `jumpToActiveMatch()`
+  // is a documented no-op (`findService.ts`) — the handler must only call
+  // `close()` when the jump actually succeeded, or "no matches: do nothing"
+  // is violated by the widget disappearing on an empty result.
+  test("with no active match, is a no-op — the widget stays open and selections are unchanged", async () => {
+    const { api, openFind, setFindActiveMatch, isFindOpen, getSelections } = activateFixture(["foo bar foo"]);
+    openFind();
+    setFindActiveMatch(undefined); // no matches
+    const selectionsBefore = getSelections();
+
+    await api.commands.execute("editor.action.findAccept");
+
+    expect(isFindOpen()).toBe(true);
+    expect(getSelections()).toEqual(selectionsBefore);
   });
 });

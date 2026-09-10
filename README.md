@@ -465,12 +465,13 @@ exist yet:
 
 | Key | Type | Default | Source | Description |
 |---|---|---|---|---|
-| `workbench.colorTheme` | string | `"tecode.dark-modern"` | core (`config/coreDefaults.ts`) | The active color theme's id (Req 7.5, 11.4). |
+| `workbench.colorTheme` | string | `"tecode.dark-modern"` | core (`config/coreDefaults.ts`) | The active color theme's id (Req 7.5, 11.4) — the built-in `tecode.dark-modern`, or a user theme's filename stem (see "Themes" below). |
 | `editor.lineNumbers` | boolean | `true` | core | Show line numbers in the editor gutter. |
 | `editor.tabSize` | number | `4` | core | The number of spaces a tab is equal to. |
 | `editor.insertSpaces` | boolean | `true` | core | Insert spaces (up to the next tab stop) instead of a literal tab when pressing Tab. |
 | `explorer.showHidden` | boolean | `false` | `explorer` built-in extension (`builtin/explorer/manifest.ts`) | Show hidden (dot-prefixed) and `.gitignore`-ignored files in the explorer sidebar. |
 | `workbench.sidebarWidth` | number | `30` | core (`config/coreDefaults.ts`) | The sidebar's width in columns (Issue #105). Also adjustable by dragging the sidebar's right border, or the Increase/Decrease Sidebar Width commands — see "Sidebar width" above. |
+| `workbench.panelHeight` | number | `10` | core (`config/coreDefaults.ts`) | The bottom panel's height in rows (Issue #118). One-directional: applied to the persisted layout on startup and on live edits, but not yet written back by a resize command or drag. |
 | `editor.wordWrap` | — | — | **not implemented** | Named by Req 9.5. No `contributes.configuration` schema registers this key, and nothing in `packages/` reads `config.get("editor.wordWrap")` outside of test fixtures exercising the config-merge machinery in the abstract (`packages/core/src/config/service.test.ts`, `themeSettingsWriter.test.ts`) — those tests use the string purely as a generic example key, not as evidence of a real word-wrap feature. Verified by grepping the whole `packages/` tree for both the key string and any wrap-related rendering logic in `EditorView`; there is none. |
 | `files.autoSave` | — | — | **not implemented** | Named by Req 9.5. No schema registers it, and no reader ever calls `config.get("files.autoSave")` anywhere in `packages/` (verified the same way as `editor.wordWrap` above — a plain grep for the key string found zero matches at all, not even in a test fixture). |
 
@@ -479,6 +480,47 @@ Extensions declare their own settings via a manifest's
 `tecode.config.get(key)`; `explorer.showHidden` above is the one example
 shipped today. A third-party extension's own settings would be documented
 by that extension, not here.
+
+## Themes
+
+Req 11.4: `themes-default` embeds exactly one theme directly in the
+binary — Dark Modern (`tecode.dark-modern`, `workbench.colorTheme`'s
+default) — so the very first frame paints correctly with zero extension
+activation, even before any other theme is discovered (design.md §3, §9).
+Every other theme, including `tecode.dark-modern`'s Light Modern
+counterpart, ships as a plain JSON file rather than being baked into the
+binary (Issue #124).
+
+`themes/` (in this repository, alongside `samples/`) holds those files —
+today, `themes/light-modern.json`. Copy whichever ones you want into your
+user themes directory to make them selectable:
+
+```sh
+mkdir -p ~/.config/tecode/themes
+cp themes/light-modern.json ~/.config/tecode/themes/
+```
+
+(`%APPDATA%\tecode\themes` on Windows — `packages/core/src/host/paths.ts`'s
+`getUserThemesDir`.) tecode scans this directory for `*.json` files during
+startup's deferred phase (`packages/cli/src/userThemes.ts`'s
+`scanUserThemes`) and registers each one exactly like a manifest's
+`contributes.themes` entry — no restart-free live-reload, but nothing
+extra to configure either. A theme file's **id** is its filename without
+the `.json` extension (`light-modern.json` → `light-modern`); its
+**label** (shown in the `theme.select` quick pick, `ctrl+shift+p` →
+"theme.select") is the JSON's own top-level `"name"` string when present,
+otherwise the same id. Once copied, select it either via `theme.select`
+or by setting `workbench.colorTheme` directly in `settings.json`:
+
+```jsonc
+{ "workbench.colorTheme": "light-modern" }
+```
+
+An empty or missing user themes directory is not an error — tecode starts
+normally on Dark Modern either way. A theme file that fails to parse still
+registers (so it shows up as a `theme.select` entry) but resolves to the
+built-in base palette if selected, rather than failing startup
+(`themeLoader.ts`'s existing per-theme degrade policy, design.md §9).
 
 ## Terminal support
 

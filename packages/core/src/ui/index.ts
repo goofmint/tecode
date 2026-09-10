@@ -31,6 +31,14 @@ export {
   type WireSidebarWidthConfigSyncDeps,
 } from "./sidebarWidthConfigSync";
 
+export { clampPanelHeight, MIN_EDITOR_HEIGHT, MIN_PANEL_HEIGHT } from "./panelHeight";
+
+export {
+  applyConfiguredPanelHeight,
+  wirePanelHeightConfigSync,
+  type WirePanelHeightConfigSyncDeps,
+} from "./panelHeightConfigSync";
+
 export {
   applySidebarWidthSetting,
   createSidebarWidthSettingsWriter,

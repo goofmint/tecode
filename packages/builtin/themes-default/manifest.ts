@@ -1,15 +1,22 @@
 /**
- * `themes-default`'s manifest (Req 11.4; design.md §3, §13): a
- * pure-contribution built-in extension — "themes-default SHALL provide
- * two themes equivalent to VS Code's Dark Modern and Light Modern" (Req
- * 11.4). Declares `contributes.themes` only, exactly like `editor-core`'s
- * `manifest.ts` declares `contributes.commands`/`keybindings` — pure data,
- * `export default {...} satisfies Manifest`, read and validated by the
- * host WITHOUT executing `index.ts` (Req 2.2).
+ * `themes-default`'s manifest (Req 11.4; Issue #124; design.md §3, §13): a
+ * pure-contribution built-in extension providing Dark Modern, the one
+ * theme embedded directly in the binary as the default (Req 11.4's "Dark
+ * Modern is embedded as the built-in default theme"). Declares
+ * `contributes.themes` only, exactly like `editor-core`'s `manifest.ts`
+ * declares `contributes.commands`/`keybindings` — pure data, `export
+ * default {...} satisfies Manifest`, read and validated by the host
+ * WITHOUT executing `index.ts` (Req 2.2).
+ *
+ * **Light Modern moved out** (Issue #124): it now ships as a plain file at
+ * the repository's top-level `themes/light-modern.json` — copyable to
+ * `~/.config/tecode/themes/` and loaded through `packages/cli/src/
+ * userThemes.ts`'s scanner, exactly like any other third-party theme, no
+ * longer a `themes-default` contribution or an embedded asset.
  *
  * **No `activationEvents`** (design.md §13's "themes-default /
  * languages-basic: pure-contribution extensions (no `activate` logic
- * beyond registration)"): both themes are registered directly from
+ * beyond registration)"): Dark Modern is registered directly from
  * `contributes.themes` during discovery/registration
  * (`host/registration.ts`'s `registerExtension`), which never executes
  * `index.ts` — there is nothing for an `activate(ctx)` call to do, so
@@ -19,9 +26,9 @@
  * `@tecode/builtin`'s `BuiltinExtensionModule` shape — see that file's
  * TSDoc.
  *
- * **Theme ids** (`tecode.dark-modern`/`tecode.light-modern`): namespaced
- * under `tecode.` the same way every other built-in id in this codebase
- * is (`tecode.editor-core`) — `packages/core/src/config/coreDefaults.ts`'s
+ * **Theme id** (`tecode.dark-modern`): namespaced under `tecode.` the
+ * same way every other built-in id in this codebase is
+ * (`tecode.editor-core`) — `packages/core/src/config/coreDefaults.ts`'s
  * `workbench.colorTheme` default DUPLICATES {@link DARK_MODERN_THEME_ID}'s
  * value as a literal string, rather than importing it, because `core`
  * cannot depend on `builtin` (the same one-directional layering
@@ -35,10 +42,11 @@
  * parameter) — for a built-in, that directory is the synthetic
  * `<builtin>/tecode.themes-default` label `discovery.ts` assigns (no real
  * directory exists on disk), which is exactly why `packages/cli`'s
- * `assembleBuiltinThemeAssets`/`createBuiltinThemeAssetsFs`
- * (`themeAssetsFs.ts`) serve these paths from an embedded-JSON map rather
- * than a real `fs.readFile` — see that module's TSDoc for the full
- * pre-first-frame loading story (design.md §3).
+ * `createBuiltinThemeAssetsFs` (`themeAssetsFs.ts`) serves this path from
+ * an embedded-JSON map (`assets.ts`'s `builtinThemeAssets`, keyed with
+ * this EXACT `path` string) rather than a real `fs.readFile` — see that
+ * module's TSDoc for the full pre-first-frame loading story (design.md
+ * §3).
  */
 
 import type { Manifest } from "@tecode/api";
@@ -47,8 +55,6 @@ import type { Manifest } from "@tecode/api";
  * `workbench.colorTheme` default) and every test that asserts against it
  * reference one shared constant rather than a duplicated string literal. */
 export const DARK_MODERN_THEME_ID = "tecode.dark-modern";
-/** `tecode.light-modern`'s theme id — see {@link DARK_MODERN_THEME_ID}. */
-export const LIGHT_MODERN_THEME_ID = "tecode.light-modern";
 
 export default {
   id: "tecode.themes-default",
@@ -56,9 +62,6 @@ export default {
   apiVersion: "1.0",
   activationEvents: [],
   contributes: {
-    themes: [
-      { id: DARK_MODERN_THEME_ID, label: "Dark Modern", path: "themes/dark-modern.json" },
-      { id: LIGHT_MODERN_THEME_ID, label: "Light Modern", path: "themes/light-modern.json" },
-    ],
+    themes: [{ id: DARK_MODERN_THEME_ID, label: "Dark Modern", path: "themes/dark-modern.json" }],
   },
 } satisfies Manifest;

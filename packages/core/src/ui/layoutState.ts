@@ -48,6 +48,12 @@
  * `clampSidebarWidth` — see that function's own TSDoc for why only the
  * floor half of the clamp applies here, and `shell.tsx`'s `Shell` for the
  * terminal-width-aware other half.
+ *
+ * **`panelHeight` validation (Issue #118)**: the same treatment, vertically
+ * — {@link coerceLayoutState} clamps a loaded `panelHeight` through
+ * `panelHeight.ts`'s `clampPanelHeight`, floor-only for the identical
+ * "no live terminal at load time" reason; `shell.tsx`'s `Shell` is again
+ * the one place the terminal-height-aware ceiling is enforced.
  */
 
 import { readFile as nodeReadFile, writeFile as nodeWriteFile, mkdir as nodeMkdir } from "node:fs/promises";
@@ -55,6 +61,7 @@ import { dirname } from "node:path";
 import type { Disposable, Event, Listener } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserLayoutStatePath } from "../host/paths";
+import { clampPanelHeight } from "./panelHeight";
 import { clampSidebarWidth } from "./sidebarWidth";
 
 /** Persisted UI layout state (Req 6.4). */
@@ -228,7 +235,12 @@ function hasChanged(prev: LayoutState, partial: Partial<LayoutState>): boolean {
  * call: it is unknowable at load time (no renderer exists yet), so only the
  * floor half of the clamp applies here — `shell.tsx`'s `Shell` is what
  * additionally caps against the live terminal width, once one exists
- * (`sidebarWidth.ts`'s TSDoc). */
+ * (`sidebarWidth.ts`'s TSDoc).
+ *
+ * **`panelHeight` gets the identical treatment via `panelHeight.ts`'s
+ * `clampPanelHeight`** (Issue #118), `terminalHeight` likewise omitted for
+ * the same "unknowable at load time" reason — `shell.tsx`'s `Shell` again
+ * applies the terminal-height-aware ceiling at render time. */
 function coerceLayoutState(value: unknown, fallback: LayoutState): LayoutState {
   if (typeof value !== "object" || value === null) return { ...fallback };
   const raw = value as Record<string, unknown>;
@@ -240,8 +252,9 @@ function coerceLayoutState(value: unknown, fallback: LayoutState): LayoutState {
     ),
     panelVisible:
       typeof raw["panelVisible"] === "boolean" ? raw["panelVisible"] : fallback.panelVisible,
-    panelHeight:
+    panelHeight: clampPanelHeight(
       typeof raw["panelHeight"] === "number" ? raw["panelHeight"] : fallback.panelHeight,
+    ),
     activeView: typeof raw["activeView"] === "string" ? raw["activeView"] : fallback.activeView,
   };
 }

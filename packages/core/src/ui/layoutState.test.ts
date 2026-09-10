@@ -8,6 +8,7 @@ import {
   type LayoutStateFs,
   type LayoutStateTimer,
 } from "./layoutState";
+import { MIN_PANEL_HEIGHT } from "./panelHeight";
 import { MIN_SIDEBAR_WIDTH } from "./sidebarWidth";
 
 /** A `StatusSink` stub that records every error it receives (matches
@@ -170,6 +171,47 @@ describe("createLayoutStateService — load (Req 6.4)", () => {
     expect(state.sidebarWidth).toBe(DEFAULT_LAYOUT_STATE.sidebarWidth);
     expect(state.panelVisible).toBe(true);
     expect(state.sidebarVisible).toBe(DEFAULT_LAYOUT_STATE.sidebarVisible);
+  });
+
+  test("a hand-edited state.json with a zero/negative panelHeight is clamped to MIN_PANEL_HEIGHT (Issue #118)", async () => {
+    const { fs } = createFakeFs({ "/state.json": JSON.stringify({ panelHeight: 0 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+
+    await service.ready;
+    expect(service.get().panelHeight).toBe(MIN_PANEL_HEIGHT);
+
+    const { fs: negativeFs } = createFakeFs({ "/state.json": JSON.stringify({ panelHeight: -5 }) });
+    const negativeService = createLayoutStateService({ log, sink, path: "/state.json", fs: negativeFs });
+    await negativeService.ready;
+    expect(negativeService.get().panelHeight).toBe(MIN_PANEL_HEIGHT);
+  });
+
+  test("a hand-edited state.json with an absurdly huge panelHeight is NOT capped here (no terminal height known yet, Issue #118)", async () => {
+    // `coerceLayoutState` only ever applies the floor half of the clamp
+    // (`layoutState.ts`'s own TSDoc) — the ceiling needs a live terminal
+    // height, which does not exist at load time. `shell.tsx`'s `Shell` is
+    // what caps this at render time instead.
+    const { fs } = createFakeFs({ "/state.json": JSON.stringify({ panelHeight: 99999 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+
+    await service.ready;
+    expect(service.get().panelHeight).toBe(99999);
+  });
+
+  test("a non-numeric panelHeight falls back to DEFAULT_LAYOUT_STATE.panelHeight (Issue #118)", async () => {
+    const { fs } = createFakeFs({
+      "/state.json": JSON.stringify({ panelHeight: "not a number" }),
+    });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createLayoutStateService({ log, sink, path: "/state.json", fs });
+
+    await service.ready;
+    expect(service.get().panelHeight).toBe(DEFAULT_LAYOUT_STATE.panelHeight);
   });
 });
 

@@ -40,7 +40,15 @@
  * This also keeps navigation from clobbering whatever the user's actual
  * cursor/selections were before find was opened (design.md §13's "match
  * highlighting distinct from selections" — this service never conflates
- * the two).
+ * the two). This is an invariant only the navigate group (`next`/
+ * `previous`/`setQuery`, and `toggleCaseSensitive`'s recompute) upholds —
+ * {@link FindService.jumpToActiveMatch} (Issue #117) is a different,
+ * explicit accept operation: the user asked to LEAVE find and land the
+ * real cursor/selection on the active match, so it deliberately DOES write
+ * `EditorState.selections` (still leaving `scrollTop` alone — the same
+ * per-render `revealLine` derivation this paragraph describes reveals the
+ * new selection on the very next render, same as any other selection
+ * change).
  *
  * **Index policy — two different clamps, deliberately** (this module's
  * `wrapIndex`/`reanchorIndex`):
@@ -103,6 +111,23 @@ export interface FindService {
   previous(): void;
   replaceCurrent(): void;
   replaceAll(): void;
+  /**
+   * Accept the active match: move the real cursor/selection onto it (Issue
+   * #117). A no-op — no exception, no state change — when there is no
+   * active editor, no active match (`activeMatchIndex < 0`), or `matches`
+   * is empty (this module's TSDoc's "Reveal-on-navigate" paragraph
+   * explains why this is the one method here that DOES write
+   * `EditorState.selections`).
+   *
+   * @returns `true` if a selection was actually written (a jump happened);
+   * `false` if this call was a no-op. `editor-core`'s
+   * `editor.action.findAccept` handler (CodeRabbit finding, Issue #117)
+   * needs exactly this to implement "close the find widget only when the
+   * jump actually succeeded" — without a success signal, it would call
+   * `close()` unconditionally and violate the "no matches: do nothing"
+   * invariant by closing the widget on an empty result.
+   */
+  jumpToActiveMatch(): boolean;
   /** Fires after any state change this service makes (this module's TSDoc)
    * — same "just re-render, don't diff what changed" shape as
    * `EditorSessionService.onDidChange`. Note `editorSession.setState` ALSO
@@ -335,6 +360,29 @@ export function createFindService(deps: FindServiceDeps): FindService {
     document.transaction(() => document.applyEdits(edits));
   }
 
+  function jumpToActiveMatch(): boolean {
+    const document = editorSession.getActiveDocument();
+    if (!document) return false;
+    const find = readFind(document);
+    if (find.activeMatchIndex < 0 || find.matches.length === 0) return false;
+    const match = find.matches[find.activeMatchIndex];
+    if (!match) return false;
+    // One `Selection` (`Selection extends Range` — `primitives.ts`) built
+    // straight from the match's own range: a collapsed-to-the-match
+    // anchor/active pair, matching how `next`/`previous` already treat
+    // `matches[activeMatchIndex]` as the source of truth for "where the
+    // active match is". `scrollTop` is deliberately untouched (this
+    // module's TSDoc's "Reveal-on-navigate" paragraph) — the next render's
+    // `revealLine` derivation handles bringing it into view.
+    const state = editorSession.getState(document.uri);
+    editorSession.setState(document.uri, {
+      ...state,
+      selections: [{ start: match.start, end: match.end, anchor: match.start, active: match.end }],
+    });
+    fireChange();
+    return true;
+  }
+
   function onDidChange(listener: Listener<void>): Disposable {
     listeners.add(listener);
     let listenerDisposed = false;
@@ -367,6 +415,7 @@ export function createFindService(deps: FindServiceDeps): FindService {
     previous,
     replaceCurrent,
     replaceAll,
+    jumpToActiveMatch,
     onDidChange,
     dispose,
   };

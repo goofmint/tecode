@@ -1,13 +1,20 @@
 /**
- * Completeness tests for `themes-default`'s two theme JSON files (Req
- * 11.4, Task 2.7; design.md §3, §13): every {@link UiColorKey} and every
- * {@link BaseCaptureName} must be defined directly in BOTH
- * `themes/dark-modern.json` and `themes/light-modern.json` — this
- * extension may not rely on `@tecode/core`'s `ThemeLoader` base-palette
- * per-key fallback for any key (that fallback exists for THIRD-PARTY
- * partial themes, design.md §9; the two built-in themes this MVP ships as
- * "equivalent to VS Code's Dark Modern and Light Modern" are the one place
- * that fallback should never actually be exercised).
+ * Completeness tests for `themes-default`'s one embedded theme JSON file
+ * (Req 11.4, Task 2.7; Issue #124; design.md §3, §13): every
+ * {@link UiColorKey} and every {@link BaseCaptureName} must be defined
+ * directly in the top-level `themes/dark-modern.json` — this extension
+ * may not rely on `@tecode/core`'s `ThemeLoader` base-palette per-key
+ * fallback for any key (that fallback exists for THIRD-PARTY partial
+ * themes, design.md §9; the one built-in theme this MVP embeds as
+ * "equivalent to VS Code's Dark Modern" is the one place that fallback
+ * should never actually be exercised).
+ *
+ * **Light Modern moved out** (Issue #124): it is no longer a
+ * `themes-default` contribution or an embedded asset — it ships as a
+ * plain file at the repository's top-level `themes/light-modern.json`
+ * instead, loaded as a user theme (`packages/cli/src/userThemes.ts`),
+ * covered by that package's own tests rather than this completeness
+ * suite.
  *
  * **Compile-time exhaustiveness**: {@link UI_COLOR_KEYS}/
  * {@link BASE_CAPTURE_NAMES} are typed as `Record<UiColorKey, true>`/
@@ -23,9 +30,8 @@
 
 import { describe, expect, test } from "bun:test";
 import type { BaseCaptureName, Manifest, UiColorKey } from "@tecode/api";
-import darkModern from "./themes/dark-modern.json";
-import lightModern from "./themes/light-modern.json";
-import manifestDefault, { DARK_MODERN_THEME_ID, LIGHT_MODERN_THEME_ID } from "./manifest";
+import darkModern from "../../../themes/dark-modern.json";
+import manifestDefault, { DARK_MODERN_THEME_ID } from "./manifest";
 
 // `manifest.ts`'s `export default {...} satisfies Manifest` keeps the
 // export's LITERAL type (only the fields actually present), so widen it
@@ -121,69 +127,59 @@ interface RawThemeJson {
   tokenColors?: Record<string, { foreground?: unknown; background?: unknown; fontStyle?: unknown }>;
 }
 
-const THEMES: Array<{ label: string; json: RawThemeJson }> = [
-  { label: "Dark Modern", json: darkModern as RawThemeJson },
-  { label: "Light Modern", json: lightModern as RawThemeJson },
-];
+const json = darkModern as RawThemeJson;
 
 describe("themes-default JSON completeness (Req 11.4)", () => {
-  for (const { label, json } of THEMES) {
-    describe(label, () => {
-      test("defines every UiColorKey with a valid #rrggbb(aa)/#rgb hex color", () => {
-        for (const key of Object.keys(UI_COLOR_KEYS) as UiColorKey[]) {
-          const value = json.colors?.[key];
-          expect(value, `missing colors["${key}"]`).toBeString();
-          expect(HEX_COLOR_RE.test(value as string), `invalid hex for colors["${key}"]: ${String(value)}`).toBe(
-            true,
-          );
-        }
-      });
-
-      test("declares no colors outside the known UiColorKey set (no silent typos)", () => {
-        for (const key of Object.keys(json.colors ?? {})) {
-          expect(Object.prototype.hasOwnProperty.call(UI_COLOR_KEYS, key), `unknown UiColorKey "${key}"`).toBe(
-            true,
-          );
-        }
-      });
-
-      test("defines every BaseCaptureName with a valid style shape", () => {
-        for (const capture of Object.keys(BASE_CAPTURE_NAMES) as BaseCaptureName[]) {
-          const style = json.tokenColors?.[capture];
-          expect(style, `missing tokenColors["${capture}"]`).toBeDefined();
-          expect(typeof style, `tokenColors["${capture}"] must be an object`).toBe("object");
-
-          expect(style?.foreground, `missing tokenColors["${capture}"].foreground`).toBeString();
-          expect(
-            HEX_COLOR_RE.test(style?.foreground as string),
-            `invalid hex for tokenColors["${capture}"].foreground: ${String(style?.foreground)}`,
-          ).toBe(true);
-
-          if (style?.background !== undefined) {
-            expect(typeof style.background).toBe("string");
-            expect(HEX_COLOR_RE.test(style.background as string)).toBe(true);
-          }
-
-          if (style?.fontStyle !== undefined) {
-            expect(typeof style.fontStyle).toBe("string");
-            const words = (style.fontStyle as string).split(/\s+/).filter(Boolean);
-            for (const word of words) {
-              expect(FONT_STYLE_WORDS.has(word), `unknown fontStyle word "${word}"`).toBe(true);
-            }
-          }
-        }
-      });
+  describe("Dark Modern", () => {
+    test("defines every UiColorKey with a valid #rrggbb(aa)/#rgb hex color", () => {
+      for (const key of Object.keys(UI_COLOR_KEYS) as UiColorKey[]) {
+        const value = json.colors?.[key];
+        expect(value, `missing colors["${key}"]`).toBeString();
+        expect(HEX_COLOR_RE.test(value as string), `invalid hex for colors["${key}"]: ${String(value)}`).toBe(
+          true,
+        );
+      }
     });
-  }
 
-  test("Dark Modern and Light Modern resolve visibly different colors (not a copy-paste palette)", () => {
-    expect(darkModern.colors["editor.background"]).not.toBe(lightModern.colors["editor.background"]);
-    expect(darkModern.colors["editor.foreground"]).not.toBe(lightModern.colors["editor.foreground"]);
+    test("declares no colors outside the known UiColorKey set (no silent typos)", () => {
+      for (const key of Object.keys(json.colors ?? {})) {
+        expect(Object.prototype.hasOwnProperty.call(UI_COLOR_KEYS, key), `unknown UiColorKey "${key}"`).toBe(
+          true,
+        );
+      }
+    });
+
+    test("defines every BaseCaptureName with a valid style shape", () => {
+      for (const capture of Object.keys(BASE_CAPTURE_NAMES) as BaseCaptureName[]) {
+        const style = json.tokenColors?.[capture];
+        expect(style, `missing tokenColors["${capture}"]`).toBeDefined();
+        expect(typeof style, `tokenColors["${capture}"] must be an object`).toBe("object");
+
+        expect(style?.foreground, `missing tokenColors["${capture}"].foreground`).toBeString();
+        expect(
+          HEX_COLOR_RE.test(style?.foreground as string),
+          `invalid hex for tokenColors["${capture}"].foreground: ${String(style?.foreground)}`,
+        ).toBe(true);
+
+        if (style?.background !== undefined) {
+          expect(typeof style.background).toBe("string");
+          expect(HEX_COLOR_RE.test(style.background as string)).toBe(true);
+        }
+
+        if (style?.fontStyle !== undefined) {
+          expect(typeof style.fontStyle).toBe("string");
+          const words = (style.fontStyle as string).split(/\s+/).filter(Boolean);
+          for (const word of words) {
+            expect(FONT_STYLE_WORDS.has(word), `unknown fontStyle word "${word}"`).toBe(true);
+          }
+        }
+      }
+    });
   });
 });
 
 describe("themes-default manifest (Req 11.4)", () => {
-  test("is a pure-contribution manifest: no activationEvents, contributes only its two themes", () => {
+  test("is a pure-contribution manifest: no activationEvents, contributes only its one theme", () => {
     expect(manifest.activationEvents).toEqual([]);
     expect(manifest.contributes.commands).toBeUndefined();
     expect(manifest.contributes.keybindings).toBeUndefined();
@@ -191,10 +187,9 @@ describe("themes-default manifest (Req 11.4)", () => {
     expect(manifest.contributes.configuration).toBeUndefined();
   });
 
-  test("declares Dark Modern and Light Modern, pointing at this package's theme JSON files", () => {
+  test("declares only Dark Modern, pointing at the top-level themes/dark-modern.json", () => {
     expect(manifest.contributes.themes).toEqual([
       { id: DARK_MODERN_THEME_ID, label: "Dark Modern", path: "themes/dark-modern.json" },
-      { id: LIGHT_MODERN_THEME_ID, label: "Light Modern", path: "themes/light-modern.json" },
     ]);
   });
 });

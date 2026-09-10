@@ -106,6 +106,7 @@ function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {})
     editorLangIdSync: disposable(),
     themeConfigSync: disposable(),
     sidebarWidthConfigSync: disposable(),
+    panelHeightConfigSync: disposable(),
     clipboardConfigSync: disposable(),
     terminal: disposable(),
     showPanelCommand: disposable(),

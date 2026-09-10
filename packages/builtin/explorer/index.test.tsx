@@ -57,16 +57,30 @@ import type {
   Tecode,
   Uri,
 } from "@tecode/api";
-import { activate } from "./index";
+import { activate, EXPLORER_INDENT_WIDTH_STEP } from "./index";
 import {
+  EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID,
   EXPLORER_DELETE_COMMAND_ID,
   EXPLORER_FOCUS_COMMAND_ID,
+  EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID,
+  EXPLORER_INDENT_WIDTH_CONFIG_KEY,
   EXPLORER_NEW_FILE_COMMAND_ID,
+  EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID,
   EXPLORER_NEW_FOLDER_COMMAND_ID,
   EXPLORER_RENAME_COMMAND_ID,
   EXPLORER_SHOW_HIDDEN_CONFIG_KEY,
   EXPLORER_VIEW_ID,
 } from "./manifest";
+
+/** `@tecode/core`'s `ui/openFileCommand.ts`'s own `OPEN_FILE_COMMAND_ID`
+ * (`"workbench.action.files.openUri"`) — `packages/builtin` may never
+ * import `@tecode/core` (this suite's own house convention, `createFakeApi`'s
+ * TSDoc), so this is a hand-kept duplicate, matching `index.ts`'s own
+ * `OPEN_FILE_COMMAND_ID` duplicate and this file's existing
+ * `` `workbench.view.${EXPLORER_VIEW_ID}` `` precedent below (Issue #120:
+ * `explorer.newFile`/`newFileFromEditor` deferred-create tests need to spy
+ * on this command instead of asserting a real `fs.write`). */
+const OPEN_FILE_COMMAND_ID = "workbench.action.files.openUri";
 
 function uriToPath(uri: Uri): string {
   return fileURLToPath(uri);
@@ -279,6 +293,13 @@ function createFakeApi(rootUri: Uri | undefined) {
       configValues.set(key, value);
       for (const listener of configListeners) listener({ affectsConfiguration: (k) => k === key });
     },
+    // Issue #121's "no settings write-back" completion requirement: this
+    // fake `Tecode` has no settings-writer concept at all to assert a call
+    // count against (unlike `@tecode/core`'s real
+    // `SidebarWidthSettingsWriter`), so the config VALUE itself — what a
+    // real `settings.json` write would actually change — is the directly
+    // observable proxy for "nothing wrote back" here.
+    getConfigValue: (key: string) => configValues.get(key),
   };
 }
 
@@ -380,21 +401,23 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
   });
 
   describe("explorer.newFile", () => {
-    test("creates an empty file at the workspace root and surfaces no error", async () => {
+    test("Issue #120: does NOT create a file on disk, and opens the target uri as a (deferred, empty) buffer instead", async () => {
       dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
       const fixture = createFixture(pathToUri(dir));
       fixture.setNextInputValue("new-file.ts");
 
-      await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
-      await waitFor(() => {
-        try {
-          statSync(join(dir!, "new-file.ts"));
-          return true;
-        } catch {
-          return false;
-        }
+      const openedUris: unknown[] = [];
+      fixture.api.commands.register(OPEN_FILE_COMMAND_ID, (...args) => {
+        openedUris.push(args[0]);
       });
 
+      await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
+
+      // No `fs.write` ever happened — creation is deferred to first save
+      // (Issue #88's empty-non-dirty-buffer mechanism + `DocumentManager.
+      // save`'s temp-write/rename, both already in place).
+      expect(await nodeReaddir(dir)).toEqual([]);
+      expect(openedUris).toEqual([pathToUri(join(dir, "new-file.ts"))]);
       expect(fixture.getMessages().filter((m) => m.kind === "error")).toEqual([]);
       fixture.dispose();
     });
@@ -437,21 +460,6 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
       fixture.dispose();
     });
 
-    test("a write failure (nonexistent target directory) surfaces via showMessage error", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      // rootUri points somewhere that does not exist on disk at all —
-      // `resolveTargetDirectory()` still resolves to it (nothing
-      // selected), so the real `fs.write` call itself fails.
-      const missingRoot = pathToUri(join(dir, "does-not-exist"));
-      const fixture = createFixture(missingRoot);
-      fixture.setNextInputValue("file.ts");
-
-      await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
-
-      expect(fixture.getMessages().some((m) => m.kind === "error")).toBe(true);
-      fixture.dispose();
-    });
-
     test("no folder open (rootUri undefined) shows an info message instead of crashing", async () => {
       const fixture = createFixture(undefined);
       fixture.setNextInputValue("file.ts");
@@ -483,12 +491,48 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
       // `joinChildUri` call site guards against.
       fixture.setNextInputValue("..");
 
+      const openedUris: unknown[] = [];
+      fixture.api.commands.register(OPEN_FILE_COMMAND_ID, (...args) => {
+        openedUris.push(args[0]);
+      });
+
       await fixture.api.commands.execute(EXPLORER_NEW_FILE_COMMAND_ID);
 
       expect(fixture.getMessages().some((m) => m.kind === "error")).toBe(true);
-      // Nothing was created — in particular, no `fs.write` call ever
-      // reached the (would-be escaped) parent directory.
+      // Nothing was created, and the escaped path was never even opened —
+      // in particular, `OPEN_FILE_COMMAND_ID` was never reached for it.
       expect(await nodeReaddir(dir)).toEqual([]);
+      expect(openedUris).toEqual([]);
+      fixture.dispose();
+    });
+  });
+
+  describe("explorer.newFileFromEditor (Issue #120)", () => {
+    test("shares the same deferred-create behavior as explorer.newFile: no disk write, opens the target uri", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      const fixture = createFixture(pathToUri(dir));
+      fixture.setNextInputValue("from-editor.ts");
+
+      const openedUris: unknown[] = [];
+      fixture.api.commands.register(OPEN_FILE_COMMAND_ID, (...args) => {
+        openedUris.push(args[0]);
+      });
+
+      await fixture.api.commands.execute(EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID);
+
+      expect(await nodeReaddir(dir)).toEqual([]);
+      expect(openedUris).toEqual([pathToUri(join(dir, "from-editor.ts"))]);
+      expect(fixture.getMessages().filter((m) => m.kind === "error")).toEqual([]);
+      fixture.dispose();
+    });
+
+    test("no folder open (rootUri undefined) shows an info message instead of crashing", async () => {
+      const fixture = createFixture(undefined);
+      fixture.setNextInputValue("file.ts");
+
+      await fixture.api.commands.execute(EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID);
+
+      expect(fixture.getMessages().some((m) => m.kind === "info")).toBe(true);
       fixture.dispose();
     });
   });
@@ -713,6 +757,107 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
       });
 
       expect(fixture.getMessages().filter((m) => m.kind === "error")).toEqual([]);
+      fixture.dispose();
+    });
+  });
+
+  describe("explorer.indentWidth (Issue #121)", () => {
+    test("reads the config value (default 1) at activate() and live-reloads it, forwarded to Tree", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      await nodeWriteFile(join(dir, "a.ts"), "");
+      const fixture = createFixture(pathToUri(dir));
+
+      const Component = fixture.getRegisteredView() as unknown as (props: Record<string, unknown>) => ReactNode;
+      const { renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
+      await waitFor(async () => {
+        await act(async () => {
+          await renderOnce();
+        });
+        return fixture.getLastTreeProps()?.["indentWidth"] !== undefined;
+      });
+      expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(1);
+
+      act(() => fixture.setConfig(EXPLORER_INDENT_WIDTH_CONFIG_KEY, 4));
+      await act(async () => {
+        await renderOnce();
+      });
+      expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(4);
+
+      fixture.dispose();
+    });
+
+    test("increase/decrease commands change the effective indent width WITHOUT writing back to settings (no settings.json write)", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      await nodeWriteFile(join(dir, "a.ts"), "");
+      const fixture = createFixture(pathToUri(dir));
+      const Component = fixture.getRegisteredView() as unknown as (props: Record<string, unknown>) => ReactNode;
+      const { renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
+      await waitFor(async () => {
+        await act(async () => {
+          await renderOnce();
+        });
+        return fixture.getLastTreeProps()?.["indentWidth"] !== undefined;
+      });
+      expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(1);
+
+      await act(async () => {
+        await fixture.api.commands.execute(EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID);
+      });
+      await act(async () => {
+        await renderOnce();
+      });
+      expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(1 + EXPLORER_INDENT_WIDTH_STEP);
+      // The command id's own registration is Issue #121's whole point: no
+      // config write accompanies it (the config VALUE itself — what a real
+      // `settings.json` write would change — stays exactly what it was).
+      expect(fixture.getConfigValue(EXPLORER_INDENT_WIDTH_CONFIG_KEY)).toBeUndefined();
+
+      await act(async () => {
+        await fixture.api.commands.execute(EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID);
+        await fixture.api.commands.execute(EXPLORER_DECREASE_INDENT_WIDTH_COMMAND_ID);
+      });
+      await act(async () => {
+        await renderOnce();
+      });
+      // Clamped at the floor (0), never negative.
+      expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(0);
+      expect(fixture.getConfigValue(EXPLORER_INDENT_WIDTH_CONFIG_KEY)).toBeUndefined();
+
+      expect(fixture.getMessages().filter((m) => m.kind === "error")).toEqual([]);
+      fixture.dispose();
+    });
+
+    test("a live config change clears an active step-command override, even landing back on the same value", async () => {
+      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+      await nodeWriteFile(join(dir, "a.ts"), "");
+      const fixture = createFixture(pathToUri(dir));
+      const Component = fixture.getRegisteredView() as unknown as (props: Record<string, unknown>) => ReactNode;
+      const { renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
+      await waitFor(async () => {
+        await act(async () => {
+          await renderOnce();
+        });
+        return fixture.getLastTreeProps()?.["indentWidth"] !== undefined;
+      });
+
+      await act(async () => {
+        await fixture.api.commands.execute(EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID);
+      });
+      await act(async () => {
+        await renderOnce();
+      });
+      expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(1 + EXPLORER_INDENT_WIDTH_STEP);
+
+      // The live config change lands the SAME base value (1) back — the
+      // override must still be cleared (`store.ts`'s `setIndentWidth`
+      // TSDoc's own "no same-value early return" reasoning), landing the
+      // effective value back at 1, not left at the stale stepped value.
+      act(() => fixture.setConfig(EXPLORER_INDENT_WIDTH_CONFIG_KEY, 1));
+      await act(async () => {
+        await renderOnce();
+      });
+      expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(1);
+
       fixture.dispose();
     });
   });

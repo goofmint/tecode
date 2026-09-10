@@ -360,6 +360,83 @@ describe("ModalOverlay — long quick picks stay bounded and scrollable (issue #
   });
 });
 
+describe("ModalOverlay — quick picks whose items carry a description get 2 rows each (issue #122 regression)", () => {
+  test("a 3-item Save/Discard/Cancel-style prompt (every item has a description) fits all three labels", async () => {
+    const TERMINAL_WIDTH = 80;
+    const TERMINAL_HEIGHT = 20;
+    // Mirrors `tabCommands.ts`'s `createCloseDocumentWithPrompt` exactly —
+    // every item sets `description`, which is what flips `List`'s
+    // `showDescription` to `true` and makes OpenTUI's `<select>` render
+    // each option across 2 rows instead of 1 (`components.tsx`'s
+    // `hasDescription` TSDoc).
+    const items = [
+      { label: "Save", description: "save" },
+      { label: "Discard", description: "discard" },
+      { label: "Cancel", description: "cancel" },
+    ];
+    const modalService = createModalService();
+    void modalService.openQuickPick(items, { placeHolder: 'Save changes to "file.ts"?' });
+
+    const { renderOnce, renderer, captureCharFrame } = await testRender(
+      <ThemeProvider>
+        <ModalOverlay modalService={modalService} />
+      </ThemeProvider>,
+      { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // The bug (issue #122): `modalOverlay.tsx`'s `listHeight` assumed 1 row
+    // per item regardless of `showDescription`, so this 3-item list was
+    // handed a `<select>` height of 3 — only enough to draw the first item
+    // and a half of the second, since each item actually needs 2 rows here.
+    const select = findSelect(renderer.root);
+    expect(select).toBeDefined();
+    expect(select!.height).toBeGreaterThanOrEqual(items.length * 2);
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("Save");
+    expect(frame).toContain("Discard");
+    expect(frame).toContain("Cancel");
+  });
+
+  test("far more description-carrying items than fit: the select's assigned height still stays inside the terminal (issue #93's bound, preserved)", async () => {
+    const TERMINAL_WIDTH = 80;
+    const TERMINAL_HEIGHT = 20;
+    const ITEM_COUNT = 20;
+    const items = Array.from({ length: ITEM_COUNT }, (_, i) => ({
+      label: `Item ${i}`,
+      description: `description ${i}`,
+    }));
+    const modalService = createModalService();
+    void modalService.openQuickPick(items);
+
+    const { renderOnce, renderer } = await testRender(
+      <ThemeProvider>
+        <ModalOverlay modalService={modalService} />
+      </ThemeProvider>,
+      { width: TERMINAL_WIDTH, height: TERMINAL_HEIGHT },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Even though every item now needs 2 rows (`ITEM_COUNT * 2` = 40 rows
+    // of content in a 20-row terminal), the clamp against `maxListRows`
+    // (`modalOverlay.tsx`'s `QuickPickBody`) must still hold — issue #93's
+    // original bound, which this fix must not regress.
+    const select = findSelect(renderer.root);
+    expect(select).toBeDefined();
+    const maxListRows = Math.max(
+      1,
+      TERMINAL_HEIGHT - modalMarginRows(TERMINAL_HEIGHT) - 3, // QUICK_PICK_RESERVED_ROWS
+    );
+    expect(select!.height).toBeLessThanOrEqual(maxListRows);
+    expect(select!.y + select!.height).toBeLessThanOrEqual(TERMINAL_HEIGHT);
+  });
+});
+
 describe("ModalOverlay — a long input-box prompt never hides the input itself", () => {
   // NOT a regression test: no code change was needed to make this pass.
   // Review raised the worry that `InputBoxBody`'s `maxHeight` +

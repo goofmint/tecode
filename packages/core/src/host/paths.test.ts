@@ -8,6 +8,7 @@ import {
   getUserKeybindingsPath,
   getUserLayoutStatePath,
   getUserSettingsPath,
+  getUserThemesDir,
   getWorkspaceExtensionsDir,
   getWorkspaceSettingsPath,
 } from "./paths";
@@ -94,5 +95,9 @@ describe("derived file paths", () => {
       join(getUserConfigDir(), "keybindings.fallback.json"),
     );
     expect(getUserFallbackKeybindingsPath()).not.toBe(getUserKeybindingsPath());
+  });
+
+  test("getUserThemesDir appends themes to the config dir (Req 11.4, Issue #124)", () => {
+    expect(getUserThemesDir()).toBe(join(getUserConfigDir(), "themes"));
   });
 });

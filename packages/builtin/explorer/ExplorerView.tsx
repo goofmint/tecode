@@ -48,6 +48,11 @@ type TreeComponentProps = Record<string, unknown> & {
    * straight through from {@link ExplorerViewProps.width} — see that
    * field's own TSDoc. */
   width?: number;
+  /** `tecode.ui.Tree`'s own per-level indent step (Issue #121), read fresh
+   * from `store.getIndentWidth()` on every render — see the `width` field
+   * above's own precedent for why this is duck-typed rather than imported
+   * from `@tecode/core`'s real `TreeProps`. */
+  indentWidth?: number;
 };
 
 /** Props for {@link ExplorerView}. */
@@ -124,6 +129,13 @@ export function ExplorerView(props: ExplorerViewProps): ReactNode {
       expandedIds={store.getExpandedIds()}
       focusContextKey={EXPLORER_FOCUS_CONTEXT_KEY}
       width={props.width}
+      // Issue #121: read fresh from the store on every render — NOT
+      // threaded through `viewProps` the way `width` is (that field's own
+      // TSDoc's "Issue #104 Phase 3" paragraph): `indentWidth` changes via
+      // `store.setIndentWidth`/`stepIndentWidth`, which already fire
+      // `store.onDidChange` -> this component's own `forceRender()` above,
+      // so a second render-time-prop plumbing path would be redundant.
+      indentWidth={store.getIndentWidth()}
       onSelect={(id) => store.setSelectedId(id)}
       onToggle={(id, expanding) => store.toggle(id, expanding)}
       onActivate={(id) => {
