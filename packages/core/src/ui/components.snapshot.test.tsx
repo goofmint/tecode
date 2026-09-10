@@ -681,6 +681,57 @@ describe("Tree (tecode.ui.Tree)", () => {
       expect(frame).not.toContain("n0");
     });
 
+    test("growing the viewport pulls the window back up instead of leaving a half-empty tree (CodeRabbit, PR #134)", async () => {
+      // `revealLine` only guarantees the selection is ON screen, so it had
+      // no reason to move a window that was already showing it — a
+      // terminal resized taller (or a panel closing) kept the scroll
+      // position the shorter viewport had set, rendering 5 rows in a
+      // 10-row viewport with rows still hidden above it.
+      let setHeight: (h: number) => void = () => {};
+      let captured: FocusableNode | null = null;
+
+      function Harness(): ReturnType<typeof Tree> {
+        const [height, setH] = useState(5);
+        const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+        setHeight = setH;
+        return (
+          <Tree
+            nodes={flatNodes(20)}
+            height={height}
+            selectedId={selectedId}
+            treeRef={(node: FocusableNode | null) => (captured = node)}
+            onSelect={(id: string) => setSelectedId(id)}
+          />
+        );
+      }
+
+      const { renderOnce, captureCharFrame } = await testRender(<Harness />, { width: 20, height: 30 });
+      await renderOnce();
+
+      // Walk the selection to the very last node so the window is pinned
+      // at its maximum scroll for a height of 5: rows [15, 20).
+      for (let i = 0; i < 20; i++) {
+        await act(() => {
+          (captured as unknown as { onKeyDown?: (key: KeyEvent) => void })?.onKeyDown?.(keyEvent("down"));
+        });
+        await renderOnce();
+      }
+      expect(captureCharFrame()).toContain("n19");
+      expect(captureCharFrame()).not.toContain("n14");
+
+      await act(() => {
+        setHeight(10);
+      });
+      await renderOnce();
+
+      // A 10-row viewport over 20 nodes can scroll no further than 10, so
+      // rows [10, 20) must ALL be on screen — not just the old [15, 20).
+      const frame = captureCharFrame();
+      expect(frame).toContain("n19");
+      expect(frame).toContain("n10");
+      expect(frame).not.toContain("n9");
+    });
+
     test("deep nesting whose prefixWidth exceeds width inside a virtualized window still renders a blank, not broken, label (Issue #104 regression guard)", async () => {
       const nodes: TreeNode[] = [
         {

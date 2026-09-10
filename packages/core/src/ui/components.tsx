@@ -534,10 +534,20 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
     // merely clamped into range, mirroring `editorView.tsx`'s own
     // `revealTargetLine !== undefined ? revealLine(...) : clamp` fallback
     // for when there is no cursor to reveal.
-    const effectiveScrollTop =
+    // The furthest the window can scroll and still be full (CodeRabbit,
+    // PR #134). `revealLine` only guarantees the selection is ON screen —
+    // it has no reason to pull the window back up when the viewport GROWS,
+    // so a terminal resized taller (or a panel closing) left the scroll
+    // position where the shorter viewport had put it and rendered a
+    // half-empty tree with rows still hidden above. Clamping here rather
+    // than inside `revealLine` keeps that helper shared with
+    // `editorView.tsx` unchanged.
+    const maxScrollTop = Math.max(0, flat.length - props.height);
+    const derivedScrollTop =
       selectedIndex >= 0
         ? revealLine(selectedIndex, scrollTop, props.height, flat.length)
-        : Math.max(0, Math.min(scrollTop, Math.max(0, flat.length - 1)));
+        : scrollTop;
+    const effectiveScrollTop = Math.max(0, Math.min(derivedScrollTop, maxScrollTop));
     // Writes the derived position back so the NEXT render starts from it
     // instead of re-deriving from a stale `scrollTop` value every time —
     // this is what makes the viewport "stick" once it has scrolled. A
