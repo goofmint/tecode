@@ -525,7 +525,18 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
   // `visibleNodes` below falls back to `flat` in full, unchanged from
   // before this prop existed.
   let visibleNodes = flat;
-  if (props.height !== undefined) {
+  // One normalized row count shared by every consumer below (CodeRabbit,
+  // PR #134): `revealLine`/`computeVisibleLineRange` truncate `height`
+  // internally, so a fractional `height={5.5}` made them window 5 rows
+  // while `maxScrollTop` and the `<box>`'s own `style.height` still used
+  // 5.5 — the two disagreed by half a row and the selected last node could
+  // fall outside the window the helpers had actually chosen. Normalizing
+  // here means there is only one row count in play, and it is an integer.
+  const viewportRows =
+    props.height !== undefined && Number.isFinite(props.height)
+      ? Math.max(0, Math.trunc(props.height))
+      : undefined;
+  if (viewportRows !== undefined) {
     const selectedIndex = props.selectedId ? flat.findIndex((n) => n.id === props.selectedId) : -1;
     // Derived fresh every render from the CURRENT `scrollTop` state (never
     // reset to 0): `revealLine` only moves the window the minimum amount
@@ -542,10 +553,10 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
     // half-empty tree with rows still hidden above. Clamping here rather
     // than inside `revealLine` keeps that helper shared with
     // `editorView.tsx` unchanged.
-    const maxScrollTop = Math.max(0, flat.length - props.height);
+    const maxScrollTop = Math.max(0, flat.length - viewportRows);
     const derivedScrollTop =
       selectedIndex >= 0
-        ? revealLine(selectedIndex, scrollTop, props.height, flat.length)
+        ? revealLine(selectedIndex, scrollTop, viewportRows, flat.length)
         : scrollTop;
     const effectiveScrollTop = Math.max(0, Math.min(derivedScrollTop, maxScrollTop));
     // Writes the derived position back so the NEXT render starts from it
@@ -556,7 +567,7 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
     if (effectiveScrollTop !== scrollTop) {
       setScrollTop(effectiveScrollTop);
     }
-    const { startLine, endLine } = computeVisibleLineRange(effectiveScrollTop, props.height, flat.length);
+    const { startLine, endLine } = computeVisibleLineRange(effectiveScrollTop, viewportRows, flat.length);
     visibleNodes = flat.slice(startLine, endLine);
   }
 
@@ -623,8 +634,8 @@ export function Tree(rawProps: Record<string, unknown>): ReactNode {
       // object shape as before this prop existed, so every pre-existing
       // caller renders byte-for-byte unchanged.
       style={
-        props.height !== undefined
-          ? { flexDirection: "column", height: props.height, overflow: "hidden" }
+        viewportRows !== undefined
+          ? { flexDirection: "column", height: viewportRows, overflow: "hidden" }
           : { flexDirection: "column" }
       }
     >

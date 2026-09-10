@@ -681,6 +681,38 @@ describe("Tree (tecode.ui.Tree)", () => {
       expect(frame).not.toContain("n0");
     });
 
+    test("a fractional height windows whole rows and still shows the selected last node (CodeRabbit, PR #134)", async () => {
+      // `revealLine`/`computeVisibleLineRange` truncate internally, so a
+      // fractional height left `maxScrollTop` and the box's own style
+      // disagreeing with them by half a row — enough to clamp the window
+      // one row short of the selection it was supposed to reveal.
+      let captured: FocusableNode | null = null;
+
+      function Harness(): ReturnType<typeof Tree> {
+        const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+        return (
+          <Tree
+            nodes={flatNodes(20)}
+            height={5.5}
+            selectedId={selectedId}
+            treeRef={(node: FocusableNode | null) => (captured = node)}
+            onSelect={(id: string) => setSelectedId(id)}
+          />
+        );
+      }
+
+      const { renderOnce, captureCharFrame } = await testRender(<Harness />, { width: 20, height: 30 });
+      await renderOnce();
+      for (let i = 0; i < 20; i++) {
+        await act(() => {
+          (captured as unknown as { onKeyDown?: (key: KeyEvent) => void })?.onKeyDown?.(keyEvent("down"));
+        });
+        await renderOnce();
+      }
+
+      expect(captureCharFrame()).toContain("n19");
+    });
+
     test("growing the viewport pulls the window back up instead of leaving a half-empty tree (CodeRabbit, PR #134)", async () => {
       // `revealLine` only guarantees the selection is ON screen, so it had
       // no reason to move a window that was already showing it — a
