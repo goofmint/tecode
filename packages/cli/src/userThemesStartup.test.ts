@@ -54,6 +54,31 @@ function createHermeticDiscoveryFs(): DiscoveryFs {
   };
 }
 
+/**
+ * Run `build` with `COLORTERM`/`TERM` pinned to a truecolor-capable
+ * terminal, restoring both afterwards — the same shape
+ * `themesPreFirstFrame.test.ts` uses, and needed for the same reason:
+ * `buildAssemblyRoot`'s `ThemeRegistry` quantizes every color to the
+ * nearest xterm-256 entry when `detectTerminalCapabilities()` reports less
+ * than truecolor, so the exact RGB values asserted below would depend on
+ * the ambient environment the suite happens to run in (a CI runner without
+ * `COLORTERM` set, say) rather than on the code under test.
+ */
+function withTruecolorEnv<T>(build: () => T): T {
+  const savedColorTerm = process.env["COLORTERM"];
+  const savedTerm = process.env["TERM"];
+  process.env["COLORTERM"] = "truecolor";
+  process.env["TERM"] = "xterm-256color";
+  try {
+    return build();
+  } finally {
+    if (savedColorTerm === undefined) delete process.env["COLORTERM"];
+    else process.env["COLORTERM"] = savedColorTerm;
+    if (savedTerm === undefined) delete process.env["TERM"];
+    else process.env["TERM"] = savedTerm;
+  }
+}
+
 test("a user theme file is listed, selectable via workbench.colorTheme, and applies its own real colors", async () => {
   const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-user-themes-ws-"));
   const configDir = await mkdtemp(join(tmpdir(), "tecode-user-themes-cfg-"));
@@ -75,7 +100,7 @@ test("a user theme file is listed, selectable via workbench.colorTheme, and appl
 
   let root: ReturnType<typeof buildAssemblyRoot>;
   try {
-    root = buildAssemblyRoot(workspaceDir, { configDir });
+    root = withTruecolorEnv(() => buildAssemblyRoot(workspaceDir, { configDir }));
     await root.config.ready;
     await root.themesReadyPromise;
     applyConfiguredTheme(root.config, root.themeService);
@@ -124,7 +149,7 @@ test("a missing user themes directory boots fine and stays on the default Dark M
 
   let root: ReturnType<typeof buildAssemblyRoot>;
   try {
-    root = buildAssemblyRoot(workspaceDir);
+    root = withTruecolorEnv(() => buildAssemblyRoot(workspaceDir));
     await root.config.ready;
     await root.themesReadyPromise;
     applyConfiguredTheme(root.config, root.themeService);
@@ -156,7 +181,7 @@ test("a broken (unparseable) user theme file does not crash startup — it regis
 
   let root: ReturnType<typeof buildAssemblyRoot>;
   try {
-    root = buildAssemblyRoot(workspaceDir);
+    root = withTruecolorEnv(() => buildAssemblyRoot(workspaceDir));
     await root.config.ready;
     await root.themesReadyPromise;
     applyConfiguredTheme(root.config, root.themeService);

@@ -106,6 +106,19 @@ describe("scanUserThemes (Req 11.4, Issue #124)", () => {
     });
   });
 
+  test("CodeRabbit PR #133: an uppercase .JSON extension is stripped from the id, matching the case-insensitive filter that accepted the file", async () => {
+    await withTempDir(async (dir) => {
+      // The directory filter accepts the extension case-insensitively, so
+      // `ocean.JSON` IS collected; stripping it case-sensitively left the
+      // extension on the id (`"ocean.JSON"`), which is what the user would
+      // then have had to type into `workbench.colorTheme`.
+      await writeFile(join(dir, "ocean.JSON"), JSON.stringify({ colors: {} }), "utf8");
+      const result = await scanUserThemes({ themesDir: dir });
+      expect(result.pending.map((p) => p.theme.id)).toEqual(["ocean"]);
+      expect(result.pending[0]!.theme.label).toBe("ocean");
+    });
+  });
+
   test("malformed JSON in a readable file still registers a pending contribution (falls back to the stem label; the real parse/degrade happens later in ThemeRegistry.loadContributions)", async () => {
     await withTempDir(async (dir) => {
       await writeFile(join(dir, "broken.json"), "{ not valid json", "utf8");

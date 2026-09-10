@@ -40,7 +40,7 @@
  */
 
 import { readdir as nodeReaddir, readFile as nodeReadFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import {
   getUserThemesDir,
   parseJsonc,
@@ -165,7 +165,12 @@ export async function scanUserThemes(deps: ScanUserThemesDeps = {}): Promise<Sca
 
   const pending: PendingThemeContribution[] = [];
   for (const fileName of jsonFiles) {
-    const stem = basename(fileName, ".json");
+    // `basename(name, suffix)` strips the suffix case-SENSITIVELY, but the
+    // filter above accepts the extension case-INSENSITIVELY — so `ocean.JSON`
+    // was collected and then kept its extension, yielding the theme id
+    // `"ocean.JSON"`. Strip whatever the filter matched instead of a fixed
+    // literal, so the two halves agree on what counts as the extension.
+    const stem = fileName.slice(0, fileName.length - ".json".length);
     if (stem.length === 0) continue;
     const path = join(themesDir, fileName);
     let text: string;
