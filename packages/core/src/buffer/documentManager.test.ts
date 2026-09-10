@@ -917,6 +917,37 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     expect(doc.getText()).toBe("content");
   });
 
+  test("CodeRabbit PR #128: opening a path that does not exist yet never warns that it was deleted (Issue #88 regression)", async () => {
+    // The post-registration external-change probe re-verifies disk state
+    // that raced watch setup. A path with no file behind it has no such
+    // state, and running the probe anyway made `readStableDiskSignature`'s
+    // stat throw ENOENT — which the change handler correctly reads as
+    // "deleted on disk". Every brand-new file would have warned about
+    // being deleted the moment it was opened.
+    const path = join(dir, "never-saved.txt");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+    const fakeWatch = createFakeWatch();
+    const manager = createDocumentManager({
+      log,
+      sink,
+      watch: fakeWatch.watch,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+
+    expect(doc.getText()).toBe("");
+    expect(doc.dirty).toBe(false);
+    expect(warnings).toEqual([]);
+
+    // The watch itself is still registered, so a file appearing at that
+    // path later is still picked up — gating the probe must not disable
+    // watching for new files.
+    expect(fakeWatch.watchedUris.length).toBe(1);
+  });
+
   test("save() aborts and returns false when the disk signature no longer matches (no watch needed)", async () => {
     const path = join(dir, "conflict.txt");
     await writeFile(path, "original", "utf8");

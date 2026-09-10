@@ -534,6 +534,17 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     const path = uriToPath(uri);
     let readonly = false;
     let text: string;
+    // Whether the path actually existed when this open started (Issue #88's
+    // ENOENT branch below sets it false). The post-registration
+    // external-change check further down is a "did the file change while we
+    // were setting the watch up?" probe — for a path that has no file yet
+    // there is no such state to re-verify, and running it anyway would make
+    // `readStableDiskSignature`'s own `stat` throw ENOENT, which
+    // `handleExternalChangeEvent` correctly reads as "deleted on disk" and
+    // warns about. That warning is right for a file that vanished and wrong
+    // for one that was never there, so gate the probe rather than teach the
+    // handler to guess which case it is in.
+    let existedOnOpen = true;
     // Issue #119: the initial disk signature — `undefined` (no entry ever
     // set) both for the ENOENT/new-file path below (Req 5.6/Issue #88 —
     // there is no disk state yet to remember) AND for a file whose stat
@@ -584,6 +595,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
       // error, just deferred to save() time.
       text = "";
       readonly = false;
+      existedOnOpen = false;
     }
 
     const languageId = resolveLanguageId(uri);
@@ -623,7 +635,7 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
         // that raced setup is resolved before this function ever returns,
         // instead of silently waiting for some LATER unrelated event to
         // notice it.
-        await scheduleExternalChangeCheck(uri, document);
+        if (existedOnOpen) await scheduleExternalChangeCheck(uri, document);
       } catch (cause) {
         logSafely("warning", {
           message: `Could not watch "${uri}" for external changes: ${describeError(cause)}`,
