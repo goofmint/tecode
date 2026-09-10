@@ -263,6 +263,10 @@ export interface FindNamespace {
   /** Replace every match with the replacement text as a single undo step
    * (Req 11.1). A no-op with no matches or a readonly document. */
   replaceAll(): void;
+  /** Accept the active match: move the editor's real cursor/selection onto
+   * it (Issue #117), without closing the find widget. A no-op with no
+   * active match. */
+  jumpToActiveMatch(): void;
 }
 
 /* ------------------------------------------------------------------ */

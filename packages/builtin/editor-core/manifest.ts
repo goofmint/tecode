@@ -141,6 +141,20 @@
  * "which input is this Enter in" signal to bind a keyboard shortcut on
  * top of `findNext`'s own `return` binding without a collision.
  *
+ * **Issue #117's find-accept keybinding**: `editor.action.findAccept`
+ * (`index.ts`'s handler: `ctx.api.editor.find.jumpToActiveMatch()` then
+ * `ctx.api.editor.find.close()`) moves the real cursor/selection onto the
+ * active match and closes the widget — a distinct "accept" gesture from
+ * `findNext`'s "stay in find, cycle matches" `return` binding just above.
+ * Bound to `alt+return`, not plain `return`, specifically because `return`
+ * is already claimed by `findNext` under this SAME `when: "findWidgetFocus"`
+ * guard — two entries for the identical `(key, when)` pair would be a real
+ * collision (unlike `return`'s OTHER, `editorTextFocus`-guarded binding
+ * above, which never overlaps `findWidgetFocus` for the reason already
+ * explained). `alt+return` is otherwise unclaimed anywhere in this
+ * manifest's keybindings table, so no `when`-based disambiguation is
+ * needed for it the way `return` needs.
+ *
  * **Alt+Arrow (`moveLinesUp`/`moveLinesDown`/`duplicateLine`)**: verified
  * against both the traditional CSI modifier-parameter form
  * (`\x1b[1;{n}A`) and the double-ESC form (`\x1b\x1b[A`) some terminals
@@ -268,6 +282,10 @@ export default {
         category: "Editor",
       },
       { id: "editor.action.closeFind", title: "Close Find", category: "Editor" },
+      // Issue #117: "accept" a find match (move the cursor onto it, then
+      // close the widget) — see this file's TSDoc's "Issue #117's
+      // find-accept keybinding" section for the full rationale.
+      { id: "editor.action.findAccept", title: "Find Accept", category: "Editor" },
       // Issue #91: clipboard copy/cut/paste. See this file's TSDoc's
       // "Clipboard commands (Issue #91)" section, just below the
       // keybindings table, for why `clipboardCopy` alone has no default
@@ -345,6 +363,10 @@ export default {
       { key: "return", command: "editor.action.findNext", when: WHEN_FIND_WIDGET_FOCUS },
       { key: "shift+return", command: "editor.action.findPrevious", when: WHEN_FIND_WIDGET_FOCUS },
       { key: "escape", command: "editor.action.closeFind", when: WHEN_FIND_WIDGET_FOCUS },
+      // Issue #117: "accept" a find match. See this file's TSDoc's "Issue
+      // #117's find-accept keybinding" section for why `alt+return` (rather
+      // than plain `return`, already claimed by `findNext` above) is safe.
+      { key: "alt+return", command: "editor.action.findAccept", when: WHEN_FIND_WIDGET_FOCUS },
       // Issue #91: clipboard cut/paste. See this file's TSDoc's "Clipboard
       // commands (Issue #91)" section for why `clipboardCopy` has no
       // keybinding entry here at all.
