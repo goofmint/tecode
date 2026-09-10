@@ -201,6 +201,7 @@ export {
 } from "./viewport";
 
 export {
+  clampSelectionsToDocument,
   createInitialEditorState,
   createInitialFindState,
   useLineTicks,

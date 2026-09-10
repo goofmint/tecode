@@ -126,6 +126,18 @@ export interface UndoStack {
   /** Push a freshly computed entry onto the undo stack, without clearing
    * the redo stack — the counterpart to {@link UndoStack.redo}. */
   recordUndo(entry: UndoEntry): void;
+  /**
+   * Discard every undo AND redo entry outright (Issue #119's
+   * `document.ts`'s `reloadFromDisk`, the external-change reload path).
+   * Unlike {@link undo}/{@link redo} — which replay THIS document's own
+   * prior edits and therefore stay valid against whatever text they left
+   * behind — a reload's new text comes from disk and has no relationship
+   * to the buffer's edit history: replaying an old entry's `inverseEdits`
+   * afterward would apply them against text that no longer exists,
+   * silently corrupting the freshly reloaded content instead of undoing
+   * anything real. Never throws; a no-op on an already-empty stack.
+   */
+  clear(): void;
 }
 
 /** Per-undo-entry bookkeeping kept alongside it, used only to decide
@@ -246,5 +258,10 @@ export function createUndoStack(deps: UndoStackDeps): UndoStack {
     undoEntries.push({ entry, coalesce: undefined });
   }
 
-  return { push, undo, recordRedo, redo, recordUndo };
+  function clear(): void {
+    undoEntries.length = 0;
+    redoEntries.length = 0;
+  }
+
+  return { push, undo, recordRedo, redo, recordUndo, clear };
 }

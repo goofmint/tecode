@@ -12,15 +12,38 @@
  *
  * Built with {@link createDocumentManager} rather than a class, per house
  * convention (matches `createCommandRegistry`, `createContextService`).
+ *
+ * **External file changes (Issue #119)**: when {@link DocumentManagerDeps.watch}
+ * is supplied, every open document is also watched for changes another
+ * process makes to its file on disk. Three deliberate design decisions
+ * shape all of it (`handleExternalChangeEvent`/`saveNow` below implement
+ * these; `openDocumentUncached` sets up the watch itself):
+ *
+ * 1. **Watch the PARENT directory, never the file itself** — `saveNow`'s
+ *    own atomic save (temp file + `rename`) swaps the file's inode, which
+ *    would silently kill a single-file watch the moment a document saves
+ *    itself even once. A parent-directory watch survives that, and gets
+ *    delete/recreate for free (matches the explorer's own story).
+ * 2. **Never overwrite unsaved edits** — an external change is only ever
+ *    auto-reloaded into a `dirty === false` buffer. A `dirty` buffer is
+ *    left untouched; it only gets a `notifyUser` warning. There is no
+ *    three-way merge/diff UI in this MVP.
+ * 3. **Disk signature (`mtimeMs`+`size`) as a self-loop filter** — this
+ *    document's OWN save must not look like an external change. A cheap
+ *    signature comparison is the first-pass filter; only a signature
+ *    mismatch triggers an actual re-read and content comparison against
+ *    the buffer, so the manager's own save (which refreshes the tracked
+ *    signature right after its `rename` succeeds) never round-trips
+ *    through a spurious reload.
  */
 
 import * as nodeFs from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import type { Event, Listener, Uri } from "@tecode/api";
+import type { Disposable, Event, FileChangeEvent, Listener, Uri } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import type { Clock } from "./clock";
 import { createDocument, type CoreDocument } from "./document";
-import { uriToPath } from "./uri";
+import { pathToUri, uriToPath } from "./uri";
 
 /** Files at or above this size (bytes) open read-only rather than being
  * loaded for editing (Req 5.5). 10 MB, binary. */
@@ -35,7 +58,18 @@ export const LARGE_FILE_THRESHOLD_BYTES = 10 * 1024 * 1024;
  * the public API surface; a documented, deliberately minimal escape hatch.
  */
 export interface DocumentManagerFs {
-  stat(path: string): Promise<{ size: number; mode: number }>;
+  /**
+   * `mtimeMs` (added for Issue #119, alongside the pre-existing `size`/
+   * `mode`) is the disk-change signature `openDocumentUncached`/`saveNow`/
+   * the watch-driven external-change check compare against: two `stat`
+   * calls reporting the same `mtimeMs`+`size` pair are treated as "nothing
+   * changed" without ever re-reading the file's bytes. Every real
+   * `fs.Stats` object already carries this (the real `createNodeFs`, and
+   * every test fake that just delegates to `node:fs/promises`' own `stat`,
+   * need no change) — only a fake built by hand (`documentManager.test.
+   * ts`'s `DocumentManagerFs` literals) must now also supply it.
+   */
+  stat(path: string): Promise<{ size: number; mode: number; mtimeMs: number }>;
   readFile(path: string, encoding: "utf8"): Promise<string>;
   writeFile(
     path: string,
@@ -83,6 +117,42 @@ export interface DocumentManagerDeps {
   /** Filesystem seam — see {@link DocumentManagerFs}. Defaults to
    * `node:fs/promises`. */
   fs?: DocumentManagerFs;
+  /**
+   * Watch a file or directory for changes (Issue #119) — same signature as
+   * `buffer/fileSystem.ts`'s `FileSystem.watch`, so production wiring
+   * passes that module's real `createFileSystem(...).watch` straight
+   * through (`main.ts`'s composition root) with no adapter needed. Called
+   * by `openDocumentUncached` against each open document's PARENT
+   * directory, never the file itself — an atomic `save()` (this module's
+   * own `saveNow`) replaces the file via `rename`, which swaps its inode;
+   * a single-file watch would silently go dead the moment this document
+   * saves itself even once. Watching the parent directory instead never
+   * goes dead across a rename, and gets deletion/recreation for free
+   * (matches the explorer's own directory-watch story). Omitted (the
+   * default) disables external-change detection entirely — every document
+   * behaves exactly as it did before Issue #119 (no watch is ever set up,
+   * no disk signature is ever compared at save time beyond what already
+   * existed).
+   */
+  watch?: (uri: Uri, listener: Listener<FileChangeEvent>) => Disposable;
+  /**
+   * Optional user-facing notice callback (Issue #119) — kept separate from
+   * `sink`/`log` (both real filesystem-failure reporting paths) because
+   * "this file changed on disk" / "this file was deleted" / "save refused:
+   * disk changed" are advisories, not I/O failures: nothing here failed to
+   * execute, the manager is deliberately declining to act. Routes through
+   * to `tecode.window.showMessage` in production (`main.ts`'s composition
+   * root, `WindowMessageService.showMessage`) — this module stays
+   * decoupled from that service's real type so core's buffer layer never
+   * has to import the UI layer just to warn about a stale buffer.
+   * Guarded exactly like every other injected callback in this module
+   * (`onLanguageActivation`'s own TSDoc): a throwing `notifyUser` must
+   * never break the caller that triggered it. Omitted (the default)
+   * silently drops these notices — external-change detection/save-conflict
+   * refusal still happen either way, only the user-facing heads-up is
+   * skipped.
+   */
+  notifyUser?: (message: string, kind: "warning") => void;
 }
 
 /** The document-manager service itself (design.md §7.2). */
@@ -160,6 +230,28 @@ export interface DocumentManager {
   onDidOpen: Event<CoreDocument>;
   onDidClose: Event<CoreDocument>;
   onDidSave: Event<CoreDocument>;
+  /**
+   * Fires after a document is reloaded from disk because it changed
+   * externally while non-`dirty` (Issue #119, `document.ts`'s internal
+   * `reloadFromDisk`). Never fires for a `save()`-triggered write (that is
+   * `onDidSave`'s own event) or for a `dirty` document's external change
+   * (that document is deliberately left untouched — see `notifyUser`'s
+   * TSDoc on {@link DocumentManagerDeps}). `ui/editorSession.ts`'s
+   * `EditorSessionService` subscribes to this to clamp a reloaded
+   * document's `EditorState.selections`/`scrollTop` back into bounds when
+   * the reload shrank the document out from under a stale cursor.
+   */
+  onDidReload: Event<CoreDocument>;
+  /**
+   * Dispose every still-live watch this manager set up (Issue #119) — one
+   * per currently open document, registered by `openDocumentUncached`
+   * against `deps.watch`. Idempotent; a safe no-op when `deps.watch` was
+   * never supplied (nothing was ever watched). Does NOT close any
+   * documents or fire `onDidClose` — this only releases the filesystem
+   * watch handles, matching `main.ts`'s `performShutdown` calling this
+   * alongside (not instead of) every other startup-owned disposable.
+   */
+  dispose(): void;
 }
 
 /** Extract an errno-style `code` (e.g. `"ENOENT"`, `"EEXIST"`) from a
@@ -191,12 +283,38 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
   const resolveLanguageId = deps.resolveLanguageId ?? (() => "plaintext");
   const fs = deps.fs ?? createNodeFs();
   const clock = deps.clock;
+  const watch = deps.watch;
 
   const documentsMap = new Map<Uri, CoreDocument>();
   const openListeners = new Set<Listener<CoreDocument>>();
   const closeListeners = new Set<Listener<CoreDocument>>();
   const saveListeners = new Set<Listener<CoreDocument>>();
+  const reloadListeners = new Set<Listener<CoreDocument>>();
   let tempCounter = 0;
+
+  /** Each open document's last-known disk signature (Issue #119) —
+   * `mtimeMs`+`size`, the cheap first-pass filter `openDocumentUncached`
+   * seeds, `saveNow` refreshes after a successful rename, and the
+   * watch-driven external-change check both compares against AND (when a
+   * change turns out to be this document's own save landing, or the
+   * buffer's text already matches disk) refreshes. No entry for a uri
+   * means "unknown" — either the document was never opened against a real
+   * file (Req 5.6/Issue #88's ENOENT-opens-empty path) or it was closed;
+   * every comparison below treats "unknown" as "assume changed" rather
+   * than silently skipping the check. */
+  const diskSignatures = new Map<Uri, { mtimeMs: number; size: number }>();
+  /** One filesystem watch per currently open document, keyed by the
+   * document's own uri (registered against its PARENT directory — see
+   * `DocumentManagerDeps.watch`'s TSDoc) — disposed on `close(uri)` and on
+   * this manager's own `dispose()`. */
+  const watchDisposables = new Map<Uri, Disposable>();
+  /** Per-uri serialized chain for external-change processing (Issue #119)
+   * — mirrors `saveQueues` below (and `config/service.ts`'s per-file
+   * reload chains): two watch events for the same uri firing in quick
+   * succession must not run overlapping checks, or a slower-to-finish
+   * older check could land after — and stomp on the result of — a newer
+   * one. No debounce, same MVP trade-off `config/service.ts` documents. */
+  const externalChangeChains = new Map<Uri, Promise<void>>();
 
   /** Guarded `sink.error` — a broken/throwing sink must not make manager
    * methods throw (design.md §14, matches registry.ts's `notifySafely`). */
@@ -212,6 +330,19 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
   function logSafely(level: "error" | "warning", err: HostError): void {
     try {
       log.append(level, err);
+    } catch {
+      // Swallowed — see notifySafely.
+    }
+  }
+
+  /** Guarded `deps.notifyUser` — same rationale as {@link notifySafely},
+   * for the separate user-facing-advisory channel (Issue #119,
+   * `DocumentManagerDeps.notifyUser`'s own TSDoc on why it's distinct from
+   * `sink`/`log`). A no-op when `deps.notifyUser` was never supplied. */
+  function notifyUserSafely(message: string): void {
+    if (!deps.notifyUser) return;
+    try {
+      deps.notifyUser(message, "warning");
     } catch {
       // Swallowed — see notifySafely.
     }
@@ -268,10 +399,16 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     const path = uriToPath(uri);
     let readonly = false;
     let text: string;
+    // Issue #119: the initial disk signature, seeded from THIS stat when
+    // the file actually exists — `undefined` (no entry ever set) for the
+    // ENOENT/new-file path below, since there is no disk state yet to
+    // remember.
+    let initialSignature: { mtimeMs: number; size: number } | undefined;
     try {
       const stat = await fs.stat(path);
       readonly = stat.size >= LARGE_FILE_THRESHOLD_BYTES;
       text = await fs.readFile(path, "utf8");
+      initialSignature = { mtimeMs: stat.mtimeMs, size: stat.size };
     } catch (cause) {
       if (errorCode(cause) !== "ENOENT") {
         const err: HostError = {
@@ -302,7 +439,29 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     });
 
     documentsMap.set(uri, document);
+    if (initialSignature) diskSignatures.set(uri, initialSignature);
     fire(openListeners, document, "onDidOpen");
+
+    // Issue #119: watch this document's PARENT directory (see
+    // `DocumentManagerDeps.watch`'s TSDoc for why parent-not-file) so
+    // external changes are detected for as long as the document stays
+    // open. Registered right after the document is registered/announced,
+    // exactly like every other per-document setup step above.
+    if (watch) {
+      try {
+        const parentUri = pathToUri(dirname(path));
+        const disposable = watch(parentUri, (event) => {
+          if (event.uri !== uri) return;
+          scheduleExternalChangeCheck(uri, document);
+        });
+        watchDisposables.set(uri, disposable);
+      } catch (cause) {
+        logSafely("warning", {
+          message: `Could not watch "${uri}" for external changes: ${describeError(cause)}`,
+          path: uri,
+        });
+      }
+    }
 
     if (deps.onLanguageActivation) {
       try {
@@ -316,6 +475,97 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     }
 
     return document;
+  }
+
+  /** Queue one external-change check for `uri`, running strictly after
+   * whatever check is already in flight for the SAME uri (this module's
+   * TSDoc on {@link externalChangeChains} above). */
+  function scheduleExternalChangeCheck(uri: Uri, document: CoreDocument): void {
+    const prev = externalChangeChains.get(uri) ?? Promise.resolve();
+    const next = prev.then(
+      () => handleExternalChangeEvent(uri, document),
+      () => handleExternalChangeEvent(uri, document),
+    );
+    externalChangeChains.set(uri, next);
+  }
+
+  /**
+   * One watch event's worth of work (Issue #119): `stat` the target,
+   * decide whether anything actually changed, and either reload a clean
+   * buffer, warn about a dirty one, or do nothing — see this module's
+   * top-level design notes (`documentManager.ts`'s own module TSDoc points
+   * back at Issue #119's plan for the full decision tree). Never throws:
+   * every branch that can fail (`stat`, `readFile`) is caught and reported
+   * through `log`, matching this module's other guarded-boundary
+   * functions.
+   */
+  async function handleExternalChangeEvent(uri: Uri, document: CoreDocument): Promise<void> {
+    // The document may have been closed (or replaced by a fresh open of
+    // the same uri) while this check sat queued behind an earlier one on
+    // the same uri's serialized chain — bail out rather than reloading or
+    // warning about a document nobody holds a reference to anymore.
+    if (documentsMap.get(uri) !== document) return;
+
+    const path = uriToPath(uri);
+    let stat: { mtimeMs: number; size: number };
+    try {
+      stat = await fs.stat(path);
+    } catch (cause) {
+      if (errorCode(cause) !== "ENOENT") {
+        logSafely("warning", {
+          message: `Failed to check "${uri}" for external changes: ${describeError(cause)}`,
+          path: uri,
+        });
+        return;
+      }
+      // Deleted on disk: keep the buffer open exactly as it is — neither
+      // closing it nor reloading it — and just warn. Deliberately leaves
+      // the tracked signature untouched (this module's TSDoc on
+      // `diskSignatures`): if the file reappears, the next event's
+      // comparison still runs against what we last knew, not "nothing".
+      notifyUserSafely(`"${uri}" was deleted on disk.`);
+      return;
+    }
+
+    const known = diskSignatures.get(uri);
+    if (known && known.mtimeMs === stat.mtimeMs && known.size === stat.size) {
+      // Signature unchanged: the cheap first-pass filter (this module's
+      // TSDoc on `diskSignatures`) — never even reads the file's bytes.
+      return;
+    }
+
+    let diskText: string;
+    try {
+      diskText = await fs.readFile(path, "utf8");
+    } catch (cause) {
+      logSafely("warning", {
+        message: `Failed to read "${uri}" after an external change: ${describeError(cause)}`,
+        path: uri,
+      });
+      return;
+    }
+
+    if (diskText === document.getText()) {
+      // The signature moved (e.g. this document's OWN save just landed —
+      // self-loop suppression, this module's TSDoc) but the bytes did not:
+      // just refresh the signature so the next GENUINE external edit is
+      // still detected, without disturbing the buffer or firing anything.
+      diskSignatures.set(uri, { mtimeMs: stat.mtimeMs, size: stat.size });
+      return;
+    }
+
+    if (document.dirty) {
+      // Never clobber unsaved edits (design decision #2, this module's
+      // top-level notes): warn only, and deliberately do NOT update the
+      // signature — `saveNow`'s own stat comparison must still see this
+      // mismatch and refuse to overwrite the newer disk content.
+      notifyUserSafely(`"${uri}" was changed on disk.`);
+      return;
+    }
+
+    document.reloadFromDisk(diskText);
+    diskSignatures.set(uri, { mtimeMs: stat.mtimeMs, size: stat.size });
+    fire(reloadListeners, document, "onDidReload");
   }
 
   /** Per-uri chain of in-flight saves: a second save of the same uri
@@ -370,7 +620,24 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     // so report and abort rather than saving with a possibly-wrong mode.
     let targetMode: number | undefined;
     try {
-      targetMode = (await fs.stat(path)).mode;
+      const stat = await fs.stat(path);
+      targetMode = stat.mode;
+      // Issue #119: refuse to blindly overwrite a file that changed on
+      // disk since we last knew about it — either the watch-driven check
+      // already warned about it while this document stayed dirty (and
+      // deliberately left the signature stale, this module's TSDoc), or
+      // no watch is even wired up and this is the first time anyone
+      // noticed. `known === undefined` ("we have no tracked signature at
+      // all", Req 5.6/Issue #88's new-file path) is NOT a conflict — that
+      // is the pre-existing "first save creates the file" contract this
+      // check must leave untouched.
+      const known = diskSignatures.get(uri);
+      if (known && (known.mtimeMs !== stat.mtimeMs || known.size !== stat.size)) {
+        notifyUserSafely(
+          `Cannot save: "${uri}" changed on disk since it was last read. Reload to see the latest content before saving again.`,
+        );
+        return false;
+      }
     } catch (cause) {
       if (errorCode(cause) !== "ENOENT") {
         const err: HostError = {
@@ -426,6 +693,21 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
       return false;
     }
 
+    // Issue #119: the bytes just renamed into place ARE disk's current
+    // state now — refresh the tracked signature so the next
+    // external-change check (watch-driven, or this same document's next
+    // save) compares against reality instead of what was there before
+    // this save. Best-effort: a failed re-stat here only means the NEXT
+    // check re-reads the file to confirm rather than trusting a signature
+    // — not worth failing an otherwise-successful save over, so this
+    // drops the (now unknown) signature rather than aborting.
+    try {
+      const postSaveStat = await fs.stat(path);
+      diskSignatures.set(uri, { mtimeMs: postSaveStat.mtimeMs, size: postSaveStat.size });
+    } catch {
+      diskSignatures.delete(uri);
+    }
+
     // An edit that landed while the write was in flight is not in the
     // bytes just renamed into place: keep `dirty` so the document still
     // reads as unsaved, instead of silently misreporting the newest edit
@@ -441,7 +723,29 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     const document = documentsMap.get(uri);
     if (!document) return;
     documentsMap.delete(uri);
+    diskSignatures.delete(uri);
+    externalChangeChains.delete(uri);
+    const disposable = watchDisposables.get(uri);
+    if (disposable) {
+      watchDisposables.delete(uri);
+      try {
+        disposable.dispose();
+      } catch {
+        // Best-effort — matches this module's other guarded dispose calls.
+      }
+    }
     fire(closeListeners, document, "onDidClose");
+  }
+
+  function dispose(): void {
+    for (const disposable of watchDisposables.values()) {
+      try {
+        disposable.dispose();
+      } catch {
+        // Best-effort — see close()'s identical guard above.
+      }
+    }
+    watchDisposables.clear();
   }
 
   return {
@@ -451,8 +755,10 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     },
     save,
     close,
+    dispose,
     onDidOpen: makeEvent(openListeners),
     onDidClose: makeEvent(closeListeners),
     onDidSave: makeEvent(saveListeners),
+    onDidReload: makeEvent(reloadListeners),
   };
 }

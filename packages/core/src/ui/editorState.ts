@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useReducer, useRef } from "react";
-import type { Range, Selection, Uri } from "@tecode/api";
+import type { Position, Range, Selection, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { HighlightService } from "../languages/highlightService";
 
@@ -86,6 +86,48 @@ export function createInitialEditorState(documentUri: Uri): EditorState {
     selections: [{ start: origin, end: origin, anchor: origin, active: origin }],
     scrollTop: 0,
   };
+}
+
+/** Clamp `position` into a valid location in `document`: `line` to
+ * `[0, lineCount - 1]`, then `character` to `[0, that line's length]` — the
+ * document's bounds evaluated AFTER whatever mutation triggered the clamp
+ * (Issue #119's post-reload cursor safety, this module's `clampSelectionsToDocument`
+ * TSDoc). `document` is narrowed to just what this needs (`lineCount`/
+ * `getLine`), matching this codebase's "narrowing, not re-implementing"
+ * convention (e.g. `main.ts`'s `ShutdownRoot`). */
+function clampPositionToDocument(
+  position: Position,
+  document: Pick<CoreDocument, "lineCount" | "getLine">,
+): Position {
+  const maxLine = Math.max(0, document.lineCount - 1);
+  const line = Math.max(0, Math.min(Math.trunc(position.line) || 0, maxLine));
+  const lineLength = document.getLine(line).length;
+  const character = Math.max(0, Math.min(Math.trunc(position.character) || 0, lineLength));
+  return { line, character };
+}
+
+/**
+ * Clamp every selection's four positions (`start`/`end`/`anchor`/`active`)
+ * into `document`'s current bounds (Issue #119). `ui/editorSession.ts`'s
+ * `EditorSessionService` calls this from its `documents.onDidReload`
+ * subscription before writing a reloaded document's `EditorState` back —
+ * without it, a reload that shrinks the line count (or shortens a line the
+ * cursor sat on) could leave a stale selection pointing past the end of
+ * the document, and `LineBuffer.getLine`'s own `RangeError` contract
+ * (`lineBuffer.ts`) means the very next render (`editorView.tsx`'s row
+ * loop, or `useLineTicks` above) would throw instead of just drawing a
+ * clamped cursor.
+ */
+export function clampSelectionsToDocument(
+  selections: Selection[],
+  document: Pick<CoreDocument, "lineCount" | "getLine">,
+): Selection[] {
+  return selections.map((selection) => ({
+    start: clampPositionToDocument(selection.start, document),
+    end: clampPositionToDocument(selection.end, document),
+    anchor: clampPositionToDocument(selection.anchor, document),
+    active: clampPositionToDocument(selection.active, document),
+  }));
 }
 
 /** What {@link useLineTicks} returns. */

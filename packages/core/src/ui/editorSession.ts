@@ -31,10 +31,27 @@
  * `undefined` when nothing is open.
  */
 
-import type { Disposable, Event, Listener, Uri } from "@tecode/api";
+import type { Disposable, Event, Listener, Selection, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
-import { createInitialEditorState, type EditorState } from "./editorState";
+import { clampSelectionsToDocument, createInitialEditorState, type EditorState } from "./editorState";
+
+/** Whether `a` and `b` describe the exact same selection (all four
+ * positions equal) — used only to decide whether a reload's clamp pass
+ * actually changed anything (`reloadSub` below), so a reload that leaves
+ * every selection already in-bounds does not fire a spurious `onDidChange`. */
+function selectionEquals(a: Selection, b: Selection): boolean {
+  return (
+    a.start.line === b.start.line &&
+    a.start.character === b.start.character &&
+    a.end.line === b.end.line &&
+    a.end.character === b.end.character &&
+    a.anchor.line === b.anchor.line &&
+    a.anchor.character === b.anchor.character &&
+    a.active.line === b.active.line &&
+    a.active.character === b.active.character
+  );
+}
 
 /** Dependencies for {@link createEditorSessionService}. */
 export interface EditorSessionServiceDeps {
@@ -143,6 +160,33 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
     states.delete(closed.uri);
     syncActiveDocument();
   });
+  // Issue #119: a reload can shrink the document (fewer lines, or a
+  // shorter line the cursor sat on) out from under this tab's own
+  // `EditorState` — clamp `selections`/`scrollTop` back into bounds so
+  // `EditorView`'s row loop never reads a line that no longer exists. Only
+  // touches a document that already HAS an allocated `EditorState`
+  // (`getState`'s own lazy-allocation policy: nothing to clamp for a
+  // document nobody has looked at through this service yet), and only
+  // calls `setState` (firing `onDidChange`) when the clamp actually
+  // changed something — a same-size (or grown) reload leaves every
+  // selection in-bounds already and should not force a spurious re-render.
+  const reloadSub = documents.onDidReload((document) => {
+    if (disposed) return;
+    const state = states.get(document.uri);
+    if (!state) return;
+    const clampedSelections = clampSelectionsToDocument(state.selections, document);
+    const maxScrollLine = Math.max(0, document.lineCount - 1);
+    const clampedScrollTop = Math.max(0, Math.min(Math.trunc(state.scrollTop) || 0, maxScrollLine));
+    const selectionsChanged =
+      clampedSelections.length !== state.selections.length ||
+      clampedSelections.some((s, i) => !selectionEquals(s, state.selections[i]!));
+    if (!selectionsChanged && clampedScrollTop === state.scrollTop) return;
+    setState(document.uri, {
+      ...state,
+      selections: clampedSelections,
+      scrollTop: clampedScrollTop,
+    });
+  });
 
   // Cover a caller built after documents were already opened (this
   // module's TSDoc).
@@ -194,6 +238,7 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
     disposed = true;
     openSub.dispose();
     closeSub.dispose();
+    reloadSub.dispose();
     listeners.clear();
   }
 

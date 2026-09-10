@@ -335,3 +335,35 @@ describe("createUndoStack — empty stacks are silent no-ops", () => {
     expect(stack.redo()).toBeUndefined();
   });
 });
+
+describe("createUndoStack.clear (Issue #119, document.ts's reloadFromDisk)", () => {
+  test("discards both the undo and redo stacks", () => {
+    const clock = createFakeClock();
+    const stack = createUndoStack({ clock });
+    stack.push({
+      inverseEdits: [edit("a", 0, 0)],
+      selectionsBefore: NO_SELECTIONS,
+      selectionsAfter: NO_SELECTIONS,
+    });
+    stack.push({
+      inverseEdits: [edit("b", 0, 0)],
+      selectionsBefore: NO_SELECTIONS,
+      selectionsAfter: NO_SELECTIONS,
+    });
+    // One undo, leaving BOTH stacks non-empty (one entry each).
+    expect(stack.undo()).toBeDefined();
+
+    stack.clear();
+
+    expect(stack.undo()).toBeUndefined();
+    expect(stack.redo()).toBeUndefined();
+  });
+
+  test("is a safe no-op on an already-empty stack", () => {
+    const clock = createFakeClock();
+    const stack = createUndoStack({ clock });
+    expect(() => stack.clear()).not.toThrow();
+    expect(stack.undo()).toBeUndefined();
+    expect(stack.redo()).toBeUndefined();
+  });
+});

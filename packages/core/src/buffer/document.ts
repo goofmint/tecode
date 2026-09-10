@@ -11,6 +11,7 @@ import type {
   DocumentChangeEvent,
   Eol,
   Listener,
+  Range,
   Selection,
   TextEdit,
   Uri,
@@ -123,6 +124,37 @@ export interface CoreDocument extends Document {
    * TSDoc for why this is not part of the public `Document` type.
    */
   getLine(n: number): string;
+  /**
+   * Replace the ENTIRE buffer content with `text`, exactly as read fresh
+   * from disk (Issue #119's external-change reload path — `documentManager.
+   * ts`'s watcher-driven reload calls this once it has confirmed `text`
+   * genuinely differs from {@link getText} and the document is not
+   * `dirty`). Implemented as one full-range replace edit through the
+   * internal `LineBuffer` — Req 5.2's "`applyEdits` is the sole mutation
+   * path" still holds, this just bypasses `applyEdits` ITSELF (the public
+   * entry point) the same way {@link markSaved}/`applyWithoutRecording`
+   * (`document.ts`'s own private helper) already do — so `onDidChange`
+   * still fires exactly once with an accurate `dirtyRange`/`inverseEdits`,
+   * matching every other mutation path.
+   *
+   * Deliberately bypasses the undo-stack PUSH (same shape as `document.
+   * ts`'s private `applyWithoutRecording`, which `undo`/`redo` already use
+   * to replay history without re-recording it) AND additionally DISCARDS
+   * the undo/redo stacks outright (`UndoStack.clear`) — unlike `undo`/
+   * `redo`, which replay this document's own prior edits and therefore
+   * stay valid, an external reload's new text has no relationship to the
+   * buffer's edit history: leaving old entries around risks a later
+   * undo/redo silently corrupting the freshly reloaded content by
+   * replaying an inverse computed against text that no longer exists.
+   * `version` is bumped (every mutation bumps it) and `dirty` is forced to
+   * `false` — the buffer now matches disk exactly, by definition, since
+   * `text` IS disk's current content; there is nothing left to save.
+   *
+   * Internal to core — not part of the public `@tecode/api` `Document`,
+   * matching {@link markSaved}'s own policy: only `DocumentManager`'s
+   * watch-driven reload calls this, never extensions.
+   */
+  reloadFromDisk(text: string): void;
 }
 
 /**
@@ -364,6 +396,33 @@ export function createDocument(options: CreateDocumentOptions): CoreDocument {
     dirty = false;
   }
 
+  function reloadFromDisk(text: string): void {
+    const lineCountBefore = buffer.lineCount;
+    const lastLineBefore = lineCountBefore - 1;
+    const fullRange: Range = {
+      start: { line: 0, character: 0 },
+      end: { line: lastLineBefore, character: buffer.getLine(lastLineBefore).length },
+    };
+    const [applied] = buffer.applyEdits([{ range: fullRange, newText: text }]);
+
+    version += 1;
+    dirty = false;
+    undoStack.clear();
+
+    const { startLine, endLine } = dirtyRangeOf([{ range: fullRange, newText: text }]);
+    emit({
+      document,
+      edits: [{ range: fullRange, newText: text }],
+      version,
+      dirtyRange: {
+        startLine,
+        endLine,
+        lineCountDelta: buffer.lineCount - lineCountBefore,
+      },
+      inverseEdits: [applied!.inverse],
+    });
+  }
+
   function onDidChange(listener: Listener<DocumentChangeEvent>): Disposable {
     listeners.add(listener);
     let disposed = false;
@@ -396,6 +455,7 @@ export function createDocument(options: CreateDocumentOptions): CoreDocument {
     redo,
     getText,
     markSaved,
+    reloadFromDisk,
     get lineCount() {
       return buffer.lineCount;
     },

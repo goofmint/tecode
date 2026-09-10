@@ -529,6 +529,83 @@ test("Issue #88 end to end: `tecode README2.md` on a non-existent path opens an 
   }
 }, 15_000);
 
+/** Poll `predicate` until it's true or `timeoutMs` elapses (matches
+ * `buffer/fileSystem.test.ts`'s own `waitFor` — real `fs.watch` delivery
+ * has no fixed latency, so a real end-to-end watch test must poll rather
+ * than await a single event). */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("waitFor: timed out waiting for predicate");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+test("Issue #119 end to end: buildAssemblyRoot wires documents to the REAL fs.watch — an external edit reloads, and the document's own save doesn't self-trigger a reload", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  const targetFile = join(workspaceDir, "watched.md");
+  await writeFile(targetFile, "original", "utf8");
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir);
+    try {
+      await root.config.ready;
+
+      const uri = pathToUri(targetFile);
+      const doc = await root.documents.openDocument(uri);
+      expect(doc.getText()).toBe("original");
+      expect(doc.dirty).toBe(false);
+
+      let reloadCount = 0;
+      root.documents.onDidReload(() => {
+        reloadCount++;
+      });
+
+      // Save through the REAL DocumentManager/real atomic rename — Issue
+      // #119's whole point is that watching the PARENT directory (not the
+      // file itself) survives this rename, AND that the save's own write
+      // must not be mistaken for an external change.
+      doc.applyEdits([
+        { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "saved" },
+      ]);
+      expect(await root.documents.save(uri)).toBe(true);
+      expect(doc.dirty).toBe(false);
+
+      // Give the self-save's own (real) watch event, if any slips through,
+      // a moment to (not) cause a reload before checking the count below.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(reloadCount).toBe(0);
+
+      // A genuinely external edit, after the save, must still be detected
+      // — proving the watch survived the rename.
+      await writeFile(targetFile, "changed by another process", "utf8");
+      await waitFor(() => doc.getText() === "changed by another process", 10_000);
+
+      expect(doc.dirty).toBe(false);
+      expect(reloadCount).toBe(1);
+    } finally {
+      root.documents.dispose();
+      root.config.dispose();
+    }
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+}, 20_000);
+
 test("runDeferredPhase reports a bad extension without failing startup (Req 2.4)", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
   const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));

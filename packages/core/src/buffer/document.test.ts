@@ -860,3 +860,79 @@ describe("createDocument — lineCount/getLine (core-internal, EditorView Req 6.
     expect(doc.getLine(2)).toBe("two");
   });
 });
+
+describe("createDocument — reloadFromDisk (Issue #119, internal-only external-change reload)", () => {
+  test("replaces the entire buffer, bumps version, clears dirty, and fires onDidChange exactly once", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "one\ntwo",
+      sink,
+      log,
+    });
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "X" },
+    ]);
+    expect(doc.dirty).toBe(true);
+    const versionBefore = doc.version;
+
+    const events: DocumentChangeEvent[] = [];
+    doc.onDidChange((e) => events.push(e));
+
+    doc.reloadFromDisk("three\nfour\nfive");
+
+    expect(doc.getText()).toBe("three\nfour\nfive");
+    expect(doc.lineCount).toBe(3);
+    expect(doc.dirty).toBe(false);
+    expect(doc.version).toBe(versionBefore + 1);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.dirtyRange.lineCountDelta).toBe(1); // 2 lines -> 3 lines
+  });
+
+  test("discards the undo AND redo stacks — undo()/redo() are no-ops afterward", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "hello",
+      sink,
+      log,
+    });
+    // Two non-coalescing edits, then one undo — leaves BOTH stacks
+    // non-empty at the same time (one entry each) going into the reload.
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 5 }, end: { line: 0, character: 5 } }, newText: " world" },
+    ]);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: ">> " },
+    ]);
+    doc.undo();
+    expect(doc.getText()).toBe("hello world");
+
+    doc.reloadFromDisk("completely different content");
+
+    // Neither the remaining undo entry nor the redo entry may replay —
+    // both would apply an inverse computed against text the buffer no
+    // longer has, corrupting the freshly reloaded content.
+    expect(doc.undo()).toBeUndefined();
+    expect(doc.redo()).toBeUndefined();
+    expect(doc.getText()).toBe("completely different content");
+  });
+
+  test("reloadFromDisk never appears on @tecode/api's Document shape (internal-only, matches markSaved)", () => {
+    const { log, sink } = baseDeps();
+    const doc = createDocument({
+      uri: "file:///a.txt",
+      languageId: "plaintext",
+      text: "x",
+      sink,
+      log,
+    });
+    // Type-level guarantee is enforced at compile time (CoreDocument vs.
+    // Document); this just pins down that the method exists on the
+    // concrete CoreDocument return value, matching markSaved's own
+    // reachability.
+    expect(typeof doc.reloadFromDisk).toBe("function");
+  });
+});

@@ -609,6 +609,16 @@ export function buildAssemblyRoot(
   const log = deps.log ?? createHostLog();
 
   const hostRef: { current?: ExtensionHost } = {};
+  /**
+   * Forward reference for `documents`' `notifyUser` (Issue #119): the REAL
+   * `windowMessageService` (below) does not exist yet at this point in the
+   * sync phase — same "build now, wire later" shape as `hostRef` itself
+   * just above, needed here because `documents`' external-change/
+   * save-conflict warnings should surface through the SAME
+   * `tecode.window.showMessage` mechanism every other host-owned warning
+   * uses, not a second bespoke path.
+   */
+  const windowMessageServiceRef: { current?: WindowMessageService } = {};
 
   // `slotRegistry` is built here, ahead of `sink` and everything else that
   // depends on `sink` (Task 3.4, Req 11.6): its own dependencies (`log`,
@@ -639,11 +649,20 @@ export function buildAssemblyRoot(
   // open resolves a real language id (or `"plaintext"`) from day one, not
   // `documentManager.ts`'s own stub default.
   const languageRegistry = createLanguageRegistry();
+  // `fs` is built here — ahead of `documents` — because it only depends on
+  // `log` (exactly like the ORIGINAL `const fs = createFileSystem({ log })`
+  // used to sit right after `highlightService` below), and `documents`
+  // needs its real `watch` wired in at construction (Issue #119): reusing
+  // `fileSystem.ts`'s own `watch`/dispose/event-normalization here avoids a
+  // second, parallel implementation of parent-directory watching.
+  const fs = createFileSystem({ log });
   const documents = createDocumentManager({
     log,
     sink,
     resolveLanguageId: languageRegistry.resolveLanguageId,
     onLanguageActivation: (id) => hostRef.current?.onLanguage(id),
+    watch: fs.watch,
+    notifyUser: (message, kind) => windowMessageServiceRef.current?.showMessage(message, kind),
   });
   // The highlight service (Task 2.8, Req 8.1-8.3, design.md §10): built
   // right after `documents`/`languageRegistry` exist, with the production
@@ -679,7 +698,6 @@ export function buildAssemblyRoot(
     log,
     sink,
   });
-  const fs = createFileSystem({ log });
   // Issue #91's clipboard service — built once, exactly like `fs` above.
   // Its OSC 52 system writer arrives later (`runTecode`'s `renderShell(...)`
   // call, via `deps.onClipboardWriterReady`) since it needs a real
@@ -948,6 +966,10 @@ export function buildAssemblyRoot(
   // instance the rendered `Shell`'s `StatusBar` reads from.
   const modalService = createModalService();
   const windowMessageService = createWindowMessageService({ slotRegistry });
+  // Fulfills the forward reference `documents` was built with above
+  // (Issue #119) — from here on, `documents`' external-change/
+  // save-conflict warnings reach the real status bar.
+  windowMessageServiceRef.current = windowMessageService;
 
   const api = createTecodeApi({
     commands,
@@ -1378,6 +1400,11 @@ export interface ShutdownRoot {
   highlightService: Pick<Disposable, "dispose">;
   languageRegistry: Pick<Disposable, "dispose">;
   clipboardConfigSync: Pick<Disposable, "dispose">;
+  /** Releases every still-live external-change watch `documents` set up
+   * (Issue #119, `buffer/documentManager.ts`'s `DocumentManager.dispose`)
+   * — does NOT close any open documents, matching that method's own
+   * "watch handles only" contract. */
+  documents: Pick<DocumentManager, "dispose">;
   hostRef: { current?: Pick<ExtensionHost, "disposeAll"> };
 }
 
@@ -1479,6 +1506,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.hostErrorSink.dispose();
       root.highlightService.dispose();
       root.languageRegistry.dispose();
+      root.documents.dispose();
       await root.hostRef.current?.disposeAll();
     } catch (cause) {
       root.log.append("error", {

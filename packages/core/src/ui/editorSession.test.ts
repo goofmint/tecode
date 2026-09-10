@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { dirname } from "node:path";
+import type { Disposable, FileChangeEvent, Listener, Uri } from "@tecode/api";
 import type { DocumentManagerFs } from "../buffer/documentManager";
 import { createDocumentManager } from "../buffer/documentManager";
 import { pathToUri } from "../buffer/uri";
@@ -13,7 +15,7 @@ function createInMemoryFs(files: Record<string, string>): DocumentManagerFs {
   return {
     async stat(path: string) {
       if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return { size: files[path]!.length, mode: 0o644 };
+      return { size: files[path]!.length, mode: 0o644, mtimeMs: 0 };
     },
     async readFile(path: string) {
       if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
@@ -33,6 +35,37 @@ function createHarness(files: Record<string, string> = {}) {
     fs: createInMemoryFs(files),
   });
   return { documents };
+}
+
+/** A fake `watch` seam (matches `documentManager.test.ts`'s own
+ * `createFakeWatch`) — deterministic stand-in for a real `fs.watch`, so a
+ * test can simulate an external reload without touching a real filesystem
+ * or racing real watcher delivery latency. */
+function createFakeWatch(): {
+  watch: (uri: Uri, listener: Listener<FileChangeEvent>) => Disposable;
+  emit(watchedUri: Uri, event: FileChangeEvent): void;
+} {
+  const listeners = new Map<Uri, Set<Listener<FileChangeEvent>>>();
+  function watch(uri: Uri, listener: Listener<FileChangeEvent>): Disposable {
+    let set = listeners.get(uri);
+    if (!set) {
+      set = new Set();
+      listeners.set(uri, set);
+    }
+    set.add(listener);
+    let disposed = false;
+    return {
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        set!.delete(listener);
+      },
+    };
+  }
+  function emit(watchedUri: Uri, event: FileChangeEvent): void {
+    for (const listener of listeners.get(watchedUri) ?? []) listener(event);
+  }
+  return { watch, emit };
 }
 
 describe("createEditorSessionService (Task 2.2, ui/editorSession.ts)", () => {
@@ -153,6 +186,90 @@ describe("createEditorSessionService (Task 2.2, ui/editorSession.ts)", () => {
 
     session.dispose();
     await documents.openDocument(pathToUri("/a.ts"));
+    expect(changes).toBe(0);
+  });
+
+  test("an external reload that shrinks the document clamps out-of-bounds selections and scrollTop (Issue #119)", async () => {
+    const files: Record<string, string> = { "/a.ts": "one\ntwo\nthree\nfour\nfive" };
+    const { watch, emit } = createFakeWatch();
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs(files),
+      watch,
+    });
+    const session = createEditorSessionService({ documents });
+    const uri = pathToUri("/a.ts");
+    const doc = await documents.openDocument(uri);
+    expect(doc.dirty).toBe(false);
+
+    // Move the cursor/scroll to the document's tail before the reload.
+    const tail = { line: 4, character: 4 }; // "five" — line 4, char 4 is valid (end of "five")
+    session.setState(uri, {
+      documentUri: uri,
+      selections: [{ start: tail, end: tail, anchor: tail, active: tail }],
+      scrollTop: 4,
+    });
+
+    let changes = 0;
+    session.onDidChange(() => changes++);
+
+    // Simulate another process shrinking the file down to a single, short
+    // line, then the watcher firing — exercising the REAL end-to-end path
+    // (documentManager's watch -> reloadFromDisk -> onDidReload ->
+    // EditorSessionService's clamp), not just the clamp helper in
+    // isolation.
+    files["/a.ts"] = "hi";
+    const reloaded = new Promise<void>((resolve) => {
+      const sub = documents.onDidReload(() => {
+        sub.dispose();
+        resolve();
+      });
+    });
+    emit(pathToUri(dirname("/a.ts")), { type: "changed", uri });
+    await reloaded;
+
+    expect(changes).toBeGreaterThan(0);
+    const state = session.getState(uri);
+    expect(state.scrollTop).toBe(0); // clamped: lineCount is now 1
+    expect(state.selections).toHaveLength(1);
+    const sel = state.selections[0]!;
+    expect(sel.start).toEqual({ line: 0, character: 2 }); // clamped to "hi".length
+    expect(sel.end).toEqual({ line: 0, character: 2 });
+    expect(sel.anchor).toEqual({ line: 0, character: 2 });
+    expect(sel.active).toEqual({ line: 0, character: 2 });
+  });
+
+  test("a reload that does not push any selection out of bounds does not fire a spurious onDidChange", async () => {
+    const files: Record<string, string> = { "/a.ts": "one\ntwo" };
+    const { watch, emit } = createFakeWatch();
+    const documents = createDocumentManager({
+      log: createHostLog(),
+      sink: createRecordingSink(),
+      fs: createInMemoryFs(files),
+      watch,
+    });
+    const session = createEditorSessionService({ documents });
+    const uri = pathToUri("/a.ts");
+    const doc = await documents.openDocument(uri);
+    // Establish an EditorState so the reload subscription has something to
+    // (not) touch — origin cursor stays valid regardless of content.
+    session.getState(uri);
+    expect(doc.dirty).toBe(false);
+
+    let changes = 0;
+    session.onDidChange(() => changes++);
+
+    files["/a.ts"] = "one\ntwo\nthree";
+    const reloaded = new Promise<void>((resolve) => {
+      const sub = documents.onDidReload(() => {
+        sub.dispose();
+        resolve();
+      });
+    });
+    emit(pathToUri(dirname("/a.ts")), { type: "changed", uri });
+    await reloaded;
+
     expect(changes).toBe(0);
   });
 
