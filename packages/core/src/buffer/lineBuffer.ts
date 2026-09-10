@@ -62,6 +62,18 @@ export interface LineBuffer {
    * operate in native UTF-16 code units and never split a surrogate
    * pair. */
   positionAt(offset: number): Position;
+  /**
+   * Change the `Eol` used by {@link getText}'s rejoin and by the offset/
+   * position math (`offsetAt`/`positionAt`/`applyEdits`'s internal length
+   * bookkeeping) — `lines` itself is untouched (Issue #119's
+   * `document.ts#reloadFromDisk`: a full-range replace already produces
+   * the right line CONTENTS regardless of `eol`, since inserted text is
+   * split on any `\r\n`/`\n` it contains, not on this buffer's own `eol`;
+   * only the disk's actual line-ending STYLE needs tracking after an
+   * external LF<->CRLF switch, so `getText()` keeps matching disk
+   * byte-for-byte).
+   */
+  setEol(eol: Eol): void;
 }
 
 /** Split text into lines on any of `\r\n` or `\n`, dropping the
@@ -207,6 +219,10 @@ export function createLineBuffer(text: string, eol: Eol): LineBuffer {
     return positionAtIn(lines, eol, offset);
   }
 
+  function setEol(newEol: Eol): void {
+    eol = newEol;
+  }
+
   function applyEdits(edits: TextEdit[]): AppliedEdit[] {
     if (edits.length === 0) return [];
 
@@ -314,5 +330,6 @@ export function createLineBuffer(text: string, eol: Eol): LineBuffer {
     applyEdits,
     offsetAt,
     positionAt,
+    setEol,
   };
 }

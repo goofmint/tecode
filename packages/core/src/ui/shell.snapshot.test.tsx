@@ -398,7 +398,7 @@ function createInMemoryFs(files: Record<string, string>): DocumentManagerFs {
   return {
     async stat(path: string) {
       if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return { size: files[path]!.length, mode: 0o644 };
+      return { size: files[path]!.length, mode: 0o644, mtimeMs: 0 };
     },
     async readFile(path: string) {
       if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });

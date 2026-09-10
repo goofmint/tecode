@@ -46,6 +46,7 @@ function createFakeDocument(lines: string[]): CoreDocument & { appliedEdits: unk
     redo: () => undefined,
     getText: () => lines.join("\n"),
     markSaved: () => {},
+    reloadFromDisk: () => {},
     lineCount: lines.length,
     getLine: (n: number) => {
       const line = lines[n];

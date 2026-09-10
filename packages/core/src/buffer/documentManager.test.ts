@@ -14,7 +14,8 @@ import {
   writeFile as fsWriteFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import type { Disposable, FileChangeEvent, Listener, Uri } from "@tecode/api";
 import type { HostError } from "../host/errors";
 import { createHostLog } from "../host/errors";
 import {
@@ -23,6 +24,46 @@ import {
   type DocumentManagerFs,
 } from "./documentManager";
 import { pathToUri, uriToPath } from "./uri";
+
+/**
+ * A fake `watch` seam (Issue #119) matching `DocumentManagerDeps.watch`'s
+ * signature exactly — deterministic stand-in for a real `fs.watch`: tests
+ * call {@link emit} directly instead of touching the real filesystem and
+ * racing a real watcher's delivery latency. Registrations are keyed by the
+ * exact uri `watch()` was called with (the PARENT directory, per
+ * `documentManager.ts`'s own contract) so a test can assert which uri got
+ * watched, matching `fileSystem.test.ts`'s own real-`fs.watch` test style
+ * but without the timing.
+ */
+function createFakeWatch(): {
+  watch: (uri: Uri, listener: Listener<FileChangeEvent>) => Disposable;
+  emit(watchedUri: Uri, event: FileChangeEvent): void;
+  watchedUris: Uri[];
+} {
+  const listeners = new Map<Uri, Set<Listener<FileChangeEvent>>>();
+  const watchedUris: Uri[] = [];
+  function watch(uri: Uri, listener: Listener<FileChangeEvent>): Disposable {
+    watchedUris.push(uri);
+    let set = listeners.get(uri);
+    if (!set) {
+      set = new Set();
+      listeners.set(uri, set);
+    }
+    set.add(listener);
+    let disposed = false;
+    return {
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        set!.delete(listener);
+      },
+    };
+  }
+  function emit(watchedUri: Uri, event: FileChangeEvent): void {
+    for (const listener of listeners.get(watchedUri) ?? []) listener(event);
+  }
+  return { watch, emit, watchedUris };
+}
 
 /** A {@link StatusSink} stub that records every error it receives, for
  * assertions (matches document.test.ts's `createRecordingSink`). */
@@ -677,5 +718,585 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
     // text — the older snapshot can never end up as the final disk state.
     expect(await readFile(path, "utf8")).toBe("second");
     expect(doc.dirty).toBe(false);
+  });
+});
+
+describe("DocumentManager — external file changes (Issue #119)", () => {
+  test("openDocument watches the PARENT directory, not the file itself", async () => {
+    const path = join(dir, "watched.txt");
+    await writeFile(path, "hello", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, watchedUris } = createFakeWatch();
+    const manager = createDocumentManager({ log, sink, watch });
+
+    const uri = pathToUri(path);
+    await manager.openDocument(uri);
+
+    expect(watchedUris).toEqual([pathToUri(dirname(path))]);
+  });
+
+  test("an unedited (non-dirty) buffer reloads on an external change and fires onDidReload", async () => {
+    const path = join(dir, "clean.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+    const manager = createDocumentManager({ log, sink, watch });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    expect(doc.dirty).toBe(false);
+    const versionBefore = doc.version;
+
+    // Simulate another process rewriting the file, then the watcher firing.
+    await writeFile(path, "changed externally", "utf8");
+    const reloaded = new Promise<void>((resolve) => {
+      const sub = manager.onDidReload(() => {
+        sub.dispose();
+        resolve();
+      });
+    });
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+    await reloaded;
+
+    expect(doc.getText()).toBe("changed externally");
+    expect(doc.dirty).toBe(false);
+    expect(doc.version).toBe(versionBefore + 1);
+  });
+
+  test("events for a sibling file in the same watched directory are ignored", async () => {
+    const path = join(dir, "mine.txt");
+    const siblingPath = join(dir, "sibling.txt");
+    await writeFile(path, "mine", "utf8");
+    await writeFile(siblingPath, "sibling", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+    const manager = createDocumentManager({ log, sink, watch });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+
+    let reloaded = false;
+    manager.onDidReload(() => {
+      reloaded = true;
+    });
+    emit(pathToUri(dirname(path)), { type: "changed", uri: pathToUri(siblingPath) });
+
+    // Nothing async to await for a filtered-out event — the listener
+    // returns synchronously without ever scheduling a check.
+    expect(reloaded).toBe(false);
+    expect(doc.getText()).toBe("mine");
+  });
+
+  test("a dirty buffer is never overwritten by an external change — it only warns", async () => {
+    const path = join(dir, "dirty.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+    let resolveWarn!: (message: string) => void;
+    const warnedPromise = new Promise<string>((resolve) => {
+      resolveWarn = resolve;
+    });
+    const manager = createDocumentManager({
+      log,
+      sink,
+      watch,
+      notifyUser: (message) => resolveWarn(message),
+    });
+    manager.onDidReload(() => {
+      throw new Error("must not reload a dirty document");
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "X" },
+    ]);
+    expect(doc.dirty).toBe(true);
+    const textBefore = doc.getText();
+
+    await writeFile(path, "changed externally", "utf8");
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+    const message = await warnedPromise;
+
+    expect(message).toContain(uri);
+    expect(doc.dirty).toBe(true);
+    expect(doc.getText()).toBe(textBefore);
+  });
+
+  test("self-save does not trigger a reload (self-loop suppression)", async () => {
+    const path = join(dir, "selfsave.txt");
+    await writeFile(path, "A", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+    const manager = createDocumentManager({ log, sink, watch });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, newText: "B" },
+    ]);
+    expect(await manager.save(uri)).toBe(true);
+    expect(doc.dirty).toBe(false);
+
+    const firstReload = new Promise<string>((resolve) => {
+      const sub = manager.onDidReload((d) => {
+        sub.dispose();
+        resolve(d.getText());
+      });
+    });
+
+    // The watcher firing for the manager's OWN save (a self-echo) must not
+    // reload — its signature already matches what saveNow just recorded.
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+    // A later, GENUINE external change must still be detected — proving
+    // the watch is still live and that the self-echo above did not
+    // spuriously consume/disable anything.
+    await writeFile(path, "C", "utf8");
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+
+    // Whichever of the two emits actually causes the reload, it must
+    // reflect "C" — if the self-echo had incorrectly reloaded, it would
+    // have resolved with "B" (disk's content at that point) instead.
+    expect(await firstReload).toBe("C");
+  });
+
+  test("watching survives this document's own save (rename does not kill it)", async () => {
+    const path = join(dir, "rename-survives.txt");
+    await writeFile(path, "A", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+    const manager = createDocumentManager({ log, sink, watch });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, newText: "B" },
+    ]);
+    expect(await manager.save(uri)).toBe(true);
+
+    // A change landing AFTER the save's rename must still be detected —
+    // the manager never re-registers its watch per save, so this proves
+    // the original (parent-directory) registration is still live.
+    await writeFile(path, "after-rename", "utf8");
+    const reloaded = new Promise<string>((resolve) => {
+      const sub = manager.onDidReload((d) => {
+        sub.dispose();
+        resolve(d.getText());
+      });
+    });
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+
+    expect(await reloaded).toBe("after-rename");
+  });
+
+  test("a watched file's deletion warns but never throws and keeps the document open", async () => {
+    const path = join(dir, "deleteme.txt");
+    await writeFile(path, "content", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+    let resolveWarned!: (message: string) => void;
+    const warnedPromise = new Promise<string>((resolve) => {
+      resolveWarned = resolve;
+    });
+    const manager = createDocumentManager({
+      log,
+      sink,
+      watch,
+      notifyUser: (message) => resolveWarned(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    await fsUnlink(path);
+
+    expect(() => emit(pathToUri(dirname(path)), { type: "deleted", uri })).not.toThrow();
+    const message = await warnedPromise;
+
+    expect(message).toBeDefined();
+    expect(manager.documents).toContain(doc);
+    expect(doc.getText()).toBe("content");
+  });
+
+  test("CodeRabbit PR #128: opening a path that does not exist yet never warns that it was deleted (Issue #88 regression)", async () => {
+    // The post-registration external-change probe re-verifies disk state
+    // that raced watch setup. A path with no file behind it has no such
+    // state, and running the probe anyway made `readStableDiskSignature`'s
+    // stat throw ENOENT — which the change handler correctly reads as
+    // "deleted on disk". Every brand-new file would have warned about
+    // being deleted the moment it was opened.
+    const path = join(dir, "never-saved.txt");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+    const fakeWatch = createFakeWatch();
+    const manager = createDocumentManager({
+      log,
+      sink,
+      watch: fakeWatch.watch,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+
+    expect(doc.getText()).toBe("");
+    expect(doc.dirty).toBe(false);
+    expect(warnings).toEqual([]);
+
+    // The watch itself is still registered, so a file appearing at that
+    // path later is still picked up — gating the probe must not disable
+    // watching for new files.
+    expect(fakeWatch.watchedUris.length).toBe(1);
+  });
+
+  test("save() aborts and returns false when the disk signature no longer matches (no watch needed)", async () => {
+    const path = join(dir, "conflict.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+    // No `watch` injected — this proves the save-time conflict check works
+    // purely off the signature captured at open() time, independent of
+    // whether external-change watching is even enabled.
+    const manager = createDocumentManager({
+      log,
+      sink,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "edited" },
+    ]);
+
+    // Externally rewrite the file to a different size (so the signature
+    // differs from what was captured at open — robust even on filesystems
+    // with coarse mtime resolution).
+    await writeFile(path, "externally modified with different length", "utf8");
+
+    const ok = await manager.save(uri);
+    expect(ok).toBe(false);
+    expect(doc.dirty).toBe(true);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(await readFile(path, "utf8")).toBe("externally modified with different length");
+  });
+
+  test("CodeRabbit PR #128 finding 4: save() aborts on a content-only external change even when mtimeMs and size are unchanged", async () => {
+    const path = join(dir, "same-signature.txt");
+    await writeFile(path, "original!", "utf8");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+
+    // A test double that always reports the SAME mtimeMs, regardless of
+    // the file's real content — exactly the case this finding calls out
+    // (a coarse clock, or a fake like this one): `mtimeMs`/`size` alone
+    // must not be trusted as the conflict signal.
+    const fixedMtimeFs: DocumentManagerFs = {
+      stat: async (p) => {
+        const real = await fsStat(p);
+        return { size: real.size, mode: real.mode, mtimeMs: 0 };
+      },
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: (p, mode) => fsChmod(p, mode),
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({
+      log,
+      sink,
+      fs: fixedMtimeFs,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } }, newText: "buffered!" },
+    ]);
+
+    // Externally rewrite the file to content of the exact same byte
+    // length ("different" and "original!" are both 9 chars) — `mtimeMs`
+    // (always 0 via `fixedMtimeFs`) and `size` both stay identical to what
+    // was captured at open; only the CONTENT differs.
+    await writeFile(path, "different", "utf8");
+
+    const ok = await manager.save(uri);
+    expect(ok).toBe(false);
+    expect(doc.dirty).toBe(true);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(await readFile(path, "utf8")).toBe("different");
+  });
+
+  test("CodeRabbit PR #128 findings 2 & 3: a write racing readFile is retried until the post-read stat stabilizes, and the signature matches the FINAL content", async () => {
+    const path = join(dir, "torn-read.txt");
+    await writeFile(path, "AAA", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+
+    let readCallsDuringCheck = 0;
+    let raceOnNextRead = false;
+    const tornFs: DocumentManagerFs = {
+      stat: (p) => fsStat(p),
+      readFile: async (p, enc) => {
+        readCallsDuringCheck++;
+        const content = await readFile(p, enc);
+        if (raceOnNextRead) {
+          // A SECOND external write races this very `readFile` call — by
+          // the time `content` was captured, it is already stale: the
+          // retry loop's post-read `stat` must notice (it will no longer
+          // match the pre-read stat) and discard this attempt instead of
+          // treating the torn read as trustworthy.
+          raceOnNextRead = false;
+          await writeFile(p, "CCCCCCCCC", "utf8");
+        }
+        return content;
+      },
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: (p, mode) => fsChmod(p, mode),
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({ log, sink, fs: tornFs, watch });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    expect(doc.getText()).toBe("AAA");
+
+    // The first external change ("BBBBBB"), detected by the handler's
+    // top-level `stat` — entering the stat/read stabilization loop below.
+    await writeFile(path, "BBBBBB", "utf8");
+    readCallsDuringCheck = 0;
+    raceOnNextRead = true;
+
+    const reloaded = new Promise<string>((resolve) => {
+      const sub = manager.onDidReload((d) => {
+        sub.dispose();
+        resolve(d.getText());
+      });
+    });
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+
+    // The torn "BBBBBB" read is discarded; the reload lands on the FINAL
+    // stable content "CCCCCCCCC" — proving the retry worked, not a
+    // half-way, torn state.
+    expect(await reloaded).toBe("CCCCCCCCC");
+    expect(readCallsDuringCheck).toBe(2);
+    expect(doc.dirty).toBe(false);
+
+    // The committed signature must match the FINAL content too (a
+    // `saveNow` racing this handler must never see a stale write win —
+    // finding 3's compare-and-set) — a subsequent save succeeds cleanly.
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 9 } }, newText: "edited" },
+    ]);
+    expect(await manager.save(uri)).toBe(true);
+    expect(await readFile(path, "utf8")).toBe("edited");
+  });
+
+  test("CodeRabbit PR #128 finding 2: exceeding the stat/read retry budget fails safe — no reload, and the signature is left untouched", async () => {
+    const path = join(dir, "always-moving.txt");
+    await writeFile(path, "A0", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+
+    // The file moves again on EVERY single read, forever — every
+    // stat/read pairing this handler ever attempts is torn, so it must
+    // eventually give up rather than retry indefinitely.
+    let moveCounter = 0;
+    const alwaysMovingFs: DocumentManagerFs = {
+      stat: (p) => fsStat(p),
+      readFile: async (p, enc) => {
+        const content = await readFile(p, enc);
+        moveCounter++;
+        await writeFile(p, `moving-${moveCounter}`, "utf8");
+        return content;
+      },
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: (p, mode) => fsChmod(p, mode),
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({ log, sink, fs: alwaysMovingFs, watch });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+
+    let reloadCount = 0;
+    manager.onDidReload(() => reloadCount++);
+
+    await writeFile(path, "B0", "utf8");
+    moveCounter = 0;
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+
+    // Nothing succeeds here to await directly — give the (bounded, small)
+    // retry loop time to exhaust its budget against the real filesystem
+    // before asserting it gave up (matches `main.test.ts`'s own "prove a
+    // reload did NOT happen" grace-wait pattern).
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(reloadCount).toBe(0);
+    expect(doc.getText()).toBe("A0");
+    expect(doc.dirty).toBe(false);
+  });
+
+  test("dispose() releases every watch without closing any documents", async () => {
+    const path = join(dir, "disposeme.txt");
+    await writeFile(path, "content", "utf8");
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+    const manager = createDocumentManager({ log, sink, watch });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+
+    expect(() => manager.dispose()).not.toThrow();
+    expect(manager.documents).toContain(doc);
+
+    // A post-dispose event must not resurrect any processing — nothing to
+    // assert asynchronously here since the disposable's listener was
+    // dropped synchronously; the real check is just that emitting is safe.
+    expect(() => emit(pathToUri(dirname(path)), { type: "changed", uri })).not.toThrow();
+  });
+
+  test("without an injected watch, existing behavior is unchanged (no watch is ever set up)", async () => {
+    const path = join(dir, "nowatch.txt");
+    await writeFile(path, "content", "utf8");
+    const { log, sink } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } }, newText: "X" },
+    ]);
+    expect(await manager.save(uri)).toBe(true);
+    expect(doc.dirty).toBe(false);
+    manager.close(uri);
+    expect(() => manager.dispose()).not.toThrow();
+  });
+
+  test("CodeRabbit PR #128: a watch event is detected as an external change even when mtimeMs/size are unchanged", async () => {
+    const path = join(dir, "same-signature-watch.txt");
+    await writeFile(path, "original!", "utf8"); // 9 chars
+    const { log, sink } = baseDeps();
+    const { watch, emit } = createFakeWatch();
+
+    // A test double that always reports the SAME mtimeMs, regardless of
+    // the file's real content — the metadata-only "fast path" this
+    // finding calls out must never be trusted to skip a real content
+    // check, in the watch-driven path just as much as in `saveNow`'s own
+    // (finding 4's test above).
+    const fixedMtimeFs: DocumentManagerFs = {
+      stat: async (p) => {
+        const real = await fsStat(p);
+        return { size: real.size, mode: real.mode, mtimeMs: 0 };
+      },
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: (p, mode) => fsChmod(p, mode),
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({ log, sink, fs: fixedMtimeFs, watch });
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    expect(doc.getText()).toBe("original!");
+
+    // Externally rewrite to content of the exact same byte length
+    // ("original!" and "different" are both 9 chars) — `mtimeMs` (always
+    // 0 via `fixedMtimeFs`) and `size` both stay identical to what was
+    // last recorded; only the CONTENT differs. A metadata-only fast path
+    // would miss this entirely and never reload.
+    await writeFile(path, "different", "utf8");
+
+    const reloaded = new Promise<string>((resolve) => {
+      const sub = manager.onDidReload((d) => {
+        sub.dispose();
+        resolve(d.getText());
+      });
+    });
+    emit(pathToUri(dirname(path)), { type: "changed", uri });
+
+    expect(await reloaded).toBe("different");
+    expect(doc.dirty).toBe(false);
+  });
+
+  test("CodeRabbit PR #128: save() aborts (and does not recreate the file) when a KNOWN file was deleted externally", async () => {
+    const path = join(dir, "deleted-before-save.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+    // No `watch` injected — the save-time conflict check must catch this
+    // purely off the signature captured at open() time.
+    const manager = createDocumentManager({
+      log,
+      sink,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "edited" },
+    ]);
+
+    // Externally delete the file the buffer's stale snapshot still
+    // believes exists.
+    await fsUnlink(path);
+
+    const ok = await manager.save(uri);
+    expect(ok).toBe(false);
+    expect(doc.dirty).toBe(true);
+    expect(warnings.length).toBeGreaterThan(0);
+    // Must not have silently recreated the file from the stale buffer.
+    await expect(fsStat(path)).rejects.toBeDefined();
+  });
+
+  test("CodeRabbit PR #128: an external write landing after the hash check but before rename aborts the save without renaming", async () => {
+    const path = join(dir, "race-before-rename.txt");
+    await writeFile(path, "original", "utf8");
+    const { log, sink } = baseDeps();
+    const warnings: string[] = [];
+
+    // `chmod` runs right after the temp file is prepared, immediately
+    // before this module's pre-rename reconfirmation — the perfect hook
+    // to simulate an external write landing in exactly that gap.
+    const raceFs: DocumentManagerFs = {
+      stat: (p) => fsStat(p),
+      readFile: (p, enc) => readFile(p, enc),
+      writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
+      chmod: async (p, mode) => {
+        await writeFile(path, "raced externally", "utf8");
+        await fsChmod(p, mode);
+      },
+      rename: (from, to) => fsRename(from, to),
+      unlink: (p) => fsUnlink(p),
+    };
+
+    const manager = createDocumentManager({
+      log,
+      sink,
+      fs: raceFs,
+      notifyUser: (message) => warnings.push(message),
+    });
+
+    const uri = pathToUri(path);
+    const doc = await manager.openDocument(uri);
+    doc.applyEdits([
+      { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 8 } }, newText: "buffered" },
+    ]);
+
+    const ok = await manager.save(uri);
+    expect(ok).toBe(false);
+    expect(doc.dirty).toBe(true);
+    expect(warnings.length).toBeGreaterThan(0);
+    // The rename must never have happened: disk still holds the race
+    // winner's content, not the stale buffer's bytes.
+    expect(await readFile(path, "utf8")).toBe("raced externally");
+    // No stray temp file left behind either.
+    const entries = await readdir(dir);
+    expect(entries).toEqual(["race-before-rename.txt"]);
   });
 });
