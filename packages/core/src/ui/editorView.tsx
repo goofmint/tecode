@@ -133,19 +133,20 @@ const DEFAULT_VIEWPORT_HEIGHT = 20;
  * regression for a terminal/IME combination this codebase has not verified
  * against real hardware.
  *
- * **Why this might need to become `true`**: whether a terminal emulator's
- * IME preedit actually FOLLOWS an INVISIBLE cursor (`visible: false`) is
- * terminal-dependent and not guaranteed by any spec — some emulators may
- * only place preedit text at the cursor once that cursor is also drawn
- * (`visible: true`), in which case leaving this `false` would reproduce
- * Issue #123's bug on exactly those terminals despite the position now
- * being correct. Only real-machine testing across the terminals tecode
- * targets can settle this; if it finds such a terminal, flip this single
- * constant to `true` and accept the resulting double-cursor look (the real
- * hardware cursor plus, until this flag also suppresses it, the drawn run)
- * as the deliberate tradeoff for correct IME placement there.
+ * **Why this is `true` (Issue #136)**: Issue #123 shipped this as `false`
+ * — position the real cursor but leave it hidden, keeping the drawn run as
+ * the visible caret — on the hope that a terminal's IME would honor an
+ * invisible cursor's reported position. Real-machine testing said
+ * otherwise: the preedit string still landed at the bottom of the
+ * terminal. The TUI tools that get this right (Vim, Claude Code) all keep
+ * a genuinely visible hardware cursor, and that is what an IME actually
+ * follows. So the real cursor is drawn, and the inverted-background run
+ * that used to stand in for it is suppressed — but only while the editor
+ * is focused, since the hardware cursor is hidden whenever focus is
+ * elsewhere and something still has to show where the caret sits (see
+ * `EditorLineColors.drawCaret`).
  */
-const HARDWARE_CURSOR_VISIBLE = false;
+const HARDWARE_CURSOR_VISIBLE = true;
 
 /** A shared empty-array reference for a line with no `highlightService`
  * wired in at all — avoids allocating a fresh empty array per visible line
@@ -175,6 +176,15 @@ interface EditorLineColors {
   fg: RGBA;
   selectionBg: RGBA;
   cursorBg: RGBA;
+  /** Whether {@link buildLineRuns} should paint the caret cell itself
+   * (Issue #136). `false` while the real terminal cursor is both visible
+   * AND owned by this editor — two caret indicators on one cell reads as a
+   * rendering bug. `true` whenever the hardware cursor is not showing the
+   * caret: the editor is unfocused (the sync effect hides the real cursor
+   * so the focused region can own it), or `HARDWARE_CURSOR_VISIBLE` is
+   * off. Without this, an unfocused editor would show no caret at all —
+   * the position it would return to on refocus would simply be invisible. */
+  drawCaret: boolean;
   cursorFg: RGBA;
   lineNumberFg: RGBA;
   lineNumberActiveFg: RGBA;
@@ -359,13 +369,14 @@ function buildLineRuns(params: {
     // match > selection > other find matches > base text. Highlight
     // foreground sits at the base-text tier (`resolveSegmentFg`'s TSDoc) —
     // every tier below cursor uses it, with only the background changing.
-    // `!HARDWARE_CURSOR_VISIBLE` (Issue #123, that constant's own TSDoc):
-    // this drawn, inverted-background run is what stands in for a cursor
-    // while the real terminal cursor is kept invisible; once that flag
-    // flips to `true` the real hardware cursor takes over and this branch
-    // is skipped, falling through to whatever lower-priority tier the cell
-    // would otherwise render as.
-    if (isCursorCell && !HARDWARE_CURSOR_VISIBLE) {
+    // `colors.drawCaret` (Issue #136, that field's own TSDoc): this drawn,
+    // inverted-background run stands in for a caret only when the real
+    // terminal cursor is not already showing one — an unfocused editor, or
+    // `HARDWARE_CURSOR_VISIBLE` off. While the editor IS focused the real
+    // cursor owns the caret (that is what an IME follows), so this branch
+    // is skipped and the cell falls through to whatever lower-priority
+    // tier it would otherwise render as.
+    if (isCursorCell && colors.drawCaret) {
       runs.push({ text: segment, fg: colors.cursorFg, bg: colors.cursorBg });
     } else if (isActiveMatch) {
       runs.push({ text: segment, fg: resolveSegmentFg(start, end), bg: colors.findMatchBg });
@@ -824,6 +835,7 @@ export function EditorView(props: EditorViewProps): ReactNode {
           : theme.colors["editor.inactiveSelectionBackground"],
       ),
       cursorBg: toColorInput(theme.colors["editorCursor.foreground"]),
+      drawCaret: !HARDWARE_CURSOR_VISIBLE || !isFocused,
       cursorFg: toColorInput(theme.colors["editor.background"]),
       lineNumberFg: toColorInput(theme.colors["editorLineNumber.foreground"]),
       lineNumberActiveFg: toColorInput(theme.colors["editorLineNumber.activeForeground"]),

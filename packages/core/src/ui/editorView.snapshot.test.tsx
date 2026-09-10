@@ -466,6 +466,75 @@ describe("EditorView — editorTextFocus context key (Req 4.6)", () => {
   });
 });
 
+describe("EditorView — the hardware cursor owns the caret while focused (Issue #136)", () => {
+  test("focused: the real cursor is visible and the drawn caret run is suppressed", async () => {
+    const { ContextFocusTracker } = await import("./focus");
+    const { createContextService } = await import("../keymap/context");
+    const context = createContextService();
+    const document = createTestDocument("abc\ndef");
+    const state = stateWith(document.uri, [cursorAt(0, 1)]);
+
+    let capturedNode: { focus(): void } | undefined;
+    const { renderOnce, renderer, captureSpans } = await testRender(
+      <ContextFocusTracker context={context}>
+        <EditorView
+          document={document}
+          state={state}
+          viewportHeight={5}
+          onTextPlaneNode={(node) => {
+            capturedNode = node ?? undefined;
+          }}
+        />
+      </ContextFocusTracker>,
+      { width: 20, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    act(() => {
+      capturedNode!.focus();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Issue #123 shipped with the real cursor positioned but HIDDEN, on
+    // the theory that an IME would still follow it. It does not — the
+    // preedit stayed at the bottom of the terminal (Issue #136), which is
+    // why the cursor is now genuinely drawn.
+    expect(renderer.getCursorState().visible).toBe(true);
+
+    // ...and with the real cursor showing the caret, the inverted-
+    // background run that used to stand in for it must be gone, or the
+    // same cell carries two caret indicators.
+    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
+    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    expect(painted).toHaveLength(0);
+  });
+
+  test("unfocused: the real cursor is hidden and the drawn caret run comes back", async () => {
+    // Without this, an unfocused editor would show no caret at all — the
+    // hardware cursor belongs to whichever region has focus, so the
+    // position this editor would return to on refocus must still be
+    // visible somehow.
+    const document = createTestDocument("abc\ndef");
+    const state = stateWith(document.uri, [cursorAt(0, 1)]);
+
+    const { renderOnce, renderer, captureSpans } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={5} />,
+      { width: 20, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(renderer.getCursorState().visible).toBe(false);
+    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
+    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    expect(painted.length).toBeGreaterThan(0);
+  });
+});
+
 describe("EditorView — hardware cursor reset on unmount (CodeRabbit, PR #132)", () => {
   test("a same-length replacement that changes cell width still moves the hardware cursor (CodeRabbit, PR #132)", async () => {
     // The sync effect deliberately has no dependency array: this edit
