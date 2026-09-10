@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { cellWidth, cellWidthUpTo, truncateToWidth } from "./cellWidth";
+import { cellWidth, cellWidthUpTo, isUnsafeRenderChar, truncateToWidth } from "./cellWidth";
 
 describe("cellWidth (Req 6.6)", () => {
   test("ASCII: one cell per character", () => {
@@ -125,6 +125,52 @@ describe("tabs (Req 6.6: string-width measures \"\\t\" as 0 cells on its own)", 
     expect(cellWidth("\t", 2.9)).toBe(2);
     // Truncating below 1 (e.g. 0.5 -> 0) is invalid and falls back to 4.
     expect(cellWidth("\t", 0.5)).toBe(4);
+  });
+});
+
+describe("control characters (Issue #137: a raw control byte must measure as its rendered placeholder does)", () => {
+  test("isUnsafeRenderChar flags every C0 control code except tab, plus DEL and the replacement character", () => {
+    expect(isUnsafeRenderChar("\x00")).toBe(true);
+    expect(isUnsafeRenderChar("\x1b")).toBe(true); // ESC
+    expect(isUnsafeRenderChar("\x07")).toBe(true); // BEL
+    expect(isUnsafeRenderChar("\x1f")).toBe(true); // last C0 code
+    expect(isUnsafeRenderChar("\x7f")).toBe(true); // DEL
+    expect(isUnsafeRenderChar("�")).toBe(true); // replacement character
+    expect(isUnsafeRenderChar("\t")).toBe(false); // tab has its own stop math
+    expect(isUnsafeRenderChar("a")).toBe(false);
+    expect(isUnsafeRenderChar("古")).toBe(false);
+  });
+
+  test("a NUL byte measures as 1 cell, not 0 (matches the rendered placeholder's width)", () => {
+    expect(cellWidth("\x00")).toBe(1);
+    expect(cellWidth("a\x00b")).toBe(3);
+  });
+
+  test("ESC and other C0 control codes each measure as 1 cell", () => {
+    expect(cellWidth("\x1b")).toBe(1);
+    expect(cellWidth("a\x1bb")).toBe(3);
+    expect(cellWidth("\x01\x02\x03")).toBe(3);
+  });
+
+  test("DEL (0x7f) measures as 1 cell", () => {
+    expect(cellWidth("\x7f")).toBe(1);
+  });
+
+  test("the replacement character (already 1 cell via string-width) is unaffected", () => {
+    expect(cellWidth("�")).toBe(1);
+    expect(cellWidth("a�b")).toBe(3);
+  });
+
+  test("cellWidthUpTo places a cursor after a control character exactly 1 cell further right", () => {
+    const line = "a\x00b";
+    expect(cellWidthUpTo(line, 1)).toBe(1); // after "a", before the NUL
+    expect(cellWidthUpTo(line, 2)).toBe(2); // after the NUL, before "b"
+    expect(cellWidthUpTo(line, 3)).toBe(3); // after "b"
+  });
+
+  test("a tab is still unaffected by the control-character handling (regression)", () => {
+    expect(cellWidth("\tx")).toBe(5); // 4 (tab) + 1 ("x"), same as the "tabs" describe block above
+    expect(cellWidth("\x00\t")).toBe(4); // NUL (1 cell, column 0->1) then a tab -> next stop at column 4
   });
 });
 

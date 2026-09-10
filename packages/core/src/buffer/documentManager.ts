@@ -56,6 +56,7 @@ import * as nodeFs from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Disposable, Event, FileChangeEvent, Listener, Uri } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
+import { isBinaryContent } from "./binaryDetection";
 import type { Clock } from "./clock";
 import { createDocument, type CoreDocument } from "./document";
 import { pathToUri, uriToPath } from "./uri";
@@ -86,6 +87,23 @@ export interface DocumentManagerFs {
    */
   stat(path: string): Promise<{ size: number; mode: number; mtimeMs: number }>;
   readFile(path: string, encoding: "utf8"): Promise<string>;
+  /**
+   * Raw, undecoded bytes of `path` (Issue #137) — read BEFORE `readFile`
+   * ever decodes anything as UTF-8, so `openDocumentUncached` can sample
+   * them for binary content (`buffer/binaryDetection.ts`'s
+   * `isBinaryContent`) without a binary file ever being decoded as text
+   * first. A separate method rather than an optional-encoding overload on
+   * `readFile`: an overloaded call signature on an object-literal property
+   * needs its own hand-written implementation signature to satisfy both
+   * call shapes, which is more ceremony than this one extra method buys —
+   * every real and fake implementation of this method (`createNodeFs`
+   * below, every `DocumentManagerFs` literal in `documentManager.test.ts`)
+   * is a one-line delegate to `node:fs/promises`' own `readFile(path)` with
+   * NO encoding argument, which is what returns a `Buffer` (itself a
+   * `Uint8Array`, matching `terminal/ptyService.ts`'s raw-bytes convention)
+   * instead of a decoded `string`.
+   */
+  readFileBytes(path: string): Promise<Uint8Array>;
   writeFile(
     path: string,
     data: string,
@@ -101,6 +119,7 @@ function createNodeFs(): DocumentManagerFs {
   return {
     stat: (path) => nodeFs.stat(path),
     readFile: (path, encoding) => nodeFs.readFile(path, encoding),
+    readFileBytes: (path) => nodeFs.readFile(path),
     writeFile: (path, data, options) => nodeFs.writeFile(path, data, options),
     chmod: (path, mode) => nodeFs.chmod(path, mode),
     rename: (oldPath, newPath) => nodeFs.rename(oldPath, newPath),
@@ -553,9 +572,40 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     // "no entry" as always treated as "assume changed", the safe
     // fallback.
     let initialSignature: DiskSignature | undefined;
+    // Issue #137: identity of the `HostError` thrown by the binary-detection
+    // branch below, if it fires — captured so the `catch` block right after
+    // it can recognize "this is the binary-abort I already reported" (by
+    // reference, not by inspecting `code`/message) and simply rethrow it,
+    // instead of wrapping it a SECOND time under the generic "Failed to open
+    // document" message and double-reporting through `log`/`sink`.
+    let binaryAbortError: HostError | undefined;
     try {
       const stat = await fs.stat(path);
       readonly = stat.size >= LARGE_FILE_THRESHOLD_BYTES;
+
+      // Issue #137 ("opening a binary file corrupts subsequent rendering"):
+      // sample the file's raw, undecoded bytes and abort the open entirely
+      // when they look binary (`buffer/binaryDetection.ts`'s
+      // `isBinaryContent`) — BEFORE the bytes below are ever decoded as
+      // UTF-8 text, and before a `CoreDocument`/watch/disk-signature is
+      // created for this uri at all. Deliberately checked here, ahead of
+      // `readFile`'s own text decode: a binary file previously reached
+      // `createDocument` as lossy-decoded text (NUL/other control bytes
+      // passed straight through), which is what corrupted the terminal's
+      // rendering for everything drawn after it once those bytes reached
+      // `ui/editorView.tsx`'s `<text>` output.
+      const sample = await fs.readFileBytes(path);
+      if (isBinaryContent(sample)) {
+        const err: HostError = {
+          message: `Cannot open binary file: ${uri}`,
+          path: uri,
+        };
+        binaryAbortError = err;
+        logSafely("error", err);
+        notifySafely(err);
+        throw err;
+      }
+
       const readText = await fs.readFile(path, "utf8");
       text = readText;
       // CodeRabbit PR #128 ("DiskSignature must represent a single disk
@@ -580,6 +630,12 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
         };
       }
     } catch (cause) {
+      if (cause === binaryAbortError) {
+        // Already reported (`logSafely`/`notifySafely` above, at the exact
+        // point of detection) — rethrow as-is rather than re-wrapping under
+        // the generic message below and reporting it a second time.
+        throw cause;
+      }
       if (errorCode(cause) !== "ENOENT") {
         const err: HostError = {
           message: `Failed to open document: ${describeError(cause)}`,

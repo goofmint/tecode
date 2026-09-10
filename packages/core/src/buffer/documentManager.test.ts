@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import type { Disposable, FileChangeEvent, Listener, Uri } from "@tecode/api";
 import type { HostError } from "../host/errors";
 import { createHostLog } from "../host/errors";
+import { BINARY_DETECTION_SAMPLE_BYTES } from "./binaryDetection";
 import {
   createDocumentManager,
   LARGE_FILE_THRESHOLD_BYTES,
@@ -170,6 +171,65 @@ describe("DocumentManager.openDocument (Req 5.5)", () => {
     expect(doc.readonly).toBe(false);
   }, 20000);
 
+  test("opening a file containing a NUL byte aborts the open entirely — no document, no onDidOpen, exactly one error reported (Issue #137)", async () => {
+    const path = join(dir, "binary.bin");
+    await writeFile(path, Buffer.from([0x68, 0x69, 0x00, 0x21])); // "hi\0!"
+    const { log, sink, errors } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    const opened: string[] = [];
+    manager.onDidOpen(() => opened.push("fired"));
+
+    const uri = pathToUri(path);
+    await expect(manager.openDocument(uri)).rejects.toBeDefined();
+
+    expect(opened).toHaveLength(0);
+    expect(manager.documents).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("Cannot open binary file");
+    expect(errors[0]!.path).toBe(uri);
+    const errorEntries = log.entries().filter((e) => e.level === "error");
+    expect(errorEntries).toHaveLength(1);
+  });
+
+  test("a normal text file with no NUL bytes still opens exactly as before (Issue #137 regression)", async () => {
+    const path = join(dir, "plain-regression.txt");
+    await writeFile(path, "hello, world\n", "utf8");
+    const { log, sink, errors } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    const doc = await manager.openDocument(pathToUri(path));
+    expect(doc.getText()).toBe("hello, world\n");
+    expect(doc.readonly).toBe(false);
+    expect(errors).toHaveLength(0);
+    expect(manager.documents).toHaveLength(1);
+  });
+
+  test("a NUL byte at the LAST sampled position still triggers a binary abort (boundary, Issue #137)", async () => {
+    const path = join(dir, "nul-at-sample-edge.bin");
+    const prefix = Buffer.from("x".repeat(BINARY_DETECTION_SAMPLE_BYTES - 1), "utf8");
+    await writeFile(path, Buffer.concat([prefix, Buffer.from([0x00])]));
+    const { log, sink, errors } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    await expect(manager.openDocument(pathToUri(path))).rejects.toBeDefined();
+    expect(errors).toHaveLength(1);
+    expect(manager.documents).toHaveLength(0);
+  });
+
+  test("a NUL byte just past the detection sample window does not trigger a binary abort (boundary, Issue #137)", async () => {
+    const path = join(dir, "nul-past-sample.bin");
+    const prefix = Buffer.from("x".repeat(BINARY_DETECTION_SAMPLE_BYTES), "utf8");
+    await writeFile(path, Buffer.concat([prefix, Buffer.from([0x00]), Buffer.from("y")]));
+    const { log, sink, errors } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    const doc = await manager.openDocument(pathToUri(path));
+    expect(doc.readonly).toBe(false);
+    expect(errors).toHaveLength(0);
+    expect(manager.documents).toHaveLength(1);
+  });
+
   test("opening the same uri twice returns the same instance (dedupe)", async () => {
     const path = join(dir, "dup.txt");
     await writeFile(path, "content", "utf8");
@@ -232,6 +292,7 @@ describe("DocumentManager.openDocument (Req 5.5)", () => {
         throw err;
       },
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: (a, b) => fsRename(a, b),
@@ -392,6 +453,7 @@ describe("DocumentManager.save (Req 5.5)", () => {
     const realFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: async () => {
@@ -520,6 +582,7 @@ describe("DocumentManager — concurrency (review regressions)", () => {
     const gatedFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: async (p, data, opts) => {
         writeReached();
         await writeGate;
@@ -602,6 +665,7 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
         return fsStat(p);
       },
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: (from, to) => fsRename(from, to),
@@ -675,6 +739,7 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
     const gatedFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: async (p, data, opts) => {
         if (gateArmed) {
           gateArmed = false;
@@ -996,6 +1061,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
         return { size: real.size, mode: real.mode, mtimeMs: 0 };
       },
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: (from, to) => fsRename(from, to),
@@ -1052,6 +1118,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
         }
         return content;
       },
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: (from, to) => fsRename(from, to),
@@ -1112,6 +1179,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
         await writeFile(p, `moving-${moveCounter}`, "utf8");
         return content;
       },
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: (from, to) => fsRename(from, to),
@@ -1193,6 +1261,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
         return { size: real.size, mode: real.mode, mtimeMs: 0 };
       },
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: (from, to) => fsRename(from, to),
@@ -1266,6 +1335,7 @@ describe("DocumentManager — external file changes (Issue #119)", () => {
     const raceFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: async (p, mode) => {
         await writeFile(path, "raced externally", "utf8");
