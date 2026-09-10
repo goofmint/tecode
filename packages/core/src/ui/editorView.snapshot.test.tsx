@@ -512,6 +512,51 @@ describe("EditorView — the hardware cursor owns the caret while focused (Issue
     expect(painted).toHaveLength(0);
   });
 
+  test("focused with multiple cursors: only the primary caret's run is suppressed (CodeRabbit, PR #143)", async () => {
+    // There is exactly one hardware cursor and `cursorPosition.ts` points
+    // it at `selections[0]`, so suppressing every drawn caret while
+    // focused would leave a multi-cursor edit's other carets with nothing
+    // showing them at all.
+    const { ContextFocusTracker } = await import("./focus");
+    const { createContextService } = await import("../keymap/context");
+    const context = createContextService();
+    const document = createTestDocument("abc\ndef");
+    const state = stateWith(document.uri, [cursorAt(0, 1), cursorAt(1, 2)]);
+
+    let capturedNode: { focus(): void } | undefined;
+    const { renderOnce, renderer, captureSpans } = await testRender(
+      <ContextFocusTracker context={context}>
+        <EditorView
+          document={document}
+          state={state}
+          viewportHeight={5}
+          onTextPlaneNode={(node) => {
+            capturedNode = node ?? undefined;
+          }}
+        />
+      </ContextFocusTracker>,
+      { width: 20, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    act(() => {
+      capturedNode!.focus();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(renderer.getCursorState().visible).toBe(true);
+
+    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
+    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    // The secondary caret on line 1 keeps its run; the primary on line 0
+    // does not, because the hardware cursor is already sitting there.
+    expect(painted).toHaveLength(1);
+    expect(painted[0]!.row).toBe(1);
+  });
+
   test("unfocused: the real cursor is hidden and the drawn caret run comes back", async () => {
     // Without this, an unfocused editor would show no caret at all — the
     // hardware cursor belongs to whichever region has focus, so the

@@ -300,12 +300,25 @@ function buildLineRuns(params: {
     boundaries.add(clipped.start);
     boundaries.add(clipped.end);
   }
+  // The PRIMARY caret's column on this line, if it is on this line at all
+  // (CodeRabbit, PR #143). The hardware cursor can only ever be in one
+  // place, and `cursorPosition.ts` points it at `selections[0]` — so that
+  // is the only caret `colors.drawCaret === false` may suppress. Every
+  // OTHER caret in a multi-cursor selection has nothing showing it but the
+  // drawn run, and would simply vanish while the editor is focused.
+  const primaryCursorCol =
+    selections[0] && selections[0].active.line === lineIndex ? selections[0].active.character : undefined;
   const cursorCells: ColRange[] = [];
+  let primaryCursorCell: ColRange | undefined;
   for (const col of cursorCols) {
     const start = clampCol(col, length);
     const end = clampCol(start + 1, length);
     if (end <= start) continue;
-    cursorCells.push({ start, end });
+    const cell = { start, end };
+    cursorCells.push(cell);
+    if (primaryCursorCol !== undefined && col === primaryCursorCol && !primaryCursorCell) {
+      primaryCursorCell = cell;
+    }
     boundaries.add(start);
     boundaries.add(end);
   }
@@ -361,6 +374,8 @@ function buildLineRuns(params: {
     const segment = text.slice(start, end);
 
     const isCursorCell = cursorCells.some((c) => c.start === start && c.end === end);
+    const isPrimaryCursorCell =
+      primaryCursorCell !== undefined && primaryCursorCell.start === start && primaryCursorCell.end === end;
     const isActiveMatch = activeMatchRanges.some((r) => start >= r.start && end <= r.end);
     const isSelected = selectionRanges.some((r) => start >= r.start && end <= r.end);
     const isOtherMatch = otherMatchRanges.some((r) => start >= r.start && end <= r.end);
@@ -376,7 +391,12 @@ function buildLineRuns(params: {
     // cursor owns the caret (that is what an IME follows), so this branch
     // is skipped and the cell falls through to whatever lower-priority
     // tier it would otherwise render as.
-    if (isCursorCell && colors.drawCaret) {
+    //
+    // ...but only for the PRIMARY caret (CodeRabbit, PR #143): there is
+    // exactly one hardware cursor, pointed at `selections[0]`, so a
+    // multi-cursor edit's other carets keep their drawn runs or they would
+    // have nothing showing them at all.
+    if (isCursorCell && (colors.drawCaret || !isPrimaryCursorCell)) {
       runs.push({ text: segment, fg: colors.cursorFg, bg: colors.cursorBg });
     } else if (isActiveMatch) {
       runs.push({ text: segment, fg: resolveSegmentFg(start, end), bg: colors.findMatchBg });
