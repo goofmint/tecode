@@ -315,6 +315,62 @@ describe("createFindService — replaceAll (Req 11.1)", () => {
   });
 });
 
+describe("createFindService — jumpToActiveMatch (Issue #117)", () => {
+  test("jumps the real selection onto the active match", () => {
+    const { document, editorSession, service } = harness("foo bar foo baz foo");
+    service.open();
+    service.setQuery("foo"); // matches at 0, 8, 16; activeMatchIndex starts at 0
+
+    expect(service.jumpToActiveMatch()).toBe(true);
+
+    const find = editorSession.getState(document.uri).find!;
+    const activeMatch = find.matches[find.activeMatchIndex]!;
+    expect(editorSession.getState(document.uri).selections).toEqual([
+      { start: activeMatch.start, end: activeMatch.end, anchor: activeMatch.start, active: activeMatch.end },
+    ]);
+  });
+
+  test("after next()/previous(), jumps onto the newly-active match", () => {
+    const { document, editorSession, service } = harness("foo bar foo baz foo");
+    service.open();
+    service.setQuery("foo"); // activeMatchIndex 0
+    service.next(); // activeMatchIndex 1
+
+    expect(service.jumpToActiveMatch()).toBe(true);
+
+    const find = editorSession.getState(document.uri).find!;
+    expect(find.activeMatchIndex).toBe(1);
+    const activeMatch = find.matches[1]!;
+    expect(editorSession.getState(document.uri).selections).toEqual([
+      { start: activeMatch.start, end: activeMatch.end, anchor: activeMatch.start, active: activeMatch.end },
+    ]);
+  });
+
+  test("with no matches, jumpToActiveMatch() is a no-op — no throw, returns false, selections unchanged", () => {
+    const { document, editorSession, service } = harness("bar baz");
+    service.open();
+    service.setQuery("foo"); // no matches
+    const selectionsBefore = editorSession.getState(document.uri).selections;
+
+    let result: boolean | undefined;
+    expect(() => {
+      result = service.jumpToActiveMatch();
+    }).not.toThrow();
+    expect(result).toBe(false);
+    expect(editorSession.getState(document.uri).selections).toEqual(selectionsBefore);
+  });
+
+  test("jumpToActiveMatch() with no active document is a no-op and returns false", () => {
+    const editorSession = createFakeEditorSession(undefined);
+    const service = createFindService({ editorSession });
+    let result: boolean | undefined;
+    expect(() => {
+      result = service.jumpToActiveMatch();
+    }).not.toThrow();
+    expect(result).toBe(false);
+  });
+});
+
 describe("createFindService — active-editor switch resubscription (Req 11.1)", () => {
   test("switching the active document re-points live recompute at the new one", () => {
     const documentA = createTestDocument("foo bar", "file:///a.txt");

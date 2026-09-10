@@ -154,6 +154,7 @@ export interface CreateTecodeApiDeps {
     | "previous"
     | "replaceCurrent"
     | "replaceAll"
+    | "jumpToActiveMatch"
   >;
   /**
    * Backs the REAL `tecode.themes` (Task 2.6, `ui/themeRegistry.ts`) —
@@ -396,6 +397,7 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
         previous: deps.findService.previous,
         replaceCurrent: deps.findService.replaceCurrent,
         replaceAll: deps.findService.replaceAll,
+        jumpToActiveMatch: deps.findService.jumpToActiveMatch,
       })
     : undefined;
 

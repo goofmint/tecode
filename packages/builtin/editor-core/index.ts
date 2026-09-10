@@ -426,6 +426,30 @@ export function activate(ctx: ExtensionContext): void {
     ),
   );
   ctx.subscriptions.push(api.commands.register("editor.action.closeFind", () => api.editor.find.close()));
+  // Issue #117: "accept" a find match — move the real cursor onto it, then
+  // close the widget. `jumpToActiveMatch()` MUST run before `close()`: it
+  // reads the still-open `FindState`'s `matches`/`activeMatchIndex`, both of
+  // which `close()` merely hides (`isOpen: false`) rather than clears
+  // (`findService.ts`'s `close` TSDoc — "Query, matches, and case-
+  // sensitivity are left intact"), but relying on that survival instead of
+  // ordering the two calls correctly would be fragile. `close()` in turn
+  // triggers `shell.tsx`'s existing focus-restore effect (Req 11.1's
+  // existing `editor.action.closeFind` behavior) — no extra focus handling
+  // belongs in this handler.
+  //
+  // `close()` only runs when `jumpToActiveMatch()` returns `true`
+  // (CodeRabbit finding on this issue): with zero matches, `jumpToActive
+  // Match()` is a documented no-op (`findService.ts`'s TSDoc), and closing
+  // the widget anyway would violate that "no matches: do nothing"
+  // invariant by making the widget disappear on an empty result instead of
+  // leaving it open for the user to keep typing.
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.findAccept", () => {
+      if (api.editor.find.jumpToActiveMatch()) {
+        api.editor.find.close();
+      }
+    }),
+  );
 
   // Issue #91: clipboard copy/cut/paste — pure builders in `clipboard.ts`,
   // wired to `api.clipboard` for the actual buffer/OSC-52 read-write. No
