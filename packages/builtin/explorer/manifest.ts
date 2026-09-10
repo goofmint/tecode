@@ -37,11 +37,11 @@
  * (`components.tsx`'s TSDoc's "Keyboard nav while focused") — a core-level
  * `when: "explorerFocus"` keybinding for `return` would race Tree's own
  * `onKeyDown` handling for the exact same keystroke with no well-defined
- * winner. `explorer.newFile`/`newFolder`/`rename`/`delete` are reachable
- * via `ctrl+shift+p` (the command palette lists every registered command)
- * with no dedicated keybinding of their own in this MVP — Req 11.2 asks
- * for the CAPABILITY (create/rename/delete with prompts), not a specific
- * keyboard shortcut for each.
+ * winner. `explorer.newFile`/`newFileFromEditor`/`newFolder`/`rename`/
+ * `delete` are reachable via `ctrl+shift+p` (the command palette lists
+ * every registered command) with no dedicated keybinding of their own in
+ * this MVP — Req 11.2 asks for the CAPABILITY (create/rename/delete with
+ * prompts), not a specific keyboard shortcut for each.
  */
 
 import type { Manifest } from "@tecode/api";
@@ -58,6 +58,13 @@ export const EXPLORER_VIEW_ID = "explorer";
 export const EXPLORER_FOCUS_COMMAND_ID = "explorer.focus";
 /** Creates a new file (Req 11.2's "create... with input-box prompts"). */
 export const EXPLORER_NEW_FILE_COMMAND_ID = "explorer.newFile";
+/** Creates a new file (Issue #120), same deferred-create behavior as
+ * {@link EXPLORER_NEW_FILE_COMMAND_ID} — reachable from the command
+ * palette without the explorer sidebar focused first (e.g. while working
+ * in the editor). No dedicated keybinding, matching `newFile`/`newFolder`'s
+ * own "command palette only" precedent (this manifest's TSDoc's "No
+ * keybinding for Enter/creation/rename/deletion, deliberately"). */
+export const EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID = "explorer.newFileFromEditor";
 /** Creates a new folder (Req 11.2). */
 export const EXPLORER_NEW_FOLDER_COMMAND_ID = "explorer.newFolder";
 /** Renames the selected file or folder (Req 11.2). */
@@ -81,6 +88,7 @@ export default {
     commands: [
       { id: EXPLORER_FOCUS_COMMAND_ID, title: "Focus on Explorer", category: "View" },
       { id: EXPLORER_NEW_FILE_COMMAND_ID, title: "New File", category: "File" },
+      { id: EXPLORER_NEW_FILE_FROM_EDITOR_COMMAND_ID, title: "New File", category: "Editor" },
       { id: EXPLORER_NEW_FOLDER_COMMAND_ID, title: "New Folder", category: "File" },
       { id: EXPLORER_RENAME_COMMAND_ID, title: "Rename", category: "File" },
       { id: EXPLORER_DELETE_COMMAND_ID, title: "Delete", category: "File" },
