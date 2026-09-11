@@ -34,5 +34,9 @@ export {
   type DocumentManagerDeps,
   type DocumentManagerFs,
 } from "./documentManager";
+export {
+  isBinaryContent,
+  BINARY_DETECTION_SAMPLE_BYTES,
+} from "./binaryDetection";
 export { pathToUri, uriToPath } from "./uri";
 export { createFileSystem, type FileSystemDeps } from "./fileSystem";

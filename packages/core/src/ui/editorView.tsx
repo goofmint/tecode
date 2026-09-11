@@ -101,6 +101,7 @@ import type { CaptureName, Range, Selection, Style } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { ConfigService } from "../config/service";
 import type { HighlightService, HighlightSpan } from "../languages/highlightService";
+import { CONTROL_CHAR_PLACEHOLDER, isUnsafeRenderChar } from "./cellWidth";
 import { computeHardwareCursorPosition } from "./cursorPosition";
 import { useHighlightRevision, useLineTicks, type EditorState } from "./editorState";
 import type { FocusableNode, FocusEmitter } from "./focus";
@@ -206,6 +207,49 @@ function clampCol(value: number, length: number): number {
   return Math.max(0, Math.min(value, length));
 }
 
+/**
+ * Replace every {@link isUnsafeRenderChar} character in `text` with
+ * `cellWidth.ts`'s {@link CONTROL_CHAR_PLACEHOLDER} (Issue #137 — "opening a
+ * binary file corrupts subsequent rendering"): a detected binary file
+ * already aborts its own open (`buffer/documentManager.ts`'s
+ * `openDocumentUncached`), but this is the second, independent layer of
+ * defense for whatever control byte or `�` slips past that check —
+ * e.g. a text file with a stray control character, or one with invalid (but
+ * not NUL) byte sequences that decoded to `�`. Applied to EVERY line
+ * `buildLineRuns` renders, not only ones a caller suspects.
+ *
+ * **Display-only**: this never touches `LineBuffer`'s stored text or what
+ * `save()` writes to disk — only the string that ends up inside `<text>`
+ * here. `document.getLine`, read separately by this file's hardware-cursor
+ * sync effect below, keeps returning the untouched original.
+ *
+ * **Length-preserving by construction** — one character in, one character
+ * out, always — which is why {@link buildLineRuns} calls this BEFORE
+ * computing `needsPad`/`length`/every column below: every `Selection`/
+ * find-match offset it receives is a UTF-16 code-unit index into the
+ * ORIGINAL `lineText` (`Position.character`, Req 5.1), and those offsets
+ * must land on the exact same code units in the sanitized string for the
+ * cursor/selection/highlight math further down to stay correct.
+ * `cellWidth.ts`'s `measureCells` treats the same {@link isUnsafeRenderChar}
+ * characters as this exact placeholder's width (that module's own TSDoc) so
+ * the hardware-cursor sync — computed from the RAW, un-sanitized
+ * `document.getLine` text via `cursorPosition.ts` — still agrees with what
+ * this sanitized rendering actually draws.
+ */
+function sanitizeControlChars(text: string): string {
+  let result = "";
+  let changed = false;
+  for (const ch of text) {
+    if (isUnsafeRenderChar(ch)) {
+      result += CONTROL_CHAR_PLACEHOLDER;
+      changed = true;
+    } else {
+      result += ch;
+    }
+  }
+  return changed ? result : text;
+}
+
 /** One line-clamped `[start, end)` column range — the shared shape {@link
  * buildLineRuns} clips selections/cursors/find matches into before sorting
  * them into boundaries. */
@@ -265,7 +309,7 @@ function buildLineRuns(params: {
   spans?: readonly HighlightSpan[];
 }): LineRun[] {
   const {
-    lineText,
+    lineText: rawLineText,
     lineIndex,
     selections,
     colors,
@@ -273,6 +317,11 @@ function buildLineRuns(params: {
     activeFindMatchIndex = -1,
     spans = [],
   } = params;
+  // Issue #137: sanitize BEFORE any of the column math below — see
+  // `sanitizeControlChars`'s own TSDoc for why this has to happen first
+  // (every offset below indexes into whichever string is used here, and
+  // sanitizing is length-preserving so those offsets stay valid either way).
+  const lineText = sanitizeControlChars(rawLineText);
   const cursorCols = selections
     .filter((s) => s.active.line === lineIndex)
     .map((s) => s.active.character);

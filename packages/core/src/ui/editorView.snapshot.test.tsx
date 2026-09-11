@@ -1095,3 +1095,44 @@ describe("EditorView — dirty-row re-render with a REAL highlightService (Req 1
     expect(aStill?.fg).toEqual(toColorInput({ r: 10, g: 20, b: 30 }));
   });
 });
+
+describe("EditorView — control-character sanitization (Issue #137: a binary/control-laden line must not corrupt rendering)", () => {
+  test("ESC, NUL, and other C0 control characters render as a visible placeholder, never as raw bytes", async () => {
+    const document = createTestDocument("a\x00b\x1bc\x07d");
+    const state = createInitialEditorState(document.uri);
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={3} />,
+      { width: 40, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    // Every control byte (NUL, ESC, BEL) becomes the exact same visible "?"
+    // placeholder — the raw bytes never reach the rendered frame, and the
+    // surrounding text is otherwise untouched.
+    expect(frame).toContain("a?b?c?d");
+  });
+
+  test("a tab character still renders with normal tab-stop spacing, not replaced by the control-character placeholder (regression)", async () => {
+    const document = createTestDocument("a\tb");
+    const state = createInitialEditorState(document.uri);
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={3} />,
+      { width: 40, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    // The tab must never be swept up by the control-character substitution
+    // — no "?" appears on this line — and "a"/"b" still both render with
+    // tab-driven spacing between them, exactly as before Issue #137.
+    expect(frame).not.toContain("?");
+    expect(frame).toMatch(/a {2,}b/);
+  });
+});

@@ -53,6 +53,41 @@ function normalizeTabSize(tabSize: number): number {
 }
 
 /**
+ * The single visible stand-in {@link measureCells} and `ui/editorView.tsx`'s
+ * `buildLineRuns` both substitute for any character {@link isUnsafeRenderChar}
+ * flags (Issue #137) — ONE shared placeholder rather than a per-code glyph
+ * (e.g. the Unicode "Control Pictures" block, `U+2400`-`U+2421`, one symbol
+ * per C0 code): those symbols are missing from many terminal fonts and would
+ * risk falling back to a font's own "tofu box" glyph, whose actual rendered
+ * width is exactly as unverifiable as the raw control byte this exists to
+ * replace. Plain ASCII `"?"` is guaranteed present, and guaranteed to measure
+ * as 1 cell via `string-width` (this file's own "ASCII" cases,
+ * `cellWidth.test.ts`), in literally every font any terminal ships with.
+ * Exported so `editorView.tsx` substitutes the IDENTICAL character this
+ * module measures — a different placeholder there would reintroduce the
+ * exact width mismatch this constant exists to prevent.
+ */
+export const CONTROL_CHAR_PLACEHOLDER = "?";
+
+/**
+ * `true` for a character {@link measureCells}/`buildLineRuns` must never
+ * measure or render as itself (Issue #137 — "opening a binary file corrupts
+ * subsequent rendering"): every C0 control code (`\x00`-`\x1f`) except tab
+ * (`"\t"` has its own dedicated tab-stop branch in `measureCells` below —
+ * substituting it here would break that math instead of fixing anything),
+ * `\x7f` (DEL), and the Unicode replacement character (`�`, what a
+ * lossy UTF-8 decode of invalid bytes produces — `buffer/documentManager.
+ * ts`'s binary-open guard only rejects a NUL byte outright; a file with
+ * other invalid-but-not-NUL byte sequences still opens, and `readFile`'s own
+ * UTF-8 decode replaces each invalid sequence with one `�`).
+ */
+export function isUnsafeRenderChar(ch: string): boolean {
+  if (ch === "\t") return false;
+  const code = ch.codePointAt(0) ?? 0;
+  return code <= 0x1f || code === 0x7f || ch === "�";
+}
+
+/**
  * The terminal-cell width of `text`, starting at display column 0, with
  * tabs advancing to the next `tabSize`-wide stop (this module's TSDoc's
  * "Tabs" section). Splits `text` into non-tab runs (each measured via
@@ -60,6 +95,21 @@ function normalizeTabSize(tabSize: number): number {
  * before) and standalone tab characters (each advancing the running column
  * to its stop) — `"\t"` is always its own grapheme cluster, so this split
  * never cuts through a combining mark or a multi-codepoint glyph.
+ *
+ * **Control characters (Issue #137)**: every {@link isUnsafeRenderChar}
+ * character in `text` is measured as {@link CONTROL_CHAR_PLACEHOLDER} would
+ * be (1 cell), not as itself — a raw C0 control byte or `\x7f` otherwise
+ * measures as 0 cells via `string-width` (verified directly against
+ * `string-width@7.2.0`). This function is what `cursorPosition.ts`'s
+ * hardware-cursor sync calls (via {@link cellWidthUpTo}) against the RAW,
+ * un-substituted `document.getLine` text — so its result must already agree
+ * with what `ui/editorView.tsx`'s `buildLineRuns` actually draws (that
+ * function substitutes the SAME characters for the SAME placeholder before
+ * rendering, this module's own TSDoc on {@link CONTROL_CHAR_PLACEHOLDER}).
+ * Without this, a line containing one of these characters would compute a
+ * cursor column one cell short of where the visible placeholder glyph
+ * actually sits, silently reproducing Issue #104/#123's column-drift bug for
+ * every such character.
  */
 function measureCells(text: string, rawTabSize: number, startColumn: number = 0): number {
   const tabSize = normalizeTabSize(rawTabSize);
@@ -75,6 +125,8 @@ function measureCells(text: string, rawTabSize: number, startColumn: number = 0)
       column += stringWidth(run);
       run = "";
       column += tabSize - (column % tabSize);
+    } else if (isUnsafeRenderChar(ch)) {
+      run += CONTROL_CHAR_PLACEHOLDER;
     } else {
       run += ch;
     }
@@ -91,6 +143,8 @@ function measureCells(text: string, rawTabSize: number, startColumn: number = 0)
  * `tabSize` defaults to `editor.tabSize`'s own default (4); pass the live
  * config value when one is available so a line's rendered width matches
  * the user's configured tab width.
+ *
+ * **Control characters (Issue #137)**: see {@link measureCells}'s own TSDoc.
  */
 export function cellWidth(text: string, tabSize: number = DEFAULT_TAB_SIZE): number {
   return measureCells(text, tabSize);
@@ -233,10 +287,23 @@ export function truncateToWidth(
   let kept = "";
   let consumed = 0;
   for (const { segment } of GRAPHEME_SEGMENTER.segment(text)) {
+    // Measured via `measureCells` — the SAME function `cellWidth`/the fast
+    // "already fits" check above use — rather than a second, independent
+    // `stringWidth(segment)` call (CodeRabbit PR #142): `string-width`
+    // measures an `isUnsafeRenderChar` character (a C0 control byte, DEL, or
+    // U+FFFD) as 0 cells, while `measureCells` measures it as 1 (this
+    // module's own TSDoc on `CONTROL_CHAR_PLACEHOLDER`/`isUnsafeRenderChar`).
+    // A `stringWidth`-based increment let `truncateToWidth("\x00abc", 3)`
+    // return `"\x00ab…"` — 4 cells by `cellWidth`'s own accounting, over
+    // `maxWidth`, and still carrying the raw control character into the
+    // result. Routing every candidate's width through `measureCells`
+    // guarantees this function's postcondition holds for unsafe characters
+    // too, and keeps exactly one width-measuring code path for `cellWidth`,
+    // `cellWidthUpTo`, and `truncateToWidth` alike (Issue #104, #123, #136).
     const increment =
       segment === "\t"
         ? safeTabSize - ((safeStart + consumed) % safeTabSize)
-        : stringWidth(segment);
+        : measureCells(segment, safeTabSize, safeStart + consumed);
     // Stop once the prefix alone would overflow — nothing longer can fit
     // either, and every shorter candidate has already been considered.
     if (consumed + increment > safeMaxWidth) break;
