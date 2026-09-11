@@ -105,6 +105,10 @@ function createInMemoryFs(files: Record<string, string>): DocumentManagerFs {
       if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       return files[path]!;
     },
+    async readFileBytes(path: string) {
+      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return new TextEncoder().encode(files[path]!);
+    },
     async writeFile() {},
     async chmod() {},
     async rename() {},

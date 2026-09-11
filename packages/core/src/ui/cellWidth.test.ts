@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { cellWidth, cellWidthUpTo, truncateToWidth } from "./cellWidth";
+import { cellWidth, cellWidthUpTo, isUnsafeRenderChar, truncateToWidth } from "./cellWidth";
 
 describe("cellWidth (Req 6.6)", () => {
   test("ASCII: one cell per character", () => {
@@ -128,6 +128,52 @@ describe("tabs (Req 6.6: string-width measures \"\\t\" as 0 cells on its own)", 
   });
 });
 
+describe("control characters (Issue #137: a raw control byte must measure as its rendered placeholder does)", () => {
+  test("isUnsafeRenderChar flags every C0 control code except tab, plus DEL and the replacement character", () => {
+    expect(isUnsafeRenderChar("\x00")).toBe(true);
+    expect(isUnsafeRenderChar("\x1b")).toBe(true); // ESC
+    expect(isUnsafeRenderChar("\x07")).toBe(true); // BEL
+    expect(isUnsafeRenderChar("\x1f")).toBe(true); // last C0 code
+    expect(isUnsafeRenderChar("\x7f")).toBe(true); // DEL
+    expect(isUnsafeRenderChar("�")).toBe(true); // replacement character
+    expect(isUnsafeRenderChar("\t")).toBe(false); // tab has its own stop math
+    expect(isUnsafeRenderChar("a")).toBe(false);
+    expect(isUnsafeRenderChar("古")).toBe(false);
+  });
+
+  test("a NUL byte measures as 1 cell, not 0 (matches the rendered placeholder's width)", () => {
+    expect(cellWidth("\x00")).toBe(1);
+    expect(cellWidth("a\x00b")).toBe(3);
+  });
+
+  test("ESC and other C0 control codes each measure as 1 cell", () => {
+    expect(cellWidth("\x1b")).toBe(1);
+    expect(cellWidth("a\x1bb")).toBe(3);
+    expect(cellWidth("\x01\x02\x03")).toBe(3);
+  });
+
+  test("DEL (0x7f) measures as 1 cell", () => {
+    expect(cellWidth("\x7f")).toBe(1);
+  });
+
+  test("the replacement character (already 1 cell via string-width) is unaffected", () => {
+    expect(cellWidth("�")).toBe(1);
+    expect(cellWidth("a�b")).toBe(3);
+  });
+
+  test("cellWidthUpTo places a cursor after a control character exactly 1 cell further right", () => {
+    const line = "a\x00b";
+    expect(cellWidthUpTo(line, 1)).toBe(1); // after "a", before the NUL
+    expect(cellWidthUpTo(line, 2)).toBe(2); // after the NUL, before "b"
+    expect(cellWidthUpTo(line, 3)).toBe(3); // after "b"
+  });
+
+  test("a tab is still unaffected by the control-character handling (regression)", () => {
+    expect(cellWidth("\tx")).toBe(5); // 4 (tab) + 1 ("x"), same as the "tabs" describe block above
+    expect(cellWidth("\x00\t")).toBe(4); // NUL (1 cell, column 0->1) then a tab -> next stop at column 4
+  });
+});
+
 describe("truncateToWidth (Issue #104: Tree row wrapping)", () => {
   test("ASCII text that already fits is returned unchanged", () => {
     expect(truncateToWidth("hello", 10)).toBe("hello");
@@ -207,9 +253,28 @@ describe("truncateToWidth (Issue #104: Tree row wrapping)", () => {
     expect(truncateToWidth("", 5)).toBe("");
   });
 
+  test("a leading unsafe control character is measured as 1 cell, matching cellWidth (CodeRabbit PR #142)", () => {
+    // `string-width` measures "\x00" as 0 cells, but `cellWidth`/`measureCells`
+    // measure every `isUnsafeRenderChar` character as 1 (Issue #137). Before
+    // this fix, `truncateToWidth`'s own candidate-width calculation used
+    // `stringWidth` directly, so `truncateToWidth("\x00abc", 3)` returned
+    // "\x00ab…" — 4 cells by `cellWidth`'s own accounting, over `maxWidth`.
+    const result = truncateToWidth("\x00abc", 3);
+    expect(cellWidth(result)).toBeLessThanOrEqual(3);
+    expect(result).toBe("\x00a…");
+  });
+
   test("postcondition: the result's display width never exceeds max(0, maxWidth), for every input", () => {
     const family = "\u{1F468}‍\u{1F469}‍\u{1F467}";
-    const samples = ["", "a", "hello", "日本語テキスト", `x${family}y${family}z`, "\tindented\tlabel"];
+    const samples = [
+      "",
+      "a",
+      "hello",
+      "日本語テキスト",
+      `x${family}y${family}z`,
+      "\tindented\tlabel",
+      "\x00abc\x1bdef\x7f",
+    ];
     for (const text of samples) {
       const upperBound = cellWidth(text) + 3;
       for (let maxWidth = -2; maxWidth <= upperBound; maxWidth++) {

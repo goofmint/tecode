@@ -107,6 +107,8 @@ export {
   type UndoStackDeps,
   createFileSystem,
   type FileSystemDeps,
+  isBinaryContent,
+  BINARY_DETECTION_SAMPLE_BYTES,
 } from "./buffer/index";
 export {
   ACTIVITY_BAR_WIDTH,

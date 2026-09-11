@@ -56,6 +56,7 @@ import * as nodeFs from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { Disposable, Event, FileChangeEvent, Listener, Uri } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
+import { BINARY_DETECTION_SAMPLE_BYTES, isBinaryContent } from "./binaryDetection";
 import type { Clock } from "./clock";
 import { createDocument, type CoreDocument } from "./document";
 import { pathToUri, uriToPath } from "./uri";
@@ -86,6 +87,30 @@ export interface DocumentManagerFs {
    */
   stat(path: string): Promise<{ size: number; mode: number; mtimeMs: number }>;
   readFile(path: string, encoding: "utf8"): Promise<string>;
+  /**
+   * Raw, undecoded bytes of `path` (Issue #137) — read BEFORE `readFile`
+   * ever decodes anything as UTF-8, so `openDocumentUncached` can sample
+   * them for binary content (`buffer/binaryDetection.ts`'s
+   * `isBinaryContent`) without a binary file ever being decoded as text
+   * first. A separate method rather than an optional-encoding overload on
+   * `readFile`: an overloaded call signature on an object-literal property
+   * needs its own hand-written implementation signature to satisfy both
+   * call shapes, which is more ceremony than this one extra method buys.
+   *
+   * **Bounded, never the whole file** (CodeRabbit PR #142): this exists
+   * ONLY to feed `isBinaryContent`'s own bounded scan, so the real
+   * `createNodeFs` below reads at most {@link BINARY_DETECTION_SAMPLE_BYTES}
+   * leading bytes regardless of the file's actual size — a multi-gigabyte
+   * file with a leading NUL byte must be rejected without ever pulling its
+   * full contents into memory first, which is exactly what a naive
+   * `readFile(path)` (no encoding argument, returning the whole file as a
+   * `Buffer` — itself a `Uint8Array`, matching `terminal/ptyService.ts`'s
+   * raw-bytes convention) would do. Test `DocumentManagerFs` literals in
+   * `documentManager.test.ts` may still delegate straight to `readFile`
+   * (their fixture files are always small), but the real implementation
+   * must not.
+   */
+  readFileBytes(path: string): Promise<Uint8Array>;
   writeFile(
     path: string,
     data: string,
@@ -96,11 +121,41 @@ export interface DocumentManagerFs {
   unlink(path: string): Promise<void>;
 }
 
-/** The real {@link DocumentManagerFs}, backed by `node:fs/promises`. */
-function createNodeFs(): DocumentManagerFs {
+/**
+ * Reads at most `maxBytes` leading bytes of `path` (CodeRabbit PR #142) —
+ * `createNodeFs`'s `readFileBytes` only ever needs a bounded prefix to feed
+ * `isBinaryContent`'s own bounded scan, so this opens the file, reads a
+ * single fixed-size chunk at offset 0, and closes it, instead of
+ * `node:fs/promises`' `readFile(path)`, which allocates and returns the
+ * ENTIRE file regardless of how few bytes the caller actually looks at. A
+ * huge file with a leading NUL byte would otherwise sit fully in memory —
+ * possibly for a long time — before `isBinaryContent` even gets to reject
+ * it. `handle.read` short-reads on a file smaller than `maxBytes` (the
+ * common case), so the returned view is trimmed to the actual `bytesRead`
+ * rather than left zero-padded out to `maxBytes`.
+ */
+async function readLeadingBytes(path: string, maxBytes: number): Promise<Uint8Array> {
+  const handle = await nodeFs.open(path, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+/** The real {@link DocumentManagerFs}, backed by `node:fs/promises`.
+ * Exported so `documentManager.test.ts` can exercise its `readFileBytes`
+ * directly against a real (large) file — the only way to actually verify
+ * the {@link BINARY_DETECTION_SAMPLE_BYTES} read bound below, since every
+ * hand-written `DocumentManagerFs` test fake is free to (and does) read the
+ * whole fixture file instead. */
+export function createNodeFs(): DocumentManagerFs {
   return {
     stat: (path) => nodeFs.stat(path),
     readFile: (path, encoding) => nodeFs.readFile(path, encoding),
+    readFileBytes: (path) => readLeadingBytes(path, BINARY_DETECTION_SAMPLE_BYTES),
     writeFile: (path, data, options) => nodeFs.writeFile(path, data, options),
     chmod: (path, mode) => nodeFs.chmod(path, mode),
     rename: (oldPath, newPath) => nodeFs.rename(oldPath, newPath),
@@ -553,9 +608,40 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
     // "no entry" as always treated as "assume changed", the safe
     // fallback.
     let initialSignature: DiskSignature | undefined;
+    // Issue #137: identity of the `HostError` thrown by the binary-detection
+    // branch below, if it fires — captured so the `catch` block right after
+    // it can recognize "this is the binary-abort I already reported" (by
+    // reference, not by inspecting `code`/message) and simply rethrow it,
+    // instead of wrapping it a SECOND time under the generic "Failed to open
+    // document" message and double-reporting through `log`/`sink`.
+    let binaryAbortError: HostError | undefined;
     try {
       const stat = await fs.stat(path);
       readonly = stat.size >= LARGE_FILE_THRESHOLD_BYTES;
+
+      // Issue #137 ("opening a binary file corrupts subsequent rendering"):
+      // sample the file's raw, undecoded bytes and abort the open entirely
+      // when they look binary (`buffer/binaryDetection.ts`'s
+      // `isBinaryContent`) — BEFORE the bytes below are ever decoded as
+      // UTF-8 text, and before a `CoreDocument`/watch/disk-signature is
+      // created for this uri at all. Deliberately checked here, ahead of
+      // `readFile`'s own text decode: a binary file previously reached
+      // `createDocument` as lossy-decoded text (NUL/other control bytes
+      // passed straight through), which is what corrupted the terminal's
+      // rendering for everything drawn after it once those bytes reached
+      // `ui/editorView.tsx`'s `<text>` output.
+      const sample = await fs.readFileBytes(path);
+      if (isBinaryContent(sample)) {
+        const err: HostError = {
+          message: `Cannot open binary file: ${uri}`,
+          path: uri,
+        };
+        binaryAbortError = err;
+        logSafely("error", err);
+        notifySafely(err);
+        throw err;
+      }
+
       const readText = await fs.readFile(path, "utf8");
       text = readText;
       // CodeRabbit PR #128 ("DiskSignature must represent a single disk
@@ -580,6 +666,12 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
         };
       }
     } catch (cause) {
+      if (cause === binaryAbortError) {
+        // Already reported (`logSafely`/`notifySafely` above, at the exact
+        // point of detection) — rethrow as-is rather than re-wrapping under
+        // the generic message below and reporting it a second time.
+        throw cause;
+      }
       if (errorCode(cause) !== "ENOENT") {
         const err: HostError = {
           message: `Failed to open document: ${describeError(cause)}`,

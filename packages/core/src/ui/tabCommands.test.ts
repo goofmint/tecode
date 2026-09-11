@@ -323,6 +323,7 @@ describe("closeDocumentWithPrompt / tab.close (Req 6.5, design.md §14's never-l
     const failingFs: DocumentManagerFs = {
       stat: (p) => fsStat(p),
       readFile: (p, enc) => readFile(p, enc),
+      readFileBytes: (p) => readFile(p),
       writeFile: (p, data, opts) => fsWriteFile(p, data, opts),
       chmod: (p, mode) => fsChmod(p, mode),
       rename: async () => {

@@ -466,6 +466,120 @@ describe("EditorView — editorTextFocus context key (Req 4.6)", () => {
   });
 });
 
+describe("EditorView — the hardware cursor owns the caret while focused (Issue #136)", () => {
+  test("focused: the real cursor is visible and the drawn caret run is suppressed", async () => {
+    const { ContextFocusTracker } = await import("./focus");
+    const { createContextService } = await import("../keymap/context");
+    const context = createContextService();
+    const document = createTestDocument("abc\ndef");
+    const state = stateWith(document.uri, [cursorAt(0, 1)]);
+
+    let capturedNode: { focus(): void } | undefined;
+    const { renderOnce, renderer, captureSpans } = await testRender(
+      <ContextFocusTracker context={context}>
+        <EditorView
+          document={document}
+          state={state}
+          viewportHeight={5}
+          onTextPlaneNode={(node) => {
+            capturedNode = node ?? undefined;
+          }}
+        />
+      </ContextFocusTracker>,
+      { width: 20, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    act(() => {
+      capturedNode!.focus();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    // Issue #123 shipped with the real cursor positioned but HIDDEN, on
+    // the theory that an IME would still follow it. It does not — the
+    // preedit stayed at the bottom of the terminal (Issue #136), which is
+    // why the cursor is now genuinely drawn.
+    expect(renderer.getCursorState().visible).toBe(true);
+
+    // ...and with the real cursor showing the caret, the inverted-
+    // background run that used to stand in for it must be gone, or the
+    // same cell carries two caret indicators.
+    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
+    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    expect(painted).toHaveLength(0);
+  });
+
+  test("focused with multiple cursors: only the primary caret's run is suppressed (CodeRabbit, PR #143)", async () => {
+    // There is exactly one hardware cursor and `cursorPosition.ts` points
+    // it at `selections[0]`, so suppressing every drawn caret while
+    // focused would leave a multi-cursor edit's other carets with nothing
+    // showing them at all.
+    const { ContextFocusTracker } = await import("./focus");
+    const { createContextService } = await import("../keymap/context");
+    const context = createContextService();
+    const document = createTestDocument("abc\ndef");
+    const state = stateWith(document.uri, [cursorAt(0, 1), cursorAt(1, 2)]);
+
+    let capturedNode: { focus(): void } | undefined;
+    const { renderOnce, renderer, captureSpans } = await testRender(
+      <ContextFocusTracker context={context}>
+        <EditorView
+          document={document}
+          state={state}
+          viewportHeight={5}
+          onTextPlaneNode={(node) => {
+            capturedNode = node ?? undefined;
+          }}
+        />
+      </ContextFocusTracker>,
+      { width: 20, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+    act(() => {
+      capturedNode!.focus();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(renderer.getCursorState().visible).toBe(true);
+
+    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
+    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    // The secondary caret on line 1 keeps its run; the primary on line 0
+    // does not, because the hardware cursor is already sitting there.
+    expect(painted).toHaveLength(1);
+    expect(painted[0]!.row).toBe(1);
+  });
+
+  test("unfocused: the real cursor is hidden and the drawn caret run comes back", async () => {
+    // Without this, an unfocused editor would show no caret at all — the
+    // hardware cursor belongs to whichever region has focus, so the
+    // position this editor would return to on refocus must still be
+    // visible somehow.
+    const document = createTestDocument("abc\ndef");
+    const state = stateWith(document.uri, [cursorAt(0, 1)]);
+
+    const { renderOnce, renderer, captureSpans } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={5} />,
+      { width: 20, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(renderer.getCursorState().visible).toBe(false);
+    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
+    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    expect(painted.length).toBeGreaterThan(0);
+  });
+});
+
 describe("EditorView — hardware cursor reset on unmount (CodeRabbit, PR #132)", () => {
   test("a same-length replacement that changes cell width still moves the hardware cursor (CodeRabbit, PR #132)", async () => {
     // The sync effect deliberately has no dependency array: this edit
@@ -1093,5 +1207,46 @@ describe("EditorView — dirty-row re-render with a REAL highlightService (Req 1
     expect(bAfter?.fg).toEqual(toColorInput({ r: 90, g: 90, b: 90 }));
     const aStill = flatten(captureSpans()).find((s) => s.row === 0 && s.text.includes("a"));
     expect(aStill?.fg).toEqual(toColorInput({ r: 10, g: 20, b: 30 }));
+  });
+});
+
+describe("EditorView — control-character sanitization (Issue #137: a binary/control-laden line must not corrupt rendering)", () => {
+  test("ESC, NUL, and other C0 control characters render as a visible placeholder, never as raw bytes", async () => {
+    const document = createTestDocument("a\x00b\x1bc\x07d");
+    const state = createInitialEditorState(document.uri);
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={3} />,
+      { width: 40, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    // Every control byte (NUL, ESC, BEL) becomes the exact same visible "?"
+    // placeholder — the raw bytes never reach the rendered frame, and the
+    // surrounding text is otherwise untouched.
+    expect(frame).toContain("a?b?c?d");
+  });
+
+  test("a tab character still renders with normal tab-stop spacing, not replaced by the control-character placeholder (regression)", async () => {
+    const document = createTestDocument("a\tb");
+    const state = createInitialEditorState(document.uri);
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={3} />,
+      { width: 40, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    // The tab must never be swept up by the control-character substitution
+    // — no "?" appears on this line — and "a"/"b" still both render with
+    // tab-driven spacing between them, exactly as before Issue #137.
+    expect(frame).not.toContain("?");
+    expect(frame).toMatch(/a {2,}b/);
   });
 });

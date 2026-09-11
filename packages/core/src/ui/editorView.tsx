@@ -101,6 +101,7 @@ import type { CaptureName, Range, Selection, Style } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { ConfigService } from "../config/service";
 import type { HighlightService, HighlightSpan } from "../languages/highlightService";
+import { CONTROL_CHAR_PLACEHOLDER, isUnsafeRenderChar } from "./cellWidth";
 import { computeHardwareCursorPosition } from "./cursorPosition";
 import { useHighlightRevision, useLineTicks, type EditorState } from "./editorState";
 import type { FocusableNode, FocusEmitter } from "./focus";
@@ -133,19 +134,20 @@ const DEFAULT_VIEWPORT_HEIGHT = 20;
  * regression for a terminal/IME combination this codebase has not verified
  * against real hardware.
  *
- * **Why this might need to become `true`**: whether a terminal emulator's
- * IME preedit actually FOLLOWS an INVISIBLE cursor (`visible: false`) is
- * terminal-dependent and not guaranteed by any spec — some emulators may
- * only place preedit text at the cursor once that cursor is also drawn
- * (`visible: true`), in which case leaving this `false` would reproduce
- * Issue #123's bug on exactly those terminals despite the position now
- * being correct. Only real-machine testing across the terminals tecode
- * targets can settle this; if it finds such a terminal, flip this single
- * constant to `true` and accept the resulting double-cursor look (the real
- * hardware cursor plus, until this flag also suppresses it, the drawn run)
- * as the deliberate tradeoff for correct IME placement there.
+ * **Why this is `true` (Issue #136)**: Issue #123 shipped this as `false`
+ * — position the real cursor but leave it hidden, keeping the drawn run as
+ * the visible caret — on the hope that a terminal's IME would honor an
+ * invisible cursor's reported position. Real-machine testing said
+ * otherwise: the preedit string still landed at the bottom of the
+ * terminal. The TUI tools that get this right (Vim, Claude Code) all keep
+ * a genuinely visible hardware cursor, and that is what an IME actually
+ * follows. So the real cursor is drawn, and the inverted-background run
+ * that used to stand in for it is suppressed — but only while the editor
+ * is focused, since the hardware cursor is hidden whenever focus is
+ * elsewhere and something still has to show where the caret sits (see
+ * `EditorLineColors.drawCaret`).
  */
-const HARDWARE_CURSOR_VISIBLE = false;
+const HARDWARE_CURSOR_VISIBLE = true;
 
 /** A shared empty-array reference for a line with no `highlightService`
  * wired in at all — avoids allocating a fresh empty array per visible line
@@ -175,6 +177,15 @@ interface EditorLineColors {
   fg: RGBA;
   selectionBg: RGBA;
   cursorBg: RGBA;
+  /** Whether {@link buildLineRuns} should paint the caret cell itself
+   * (Issue #136). `false` while the real terminal cursor is both visible
+   * AND owned by this editor — two caret indicators on one cell reads as a
+   * rendering bug. `true` whenever the hardware cursor is not showing the
+   * caret: the editor is unfocused (the sync effect hides the real cursor
+   * so the focused region can own it), or `HARDWARE_CURSOR_VISIBLE` is
+   * off. Without this, an unfocused editor would show no caret at all —
+   * the position it would return to on refocus would simply be invisible. */
+  drawCaret: boolean;
   cursorFg: RGBA;
   lineNumberFg: RGBA;
   lineNumberActiveFg: RGBA;
@@ -204,6 +215,49 @@ function isCollapsed(selection: Selection): boolean {
 
 function clampCol(value: number, length: number): number {
   return Math.max(0, Math.min(value, length));
+}
+
+/**
+ * Replace every {@link isUnsafeRenderChar} character in `text` with
+ * `cellWidth.ts`'s {@link CONTROL_CHAR_PLACEHOLDER} (Issue #137 — "opening a
+ * binary file corrupts subsequent rendering"): a detected binary file
+ * already aborts its own open (`buffer/documentManager.ts`'s
+ * `openDocumentUncached`), but this is the second, independent layer of
+ * defense for whatever control byte or `�` slips past that check —
+ * e.g. a text file with a stray control character, or one with invalid (but
+ * not NUL) byte sequences that decoded to `�`. Applied to EVERY line
+ * `buildLineRuns` renders, not only ones a caller suspects.
+ *
+ * **Display-only**: this never touches `LineBuffer`'s stored text or what
+ * `save()` writes to disk — only the string that ends up inside `<text>`
+ * here. `document.getLine`, read separately by this file's hardware-cursor
+ * sync effect below, keeps returning the untouched original.
+ *
+ * **Length-preserving by construction** — one character in, one character
+ * out, always — which is why {@link buildLineRuns} calls this BEFORE
+ * computing `needsPad`/`length`/every column below: every `Selection`/
+ * find-match offset it receives is a UTF-16 code-unit index into the
+ * ORIGINAL `lineText` (`Position.character`, Req 5.1), and those offsets
+ * must land on the exact same code units in the sanitized string for the
+ * cursor/selection/highlight math further down to stay correct.
+ * `cellWidth.ts`'s `measureCells` treats the same {@link isUnsafeRenderChar}
+ * characters as this exact placeholder's width (that module's own TSDoc) so
+ * the hardware-cursor sync — computed from the RAW, un-sanitized
+ * `document.getLine` text via `cursorPosition.ts` — still agrees with what
+ * this sanitized rendering actually draws.
+ */
+function sanitizeControlChars(text: string): string {
+  let result = "";
+  let changed = false;
+  for (const ch of text) {
+    if (isUnsafeRenderChar(ch)) {
+      result += CONTROL_CHAR_PLACEHOLDER;
+      changed = true;
+    } else {
+      result += ch;
+    }
+  }
+  return changed ? result : text;
 }
 
 /** One line-clamped `[start, end)` column range — the shared shape {@link
@@ -265,7 +319,7 @@ function buildLineRuns(params: {
   spans?: readonly HighlightSpan[];
 }): LineRun[] {
   const {
-    lineText,
+    lineText: rawLineText,
     lineIndex,
     selections,
     colors,
@@ -273,6 +327,11 @@ function buildLineRuns(params: {
     activeFindMatchIndex = -1,
     spans = [],
   } = params;
+  // Issue #137: sanitize BEFORE any of the column math below — see
+  // `sanitizeControlChars`'s own TSDoc for why this has to happen first
+  // (every offset below indexes into whichever string is used here, and
+  // sanitizing is length-preserving so those offsets stay valid either way).
+  const lineText = sanitizeControlChars(rawLineText);
   const cursorCols = selections
     .filter((s) => s.active.line === lineIndex)
     .map((s) => s.active.character);
@@ -290,12 +349,25 @@ function buildLineRuns(params: {
     boundaries.add(clipped.start);
     boundaries.add(clipped.end);
   }
+  // The PRIMARY caret's column on this line, if it is on this line at all
+  // (CodeRabbit, PR #143). The hardware cursor can only ever be in one
+  // place, and `cursorPosition.ts` points it at `selections[0]` — so that
+  // is the only caret `colors.drawCaret === false` may suppress. Every
+  // OTHER caret in a multi-cursor selection has nothing showing it but the
+  // drawn run, and would simply vanish while the editor is focused.
+  const primaryCursorCol =
+    selections[0] && selections[0].active.line === lineIndex ? selections[0].active.character : undefined;
   const cursorCells: ColRange[] = [];
+  let primaryCursorCell: ColRange | undefined;
   for (const col of cursorCols) {
     const start = clampCol(col, length);
     const end = clampCol(start + 1, length);
     if (end <= start) continue;
-    cursorCells.push({ start, end });
+    const cell = { start, end };
+    cursorCells.push(cell);
+    if (primaryCursorCol !== undefined && col === primaryCursorCol && !primaryCursorCell) {
+      primaryCursorCell = cell;
+    }
     boundaries.add(start);
     boundaries.add(end);
   }
@@ -351,6 +423,8 @@ function buildLineRuns(params: {
     const segment = text.slice(start, end);
 
     const isCursorCell = cursorCells.some((c) => c.start === start && c.end === end);
+    const isPrimaryCursorCell =
+      primaryCursorCell !== undefined && primaryCursorCell.start === start && primaryCursorCell.end === end;
     const isActiveMatch = activeMatchRanges.some((r) => start >= r.start && end <= r.end);
     const isSelected = selectionRanges.some((r) => start >= r.start && end <= r.end);
     const isOtherMatch = otherMatchRanges.some((r) => start >= r.start && end <= r.end);
@@ -359,13 +433,19 @@ function buildLineRuns(params: {
     // match > selection > other find matches > base text. Highlight
     // foreground sits at the base-text tier (`resolveSegmentFg`'s TSDoc) —
     // every tier below cursor uses it, with only the background changing.
-    // `!HARDWARE_CURSOR_VISIBLE` (Issue #123, that constant's own TSDoc):
-    // this drawn, inverted-background run is what stands in for a cursor
-    // while the real terminal cursor is kept invisible; once that flag
-    // flips to `true` the real hardware cursor takes over and this branch
-    // is skipped, falling through to whatever lower-priority tier the cell
-    // would otherwise render as.
-    if (isCursorCell && !HARDWARE_CURSOR_VISIBLE) {
+    // `colors.drawCaret` (Issue #136, that field's own TSDoc): this drawn,
+    // inverted-background run stands in for a caret only when the real
+    // terminal cursor is not already showing one — an unfocused editor, or
+    // `HARDWARE_CURSOR_VISIBLE` off. While the editor IS focused the real
+    // cursor owns the caret (that is what an IME follows), so this branch
+    // is skipped and the cell falls through to whatever lower-priority
+    // tier it would otherwise render as.
+    //
+    // ...but only for the PRIMARY caret (CodeRabbit, PR #143): there is
+    // exactly one hardware cursor, pointed at `selections[0]`, so a
+    // multi-cursor edit's other carets keep their drawn runs or they would
+    // have nothing showing them at all.
+    if (isCursorCell && (colors.drawCaret || !isPrimaryCursorCell)) {
       runs.push({ text: segment, fg: colors.cursorFg, bg: colors.cursorBg });
     } else if (isActiveMatch) {
       runs.push({ text: segment, fg: resolveSegmentFg(start, end), bg: colors.findMatchBg });
@@ -824,6 +904,7 @@ export function EditorView(props: EditorViewProps): ReactNode {
           : theme.colors["editor.inactiveSelectionBackground"],
       ),
       cursorBg: toColorInput(theme.colors["editorCursor.foreground"]),
+      drawCaret: !HARDWARE_CURSOR_VISIBLE || !isFocused,
       cursorFg: toColorInput(theme.colors["editor.background"]),
       lineNumberFg: toColorInput(theme.colors["editorLineNumber.foreground"]),
       lineNumberActiveFg: toColorInput(theme.colors["editorLineNumber.activeForeground"]),

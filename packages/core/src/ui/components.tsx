@@ -24,7 +24,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { KeyEvent, SelectOption, TabSelectOption, TabSelectRenderable } from "@opentui/core";
+import type {
+  KeyEvent,
+  MouseEvent as OpenTuiMouseEvent,
+  SelectOption,
+  TabSelectOption,
+  TabSelectRenderable,
+} from "@opentui/core";
 import type { ComponentType } from "@tecode/api";
 import { truncateToWidth } from "./cellWidth";
 import type { FocusableNode } from "./focus";
@@ -800,6 +806,18 @@ export interface TabItem {
  * dirty tab's rendered text) doesn't have to duplicate the literal. */
 export const TAB_DIRTY_MARKER = "● ";
 
+/** Fixed column width every tab is drawn at (Issue #138) — passed
+ * explicitly to `<tab-select>` below instead of leaving it to fall back to
+ * the renderable's own default (which is also `20`, per the vendored
+ * `TabSelectRenderable`'s source): pinning it to a local constant means
+ * this module's own click hit-test (`onMouseDown` below) can divide by the
+ * EXACT same number the strip was rendered with, so the two can never
+ * drift apart — even if `@opentui/core` ever changes its internal
+ * default. Exported (same rationale as {@link TAB_DIRTY_MARKER}) so
+ * `shell.snapshot.test.tsx`'s click-to-switch tests can compute a target
+ * tab's column without duplicating the literal. */
+export const TAB_WIDTH = 20;
+
 /** {@link Tabs}'s props. */
 export interface TabsProps {
   tabs?: TabItem[];
@@ -809,7 +827,18 @@ export interface TabsProps {
 }
 
 /** A minimal tab strip (`tecode.ui.Tabs`, Req 10.1, 6.5), over OpenTUI's
- * `<tab-select>` — used by `EditorArea`'s `TabBar` (design.md §8.1). */
+ * `<tab-select>` — used by `EditorArea`'s `TabBar` (design.md §8.1).
+ *
+ * **Click-to-switch (Issue #138)**: `onMouseDown` below is the only way to
+ * switch tabs with the mouse — the existing keyboard path (`moveLeft`/
+ * `moveRight`/`selectCurrent`, `<tab-select>`'s own `handleKeyPress`) and
+ * its `onSelect` wiring above are untouched, so a click and an arrow-key
+ * navigation both end up calling the same `props.onSelect?.(id)`. Scoped
+ * to the common case where every tab fits within the strip's rendered
+ * width: `<tab-select>` scrolls (and applies its own internal
+ * `scrollOffset`) once the tabs overflow that width, and this hit-test does
+ * not account for that offset, so a click while scrolled can resolve to
+ * the wrong tab. Handling that is out of scope for Issue #138. */
 export function Tabs(rawProps: Record<string, unknown>): ReactNode {
   const props = rawProps as TabsProps;
   const theme = useTheme();
@@ -839,6 +868,7 @@ export function Tabs(rawProps: Record<string, unknown>): ReactNode {
     <tab-select
       ref={ref}
       options={options}
+      tabWidth={TAB_WIDTH}
       focused={props.focused}
       backgroundColor={toColorInput(theme.colors["tab.inactiveBackground"])}
       textColor={toColorInput(theme.colors["tab.inactiveForeground"])}
@@ -846,6 +876,24 @@ export function Tabs(rawProps: Record<string, unknown>): ReactNode {
       selectedTextColor={toColorInput(theme.colors["tab.activeForeground"])}
       onSelect={(_index, option) => {
         if (option && typeof option.value === "string") props.onSelect?.(option.value);
+      }}
+      onMouseDown={(event: OpenTuiMouseEvent) => {
+        // Primary button only (CodeRabbit, PR #140): the vendored
+        // `@opentui/core@0.1.107` delivers a `down` for EVERY button to
+        // whichever renderable the pointer hit, so without this guard a
+        // right- or middle-click anywhere on the strip switched tabs.
+        if (event.button !== 0) return;
+        // `MouseEvent.x` is a GLOBAL terminal column, not one relative to
+        // this renderable (`shell.tsx`'s `Sidebar` TSDoc documents the
+        // same fact for its own border-drag, verified there against the
+        // vendored `@opentui/core@0.1.107` bundle) — so it has to be
+        // translated back into a column local to the tab strip's own left
+        // edge (`ref.current.x`, the renderable's own absolute position)
+        // before it can be divided into per-tab columns.
+        if (!ref.current) return;
+        const localX = event.x - ref.current.x;
+        const index = Math.floor(localX / TAB_WIDTH);
+        if (index >= 0 && index < tabs.length) props.onSelect?.(tabs[index].id);
       }}
     />
   );
