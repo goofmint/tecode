@@ -815,11 +815,29 @@ export function createDocumentManager(deps: DocumentManagerDeps): DocumentManage
   const saveQueues = new Map<Uri, Promise<unknown>>();
 
   function save(uri: Uri, options?: SaveOptions): Promise<SaveOutcome> {
+    // `saveNow` calls `uriToPath` (an unguarded throw on a malformed `uri`
+    // — CodeRabbit PR #141) and is itself an `async function`, so a throw
+    // before its first `await` rejects the promise it returns rather than
+    // resolving a `SaveOutcome`. `WorkspaceNamespace.save`'s own contract
+    // (Issue #139) is to always resolve, never reject, so that has to be
+    // caught right here at the save boundary — not inside `saveNow`
+    // itself — same rationale as `notifySafely`/`logSafely` guarding every
+    // OTHER caller-supplied or fallible call in this module.
+    const execute = async (): Promise<SaveOutcome> => {
+      try {
+        return await saveNow(uri, options);
+      } catch (cause) {
+        const err: HostError = {
+          message: `Failed to save document: ${describeError(cause)}`,
+          path: uri,
+        };
+        logSafely("error", err);
+        notifySafely(err);
+        return "error";
+      }
+    };
     const prev = saveQueues.get(uri) ?? Promise.resolve();
-    const run = prev.then(
-      () => saveNow(uri, options),
-      () => saveNow(uri, options),
-    );
+    const run = prev.then(execute, execute);
     const tail = run.then(
       () => undefined,
       () => undefined,

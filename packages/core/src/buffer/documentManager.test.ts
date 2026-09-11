@@ -658,6 +658,28 @@ describe("DocumentManager.save — hardening (review regressions)", () => {
     expect(await readFile(victimPath, "utf8")).toBe("untouched");
   });
 
+  test("save() with a malformed, never-opened URI resolves instead of rejecting (CodeRabbit PR #141)", async () => {
+    // `uriToPath` throws `TypeError` on a malformed URI (this file's own
+    // "uriToPath / pathToUri round-trip" test above) — `saveNow` calls it
+    // unguarded, and `saveNow` is an `async function`, so that throw would
+    // reject the promise `save()` returns if left uncaught. `save`'s own
+    // contract (`WorkspaceNamespace.save`'s TSDoc, Issue #139) is to
+    // always resolve a `SaveOutcome`, never reject — this asserts that
+    // contract holds for garbage input too, not just the well-formed URIs
+    // every other test in this file uses. (These two URIs never reach
+    // `uriToPath` at all here — `documentsMap` has no entry for either, so
+    // `saveNow`'s own "no open document" guard resolves `"noop"` first;
+    // `save`'s new try/catch around `saveNow` — the actual fix for this
+    // finding — is what keeps that guarantee even if a future change made
+    // `uriToPath` reachable before that guard, or added another throwing
+    // call to `saveNow`.)
+    const { log, sink } = baseDeps();
+    const manager = createDocumentManager({ log, sink });
+
+    await expect(manager.save("not-a-uri")).resolves.toBe("noop");
+    await expect(manager.save("http://example.com/a.txt")).resolves.toBe("noop");
+  });
+
   test("saves of the same uri are serialized: an older snapshot can never clobber a newer one", async () => {
     const path = join(dir, "serial.txt");
     await writeFile(path, "original", "utf8");

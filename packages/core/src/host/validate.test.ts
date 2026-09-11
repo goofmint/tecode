@@ -512,9 +512,11 @@ describe("checkApiVersionCompatibility — matrix (Req 2.7, design.md §4.3)", (
   });
 
   test("defaults hostVersion to the real API_VERSION when omitted", () => {
-    // @tecode/api's API_VERSION is "1.0" today; a manifest requesting "1.0"
-    // must be compatible against whatever the real host actually exports,
-    // not a hardcoded copy of the version string.
+    // A manifest requesting "1.0" must be compatible against whatever the
+    // real host actually exports (@tecode/api's API_VERSION, currently
+    // "1.2" — see index.ts's own TSDoc for its version history), not a
+    // hardcoded copy of the version string here that would drift out of
+    // sync with every future bump.
     const result = checkApiVersionCompatibility("1.0");
     expect(result.compatible).toBe(true);
   });

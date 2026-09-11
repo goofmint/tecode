@@ -104,5 +104,18 @@ export type {
  * only requires the HOST's minor to be `>=` the requested one) and every
  * existing 3-argument `registerView` call keeps compiling and behaving
  * exactly as before; only a minor bump, not a major one.
+ *
+ * **1.1 -> 1.2** (Issue #139, CodeRabbit PR #141): `WorkspaceNamespace.save`
+ * changed from `save(uri: Uri): Promise<void>` to `save(uri: Uri, options?:
+ * SaveOptions): Promise<SaveOutcome>` — a new second parameter and a
+ * changed return type an extension might actually read (a no-op vs. a
+ * save-conflict vs. a write failure were all previously indistinguishable
+ * `void`). An extension written against the OLD signature still compiles
+ * and runs unmodified (an extra optional parameter, and a `Promise<
+ * SaveOutcome>` is still a `Promise` an ignored `await` works fine with),
+ * but an extension written to actually branch on the new `SaveOutcome`
+ * values must not be allowed to register against a host that still
+ * resolves `void` — hence the minor bump, gating on the requested minor
+ * exactly like 1.0 -> 1.1 above.
  */
-export const API_VERSION = "1.1";
+export const API_VERSION = "1.2";
