@@ -110,12 +110,16 @@ export type {
  * SaveOptions): Promise<SaveOutcome>` — a new second parameter and a
  * changed return type an extension might actually read (a no-op vs. a
  * save-conflict vs. a write failure were all previously indistinguishable
- * `void`). An extension written against the OLD signature still compiles
- * and runs unmodified (an extra optional parameter, and a `Promise<
- * SaveOutcome>` is still a `Promise` an ignored `await` works fine with),
- * but an extension written to actually branch on the new `SaveOutcome`
- * values must not be allowed to register against a host that still
- * resolves `void` — hence the minor bump, gating on the requested minor
- * exactly like 1.0 -> 1.1 above.
+ * `void`). An extension written against the OLD signature keeps compiling
+ * only if it IGNORES the result: an extra optional parameter is harmless,
+ * and an ignored `await` accepts any `Promise`. A caller that ANNOTATES
+ * the result does not — `async function save(): Promise<void> { return
+ * workspace.save(uri); }` stops type-checking, since `Promise<SaveOutcome>`
+ * is not assignable to `Promise<void>` in a return position.
+ *
+ * Either way, an extension written to actually branch on the new
+ * `SaveOutcome` values must not be allowed to register against a host that
+ * still resolves `void` — hence the minor bump, gating on the requested
+ * minor exactly like 1.0 -> 1.1 above.
  */
 export const API_VERSION = "1.2";
