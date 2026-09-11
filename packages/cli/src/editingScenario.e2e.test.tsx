@@ -293,29 +293,7 @@ describe("End-to-end editing scenario (Task 2.10, Req 13.1, design.md §15, §16
   );
 });
 
-/** Like this module's own `flatten` above, but also tracks each span's
- * ABSOLUTE rendered terminal column (`col`) — matching
- * `editorView.snapshot.test.tsx`'s own `flatten` helper (`col` is a running
- * sum of each row's preceding spans' `width`, so it reflects whatever cell
- * width OpenTUI itself measured for those spans, independent of this
- * codebase's own `cellWidth.ts` math). Scoped to this describe block only —
- * the scenario test above never needs `col`, so its own `flatten` is left
- * untouched rather than growing a field only this suite reads. */
-function flattenWithColumns(
-  frame: CapturedFrame,
-): Array<{ row: number; col: number; text: string; bg: unknown }> {
-  const out: Array<{ row: number; col: number; text: string; bg: unknown }> = [];
-  frame.lines.forEach((line, row) => {
-    let col = 0;
-    for (const span of line.spans) {
-      out.push({ row, col, text: span.text, bg: span.bg });
-      col += span.width;
-    }
-  });
-  return out;
-}
-
-describe("Hardware cursor placement lands on the drawn caret's own cell (Issue #123)", () => {
+describe("Hardware cursor placement tracks the caret's real cell column (Issues #123, #136)", () => {
   let homeDir: string | undefined;
   let workspaceDir: string | undefined;
   let harness: EditingHarness | undefined;
@@ -330,7 +308,7 @@ describe("Hardware cursor placement lands on the drawn caret's own cell (Issue #
   });
 
   test(
-    "the drawn caret's column jumps by 2 cells (not 1) past a full-width character, and a multi-code-point IME commit still inserts as one edit (Issue #110 non-regression)",
+    "the hardware cursor's column jumps by 2 cells (not 1) past a full-width character, and a multi-code-point IME commit still inserts as one edit (Issue #110 non-regression)",
     async () => {
       homeDir = await mkdtemp(join(tmpdir(), "tecode-e2e-cursor-home-"));
       workspaceDir = await mkdtemp(join(tmpdir(), "tecode-e2e-cursor-ws-"));
@@ -349,7 +327,7 @@ describe("Hardware cursor placement lands on the drawn caret's own cell (Issue #
       const document = await root.documents.openDocument(pathToUri(filePath));
       expect(document.languageId).toBe("plaintext");
 
-      const { renderOnce, renderer, captureSpans, captureCharFrame } = await renderEditingShell(root, {
+      const { renderOnce, renderer, captureCharFrame } = await renderEditingShell(root, {
         width: 120,
         height: 20,
       });
@@ -360,13 +338,14 @@ describe("Hardware cursor placement lands on the drawn caret's own cell (Issue #
       const focused = focusEditorText(renderer.root, root.context);
       expect(focused, "expected the editor's text plane to become focused").toBe(true);
 
-      const cursorBg = toColorInput(root.themeService.get().colors["editorCursor.foreground"]);
-      const cursorSpanOf = (frame: CapturedFrame): { row: number; col: number; text: string } => {
-        const matches = flattenWithColumns(frame).filter(
-          (s) => JSON.stringify(s.bg) === JSON.stringify(cursorBg),
-        );
-        expect(matches, "expected exactly one cursor-colored cell").toHaveLength(1);
-        return matches[0]!;
+      // Issue #136: while the editor is focused the REAL terminal cursor
+      // owns the caret (that is what an IME's preedit follows) and the
+      // drawn, inverted-background run is suppressed, so the caret's
+      // rendered column is read from the renderer's cursor state rather
+      // than by hunting for a cursor-colored cell in the frame.
+      const cursorCellOf = (): { row: number; col: number } => {
+        const state = renderer.getCursorState();
+        return { row: state.y, col: state.x };
       };
 
       // --- Caret right BEFORE the full-width "古" (character index 2:
@@ -381,8 +360,7 @@ describe("Hardware cursor placement lands on the drawn caret's own cell (Issue #
       await act(async () => {
         await renderOnce();
       });
-      const wideCursor = cursorSpanOf(captureSpans());
-      expect(wideCursor.text).toBe("古");
+      const wideCursor = cursorCellOf();
 
       // --- Caret right AFTER "古", before "c" (character index 3) ---
       const afterWide = { line: 0, character: 3 };
@@ -394,8 +372,7 @@ describe("Hardware cursor placement lands on the drawn caret's own cell (Issue #
       await act(async () => {
         await renderOnce();
       });
-      const afterWideCursor = cursorSpanOf(captureSpans());
-      expect(afterWideCursor.text).toBe("c");
+      const afterWideCursor = cursorCellOf();
 
       // The caret's document CHARACTER index advanced by exactly 1 (2 ->
       // 3), but its rendered terminal COLUMN must advance by 2 — "古" is a
@@ -404,9 +381,7 @@ describe("Hardware cursor placement lands on the drawn caret's own cell (Issue #
       // placement that instead measured "古" as 1 cell would land this
       // assertion on 1, one cell short of where the glyph actually sits —
       // exactly the class of bug `cursorPosition.ts`'s `cursorCellColumn`
-      // reuse (via `cellWidthUpTo`) exists to avoid for the HARDWARE
-      // cursor, verified here against the independently-measured DRAWN
-      // caret.
+      // reuse (via `cellWidthUpTo`) exists to avoid.
       expect(afterWideCursor.col - wideCursor.col).toBe(2);
       expect(afterWideCursor.row).toBe(wideCursor.row);
 
