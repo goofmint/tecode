@@ -103,7 +103,7 @@ function createFakeApi() {
       openDocument: async () => {
         throw new Error("not used by this fixture");
       },
-      save: async () => {},
+      save: async () => "saved",
     },
     window: {
       get activeEditor() {

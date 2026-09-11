@@ -94,6 +94,7 @@ import type {
   Document,
   ExtensionContext,
   Position,
+  QuickPickItem,
   Selection,
   TextEdit,
 } from "@tecode/api";
@@ -403,7 +404,41 @@ export function activate(ctx: ExtensionContext): void {
     api.commands.register("editor.action.save", async () => {
       const editor = api.window.activeEditor;
       if (!editor) return;
-      await api.workspace.save(editor.document.uri);
+      const uri = editor.document.uri;
+      const outcome = await api.workspace.save(uri);
+      if (outcome !== "conflict-deleted" && outcome !== "conflict-changed") return;
+
+      // Issue #139: `api.workspace.save` refused because the file's known
+      // disk state moved out from under this document (deleted, or changed
+      // externally) — `@tecode/core`'s `documentManager.ts` already warned
+      // via the status bar, but doing nothing else here looks exactly like
+      // Ctrl+S not working at all. Offer a confirmation-gated recovery,
+      // the same `showQuickPick` confirm/cancel pattern (and the same
+      // "guard the call, never let a throw escape the handler" discipline)
+      // as `explorer`'s `registerDeleteCommand` (`explorer/index.ts`): only
+      // a deliberate "Save Anyway" retries with `force: true` (recreating a
+      // deleted file, or overwriting changed content) — Cancel, Escape
+      // (`undefined`), or a throwing `showQuickPick` all leave the document
+      // exactly as it was, still dirty, nothing written.
+      const items: QuickPickItem[] = [
+        { label: "Save Anyway", description: "force" },
+        { label: "Cancel", description: "cancel" },
+      ];
+      const reason =
+        outcome === "conflict-deleted"
+          ? `"${uri}" was deleted on disk.`
+          : `"${uri}" changed on disk since it was last read.`;
+      let picked: QuickPickItem | undefined;
+      try {
+        picked = await api.window.showQuickPick(items, {
+          placeHolder: `${reason} Save anyway?`,
+        });
+      } catch {
+        return;
+      }
+      if (picked?.label !== "Save Anyway") return;
+
+      await api.workspace.save(uri, { force: true });
     }),
   );
 

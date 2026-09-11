@@ -17,7 +17,10 @@ import type {
   Editor,
   ExtensionContext,
   LanguageContribution,
+  QuickPickItem,
+  QuickPickOptions,
   Range,
+  SaveOutcome,
   Selection,
   Tecode,
   TextEdit,
@@ -56,6 +59,20 @@ function createFakeApi(initialLines: string[]) {
   ]);
   const configListeners = new Set<(e: ConfigChangeEvent) => void>();
   const savedUris: string[] = [];
+  // Issue #139: what `workspace.save` should resolve for the NEXT
+  // non-forced call, and a record of every call this fixture ever made
+  // (uri + whether it was called with `force: true`) — lets a test drive
+  // "save was refused, then retried with force" without a real
+  // `DocumentManager` behind it. Defaults to `"saved"` so every pre-#139
+  // test (which never touches this) keeps passing unchanged.
+  let nextSaveOutcome: SaveOutcome = "saved";
+  const saveCalls: Array<{ uri: string; force: boolean }> = [];
+  // Issue #139: `showQuickPick`'s canned response for the save-conflict
+  // confirmation — `undefined` (the default) models Cancel/Escape, matching
+  // `showQuickPick`'s pre-existing `async () => undefined` stub below for
+  // every test that never touches this.
+  let quickPickResponse: QuickPickItem | undefined;
+  const quickPickCalls: Array<{ items: QuickPickItem[]; options?: QuickPickOptions }> = [];
   const languageContributions = new Map<string, LanguageContribution>();
   let clipboardBuffer = "";
 
@@ -166,8 +183,16 @@ function createFakeApi(initialLines: string[]) {
       onDidOpen: () => ({ dispose() {} }),
       onDidClose: () => ({ dispose() {} }),
       onDidSave: () => ({ dispose() {} }),
-      save: async (uri: string) => {
-        savedUris.push(uri);
+      save: async (uri: string, options?: { force?: boolean }): Promise<SaveOutcome> => {
+        const force = options?.force === true;
+        saveCalls.push({ uri, force });
+        // `force: true` always succeeds in this fake (Issue #139: it models
+        // the recovery write, which has already bypassed the conflict this
+        // fixture is simulating) — only a non-forced call consults
+        // `nextSaveOutcome`.
+        const outcome: SaveOutcome = force ? "saved" : nextSaveOutcome;
+        if (outcome === "saved") savedUris.push(uri);
+        return outcome;
       },
     },
     window: {
@@ -175,7 +200,10 @@ function createFakeApi(initialLines: string[]) {
         return editor;
       },
       showMessage: () => {},
-      showQuickPick: async () => undefined,
+      showQuickPick: async (items: QuickPickItem[], options?: QuickPickOptions) => {
+        quickPickCalls.push({ items, options });
+        return quickPickResponse;
+      },
       showInputBox: async () => undefined,
       setStatusBarItem: () => ({ dispose() {} }),
     },
@@ -260,6 +288,14 @@ function createFakeApi(initialLines: string[]) {
     },
     appliedEdits,
     savedUris,
+    saveCalls,
+    setNextSaveOutcome: (outcome: SaveOutcome) => {
+      nextSaveOutcome = outcome;
+    },
+    quickPickCalls,
+    setQuickPickResponse: (response: QuickPickItem | undefined) => {
+      quickPickResponse = response;
+    },
     setConfig,
     getSelections: () => selections,
     languageContributions,
@@ -368,6 +404,64 @@ describe("editor-core activate() — save (Req 11.1)", () => {
     const { api, savedUris } = activateFixture(["abc"]);
     await api.commands.execute("editor.action.save");
     expect(savedUris).toEqual(["file:///fake.txt"]);
+  });
+
+  // Issue #139: deleting a known-open file out from under `tecode` and then
+  // pressing Ctrl+S used to look like complete unresponsiveness —
+  // `workspace.save` refused (`"conflict-deleted"`), and the handler simply
+  // returned. It now offers a `showQuickPick` "Save Anyway"/"Cancel"
+  // recovery, the same confirm/cancel shape `explorer`'s
+  // `registerDeleteCommand` already uses.
+  test("a conflict-deleted outcome prompts a Save Anyway/Cancel confirmation", async () => {
+    const { api, setNextSaveOutcome, quickPickCalls } = activateFixture(["abc"]);
+    setNextSaveOutcome("conflict-deleted");
+
+    await api.commands.execute("editor.action.save");
+
+    expect(quickPickCalls).toHaveLength(1);
+    const labels = quickPickCalls[0]!.items.map((item) => item.label);
+    expect(labels).toEqual(["Save Anyway", "Cancel"]);
+    expect(quickPickCalls[0]!.options?.placeHolder).toContain("file:///fake.txt");
+  });
+
+  test("choosing Save Anyway retries the save with force: true", async () => {
+    const { api, setNextSaveOutcome, setQuickPickResponse, saveCalls, savedUris } =
+      activateFixture(["abc"]);
+    setNextSaveOutcome("conflict-deleted");
+    setQuickPickResponse({ label: "Save Anyway", description: "force" });
+
+    await api.commands.execute("editor.action.save");
+
+    expect(saveCalls).toEqual([
+      { uri: "file:///fake.txt", force: false },
+      { uri: "file:///fake.txt", force: true },
+    ]);
+    // The forced retry is the one that actually lands as a save.
+    expect(savedUris).toEqual(["file:///fake.txt"]);
+  });
+
+  test("choosing Cancel makes no further save call and leaves no side effects", async () => {
+    const { api, setNextSaveOutcome, setQuickPickResponse, saveCalls, savedUris } =
+      activateFixture(["abc"]);
+    setNextSaveOutcome("conflict-deleted");
+    setQuickPickResponse({ label: "Cancel", description: "cancel" });
+
+    await api.commands.execute("editor.action.save");
+
+    expect(saveCalls).toEqual([{ uri: "file:///fake.txt", force: false }]);
+    expect(savedUris).toEqual([]);
+  });
+
+  test("dismissing the prompt (Escape, undefined response) behaves exactly like Cancel", async () => {
+    const { api, setNextSaveOutcome, saveCalls, savedUris } = activateFixture(["abc"]);
+    setNextSaveOutcome("conflict-deleted");
+    // `setQuickPickResponse` is left at its default `undefined` — models
+    // Escape/no selection.
+
+    await api.commands.execute("editor.action.save");
+
+    expect(saveCalls).toEqual([{ uri: "file:///fake.txt", force: false }]);
+    expect(savedUris).toEqual([]);
   });
 });
 

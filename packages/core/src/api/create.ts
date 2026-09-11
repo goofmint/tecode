@@ -267,12 +267,14 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
     onDidOpen: deps.documents.onDidOpen,
     onDidClose: deps.documents.onDidClose,
     onDidSave: deps.documents.onDidSave,
-    // `DocumentManager.save` resolves `boolean` (success/no-op both report
-    // through `sink` already — see its own TSDoc) — `tecode.workspace.save`
-    // narrows that to `Promise<void>` per its documented "always resolves,
-    // never throws" contract (Req 11.1's save command doesn't need the
-    // boolean; it would just be another thing every caller has to ignore).
-    save: (uri: Uri) => deps.documents.save(uri).then(() => undefined),
+    // `DocumentManager.save` (Issue #139) already resolves the exact
+    // `SaveOutcome`/`SaveOptions` shape `tecode.workspace.save` documents —
+    // same function reference, no wrapper needed, matching this file's own
+    // "narrowing, not re-implementing" principle (this module's TSDoc)
+    // followed by every other delegate above. Its "always resolves, never
+    // throws" contract is `saveNow`'s own (`documentManager.ts`): every
+    // failure path there returns a `SaveOutcome`, none rejects.
+    save: deps.documents.save,
   });
 
   const configNamespace: ConfigNamespace = Object.freeze({

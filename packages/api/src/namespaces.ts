@@ -126,6 +126,50 @@ export interface FileSystem {
 }
 
 /**
+ * What `WorkspaceNamespace.save` actually did (Issue #139). Before this,
+ * `save` resolved `Promise<void>` — a no-op (unopened `uri`, readonly
+ * document) and a refused save-conflict (Issue #119's known-file-deleted/
+ * changed detection, `@tecode/core`'s `documentManager.ts`) were both
+ * completely invisible to the caller, indistinguishable from success. That
+ * is exactly why deleting a known-open file out from under `tecode` and
+ * then pressing Ctrl+S looked like complete unresponsiveness: the
+ * status-bar warning fired, but the command handler (`editor-core`'s
+ * `editor.action.save`) had no way to notice and offer a recovery path.
+ *
+ * - `"saved"` — the write succeeded.
+ * - `"noop"` — `uri` is not an open document, or the open document is
+ *   readonly. Nothing was attempted.
+ * - `"conflict-deleted"` — a previously-read file was found deleted on
+ *   disk; the save was refused rather than silently recreating it from a
+ *   possibly-stale buffer. Retry with `{ force: true }` (`SaveOptions`'s
+ *   own TSDoc) to recreate it anyway.
+ * - `"conflict-changed"` — a previously-read file's on-disk content no
+ *   longer matches what this document last read; the save was refused
+ *   rather than clobbering a newer external write. Retry with
+ *   `{ force: true }` to overwrite it anyway.
+ * - `"error"` — the write failed for any other reason (I/O failure).
+ *
+ * A plain string union, not an object — matches this namespace's other
+ * discriminated-by-string-literal results ({@link FileChangeType},
+ * {@link MessageKind}) rather than introducing a new shape just for this.
+ */
+export type SaveOutcome = "saved" | "noop" | "conflict-deleted" | "conflict-changed" | "error";
+
+/** Options for {@link WorkspaceNamespace.save} (Issue #139). */
+export interface SaveOptions {
+  /**
+   * Bypass the known-file conflict detection that would otherwise produce
+   * `"conflict-deleted"`/`"conflict-changed"` and go straight to writing —
+   * recreating a file that was deleted on disk, or overwriting one whose
+   * content changed. Meant for a caller that has already confirmed the
+   * overwrite/recreate with the user (Issue #139's Ctrl+S "Save Anyway"
+   * flow, `editor-core`'s `editor.action.save`). Defaults to `false`: every
+   * existing caller keeps today's abort-on-conflict behavior verbatim.
+   */
+  force?: boolean;
+}
+
+/**
  * The open workspace (a single root directory in the MVP) and its open
  * documents (Req 10.1).
  */
@@ -142,13 +186,15 @@ export interface WorkspaceNamespace {
   onDidClose: Event<Document>;
   onDidSave: Event<Document>;
   /**
-   * Save `uri`'s current text to disk (Req 11.1's save command). A no-op
-   * (unopened `uri`, a readonly document, or a write failure) surfaces a
-   * status-bar error rather than rejecting — this always resolves, never
-   * throws, matching `applyEdits`'s own no-throw discipline (design.md
-   * §14). Fires `onDidSave` on success.
+   * Save `uri`'s current text to disk (Req 11.1's save command). Resolves
+   * a {@link SaveOutcome} — see that type's own TSDoc for what each value
+   * means (Issue #139). Never throws — an unopened `uri`, a readonly
+   * document, a save-conflict refusal, or a write failure all resolve with
+   * the matching `SaveOutcome` instead of rejecting, matching
+   * `applyEdits`'s own no-throw discipline (design.md §14). Fires
+   * `onDidSave` only on `"saved"`.
    */
-  save(uri: Uri): Promise<void>;
+  save(uri: Uri, options?: SaveOptions): Promise<SaveOutcome>;
 }
 
 /* ------------------------------------------------------------------ */
