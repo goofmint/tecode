@@ -22,10 +22,21 @@ function createFakeFs(content?: string): FallbackKeybindingsFs {
   };
 }
 
-test("the bundled asset covers exactly the three genuinely-ambiguous defaults (Fact 4's reasoning, keybindings.fallback.json)", () => {
+test("the bundled asset covers exactly the three genuinely-ambiguous defaults plus the sidebar-visibility toggle (Fact 4's reasoning, keybindings.fallback.json)", () => {
   const commands = BUNDLED_FALLBACK_KEYBINDINGS.map((entry) => entry.command).sort();
   expect(commands).toEqual(
-    ["editor.action.deleteLine", "explorer.focus", "workbench.action.showCommands"].sort(),
+    [
+      "editor.action.deleteLine",
+      "explorer.focus",
+      "workbench.action.showCommands",
+      // Issue #135: `workbench.action.toggleSidebarVisibility` has no
+      // Kitty-ambiguity hazard of its own — its fallback entry (`ctrl+b`)
+      // rides in this same bundled file for the same reason `ctrl+e` ->
+      // `explorer.focus` does (that entry's own precedent, `Fact 4`'s
+      // remedy 2 in this module's own TSDoc): a plain, unclaimed key bound
+      // directly, not a hazard-driven remap.
+      "workbench.action.toggleSidebarVisibility",
+    ].sort(),
   );
 });
 

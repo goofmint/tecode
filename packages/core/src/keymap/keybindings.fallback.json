@@ -11,5 +11,9 @@
     "key": "ctrl+l",
     "command": "editor.action.deleteLine",
     "when": "editorTextFocus"
+  },
+  {
+    "key": "ctrl+b",
+    "command": "workbench.action.toggleSidebarVisibility"
   }
 ]

@@ -140,6 +140,13 @@ export {
 } from "./panelCommands";
 
 export {
+  createToggleSidebarVisibilityCommandHandler,
+  registerSidebarVisibilityCommand,
+  TOGGLE_SIDEBAR_VISIBILITY_COMMAND_ID,
+  type ToggleSidebarVisibilityCommandDeps,
+} from "./sidebarVisibilityCommands";
+
+export {
   createExtensionsReloadHandler,
   EXTENSIONS_RELOAD_COMMAND_ID,
   registerExtensionsReloadCommand,
@@ -190,6 +197,8 @@ export {
   Panel,
   Shell,
   Sidebar,
+  SIDEBAR_COLLAPSE_GLYPH,
+  SIDEBAR_EXPAND_GLYPH,
   StatusBar,
   type ActivityBarProps,
   type EditorAreaProps,

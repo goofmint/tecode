@@ -255,7 +255,35 @@ export interface ActivityBarProps {
   slotRegistry: SlotRegistry;
   activeView: string | undefined;
   onSelectView: (id: string) => void;
+  /** Whether `Shell`'s `Sidebar` is currently visible (`layoutState.ts`'s
+   * `LayoutState.sidebarVisible`, Issue #135) — decides which of
+   * {@link SIDEBAR_COLLAPSE_GLYPH}/{@link SIDEBAR_EXPAND_GLYPH} the
+   * dedicated toggle below renders. Optional so a caller/test that
+   * constructs `ActivityBar` directly, without wiring the toggle at all,
+   * still renders (defaults to `false`, matching every other
+   * optional-dependency fallback in this module). */
+  sidebarVisible?: boolean;
+  /** Called on `onMouseDown` of the dedicated toggle glyph below (Issue
+   * #135) — `Shell`'s own `handleToggleSidebar`, which flips
+   * `sidebarVisible` without touching `activeView` (unlike
+   * {@link onSelectView}). Omitted: the toggle glyph still renders, but
+   * clicking it does nothing, matching every other optional-callback
+   * fallback in this module. */
+  onToggleSidebar?: () => void;
 }
+
+/** The glyph {@link ActivityBar}'s dedicated toggle renders while the
+ * sidebar is VISIBLE — clicking it collapses the sidebar (Issue #135).
+ * A plain ASCII character, deliberately not an emoji (Issue #121 dropped
+ * this codebase's last emoji icon; `explorer/manifest.ts`'s TSDoc explains
+ * why: not every terminal font renders one, and a bare Unicode arrow has
+ * the same width-in-a-monospace-cell risk). */
+export const SIDEBAR_COLLAPSE_GLYPH = "<";
+
+/** The glyph {@link ActivityBar}'s dedicated toggle renders while the
+ * sidebar is HIDDEN — clicking it expands the sidebar (Issue #135). See
+ * {@link SIDEBAR_COLLAPSE_GLYPH}'s TSDoc for why this is plain ASCII. */
+export const SIDEBAR_EXPAND_GLYPH = ">";
 
 /** Columns `ActivityBar` occupies — fixed, never configurable (Req 6.1,
  * 6.2). Exported (Issue #105) so `sidebarWidth.ts`'s own hand-kept-in-sync
@@ -268,7 +296,10 @@ export interface ActivityBarProps {
 export const ACTIVITY_BAR_WIDTH = 4;
 
 /** The activity bar (Req 6.1, 6.2): one icon per `activityBar.item` ↔
- * `sidebar.view` pair, highlighting the active one. */
+ * `sidebar.view` pair, highlighting the active one, plus a dedicated
+ * sidebar-visibility toggle pinned to the bottom row (Issue #135) —
+ * replaces the old "re-click the active icon to collapse" gesture, which
+ * `shell.tsx`'s `Shell.selectSidebarView` no longer performs. */
 export function ActivityBar(props: ActivityBarProps): ReactNode {
   const theme = useTheme();
   const pairs = useSidebarPairs(props.slotRegistry);
@@ -303,6 +334,18 @@ export function ActivityBar(props: ActivityBarProps): ReactNode {
           </text>
         );
       })}
+      {/* Issue #135: a flex spacer pins the dedicated sidebar toggle below
+       * to the LAST row of the activity bar, regardless of how many
+       * `activityBar.item` pairs are registered above it — the same
+       * "spacer eats the remaining flex space" idiom a `flexGrow: 1` box
+       * gives any column layout. */}
+      <box style={{ flexGrow: 1 }} />
+      <text
+        fg={toColorInput(theme.colors["activityBar.foreground"])}
+        onMouseDown={() => props.onToggleSidebar?.()}
+      >
+        {` ${props.sidebarVisible ? SIDEBAR_COLLAPSE_GLYPH : SIDEBAR_EXPAND_GLYPH} `}
+      </text>
     </box>
   );
 }
@@ -1383,18 +1426,26 @@ export function Shell(props: ShellProps): ReactNode {
   const activeEditorTabId = hasOpenDocuments ? activeDocumentUri : props.activeEditorTabId;
   const onSelectEditorTab = hasOpenDocuments ? setActiveDocumentUri : props.onSelectEditorTab;
 
+  // Issue #135: re-clicking the already-active item used to toggle the
+  // sidebar shut (VS Code-style) — replaced by a dedicated
+  // `ActivityBar` toggle glyph (`handleToggleSidebar` below) and the
+  // `workbench.action.toggleSidebarVisibility` command
+  // (`ui/sidebarVisibilityCommands.ts`), so selecting a view now always
+  // just switches to it and makes sure the sidebar is showing, whether or
+  // not it was already the active one.
   const selectSidebarView = useCallback(
     (id: string) => {
-      if (layout.activeView === id) {
-        // Clicking the already-active item toggles the sidebar shut, VS
-        // Code-style, rather than doing nothing.
-        updateLayout({ sidebarVisible: !layout.sidebarVisible });
-        return;
-      }
       updateLayout({ activeView: id, sidebarVisible: true });
     },
-    [layout.activeView, layout.sidebarVisible, updateLayout],
+    [updateLayout],
   );
+
+  // Issue #135: the `ActivityBar`'s dedicated toggle glyph flips
+  // `sidebarVisible` without touching `activeView` — the one thing
+  // `selectSidebarView` above deliberately no longer does on its own.
+  const handleToggleSidebar = useCallback(() => {
+    updateLayout({ sidebarVisible: !layout.sidebarVisible });
+  }, [layout.sidebarVisible, updateLayout]);
 
   // Req 6.2: a `workbench.view.<id>` command per known pair, added/removed
   // as pairs come and go (an extension activating late, or unregistering).
@@ -1416,6 +1467,8 @@ export function Shell(props: ShellProps): ReactNode {
           slotRegistry={props.slotRegistry}
           activeView={layout.activeView}
           onSelectView={selectSidebarView}
+          sidebarVisible={layout.sidebarVisible}
+          onToggleSidebar={handleToggleSidebar}
         />
         <Sidebar
           slotRegistry={props.slotRegistry}
