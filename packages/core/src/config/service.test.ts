@@ -685,6 +685,33 @@ describe("ConfigService — best-effort type validation (Req 9.3 MVP policy)", (
     expect(warnings).toHaveLength(0);
     service.dispose();
   });
+
+  test("a schema registered AFTER the CLI layer already loaded still gets a type-mismatch warning for it (Req 9.7, Issue #149, CodeRabbit PR #154 review)", async () => {
+    const cliSettingsPath = "/override/cli-settings.json";
+    const fake = createFakeFs({
+      [cliSettingsPath]: JSON.stringify({ "editor.tabSize": "not-a-number" }),
+    });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, cliSettingsPath, fs: fake.fs });
+    // The CLI layer finishes loading with NO schema registered yet — its
+    // own `loadSettingsLayer` call has nothing to validate against, so no
+    // warning fires from that path.
+    await service.ready;
+    expect(log.entries().filter((e) => e.level === "warning")).toHaveLength(0);
+
+    // Registering the schema now must revalidate the ALREADY-LOADED CLI
+    // layer, not just userLayer/workspaceLayer — this is exactly the gap
+    // the review found (a `--settings <file>` value never got warned about
+    // when its schema registered late).
+    service.registerConfiguration({
+      properties: { "editor.tabSize": { type: "number", default: 4 } },
+    });
+    const warnings = log.entries().filter((e) => e.level === "warning");
+    expect(warnings.some((w) => w.error.message.includes("editor.tabSize"))).toBe(true);
+    expect(warnings.some((w) => w.error.message.includes("CLI settings"))).toBe(true);
+    service.dispose();
+  });
 });
 
 describe("ConfigService — keybindings (Req 9.1)", () => {

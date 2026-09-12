@@ -162,17 +162,33 @@ function findConfigValueIndices(argv: readonly string[]): ReadonlySet<number> {
  * Resolve one single-value flag's argument from argv, matching
  * {@link resolveConfigDirOverride}'s exact shape: the token immediately
  * following the first occurrence of `flag`, or `undefined` when `flag` is
- * absent from `argv` entirely, or when it is present but is the very last
- * token (no value follows). Never throws — it does no I/O and cannot fail.
- * Shared by {@link resolveSettingsFileOverride}/
- * {@link resolveKeybindingsFileOverride}/{@link resolveThemeFileOverride}
- * (Req 9.7/7.6, Issue #149) so the three new flags stay in lockstep with
- * {@link resolveConfigDirOverride}'s own long-established behavior.
+ * absent from `argv` entirely, when it is present but is the very last
+ * token (no value follows), or when the very next token is itself one of
+ * {@link VALUE_FLAGS} (CodeRabbit PR #154 review: without this guard,
+ * `tecode --settings --theme theme.json` read `"--theme"` itself as the
+ * settings file name, rather than recognizing that `--settings` was given
+ * no value at all — a different flag's name is never a plausible value).
+ * Never throws — it does no I/O and cannot fail. Shared by
+ * {@link resolveSettingsFileOverride}/{@link resolveKeybindingsFileOverride}/
+ * {@link resolveThemeFileOverride} (Req 9.7/7.6, Issue #149) so the three
+ * new flags stay in lockstep with {@link resolveConfigDirOverride}'s own
+ * long-established "degrade to `undefined` rather than throw" behavior —
+ * a value genuinely missing (the flag is simply the last token, with
+ * nothing at all following it) still degrades to `undefined` here,
+ * exactly as `resolveConfigDirOverride(["--config"])` has always done;
+ * `main.ts`'s `runTecode` already treats an explicitly-given-but-unreadable
+ * file as a fatal startup error, but a flag with no value at all is
+ * indistinguishable from the flag never being passed in the first place,
+ * so it degrades the same way `--config` always has, rather than this
+ * pure, no-I/O module taking on a new throwing contract none of its other
+ * functions have.
  */
 function resolveFlagValue(argv: readonly string[], flag: string): string | undefined {
   const flagIndex = argv.indexOf(flag);
   if (flagIndex === -1) return undefined;
-  return argv[flagIndex + 1];
+  const value = argv[flagIndex + 1];
+  if (value !== undefined && VALUE_FLAGS.includes(value)) return undefined;
+  return value;
 }
 
 /**

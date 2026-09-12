@@ -759,8 +759,13 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     }
     // A registration can land after the initial load finished: revalidate
     // the already-loaded layers so type-mismatch warnings do not depend on
-    // registration/ready ordering.
+    // registration/ready ordering. `cliLayer` (Req 9.7, Issue #149) can
+    // finish loading before an extension's `registerConfiguration` call
+    // too — CodeRabbit PR #154 review: omitting it here left a type
+    // mismatch in a `--settings <file>` value unwarned whenever its schema
+    // registered after the CLI layer's own load.
     validateLayerTypes(userLayer, "user settings");
+    validateLayerTypes(cliLayer, "CLI settings");
     validateLayerTypes(workspaceLayer, "workspace settings");
     rebuildMerged();
 

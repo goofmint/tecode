@@ -46,6 +46,7 @@ import {
   loadFallbackKeybindings,
   MODAL_DEFAULT_KEYBINDINGS,
   PANEL_HEIGHT_DEFAULT_KEYBINDINGS,
+  parseJsonc,
   pathToUri,
   registerCoreConfiguration,
   registerExtensionsReloadCommand,
@@ -105,7 +106,7 @@ import {
   builtinManifests,
   builtinThemeAssets,
 } from "@tecode/builtin";
-import { stat as nodeStat } from "node:fs/promises";
+import { readFile as nodeReadFile } from "node:fs/promises";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 import {
   resolveConfigDirOverride,
@@ -1103,7 +1104,17 @@ export function buildAssemblyRoot(
   const themeSettingsWriter = createThemeSettingsWriter({
     log,
     sink,
-    cliThemeOverrideActive: () => cliThemeOverride.active,
+    // Suppresses a `theme.select` commit's write-back whenever it would
+    // have no visible effect: either a `--theme <file>` override is active
+    // (`cliThemeOverride.active`), or `--settings` already sets
+    // `workbench.colorTheme` in the CLI settings layer
+    // (`config.isSetByCliLayer`) — the latter is a distinct case from the
+    // former (`--settings` alone, with no `--theme`, still masks this key
+    // the exact same way `ui/sidebarWidthSettingsWriter.ts`'s own
+    // `isCliLayerKeySet` check does for `workbench.sidebarWidth`; CodeRabbit
+    // PR #154 review).
+    cliThemeOverrideActive: () =>
+      cliThemeOverride.active || config.isSetByCliLayer("workbench.colorTheme"),
   });
   const themeService = createThemeService({
     registry: themeRegistry,
@@ -1454,7 +1465,14 @@ export async function runDeferredPhase(
     loadResult.pendingThemes,
     buildExtensionDirMap(loadResult.loaded),
   );
-  applyConfiguredTheme(root.config, root.themeService);
+  // Guarded by `!root.cliThemeOverride.active` (Req 7.6, Issue #149,
+  // CodeRabbit PR #154 review): once `--theme <file>` has activated its
+  // override, re-applying `workbench.colorTheme` here would silently
+  // replace it the moment a just-loaded extension/user theme happens to
+  // match that setting — exactly the override `themeConfigSync.ts`'s
+  // live-`onDidChange` suppression already protects against, which this
+  // direct call must match.
+  if (!root.cliThemeOverride.active) applyConfiguredTheme(root.config, root.themeService);
 
   // User themes (Req 11.4, Issue #124, design.md §9): a SEPARATE scan of
   // `~/.config/tecode/themes/*.json` (`userThemes.ts`'s `scanUserThemes`)
@@ -1475,7 +1493,10 @@ export async function runDeferredPhase(
     fs: options.userThemesFs,
   });
   await root.themeRegistry.loadContributions(userThemes.pending, userThemes.extensionDirs);
-  applyConfiguredTheme(root.config, root.themeService);
+  // Same `!root.cliThemeOverride.active` guard as above — a user theme
+  // matching `workbench.colorTheme` must not dislodge an active `--theme`
+  // override either.
+  if (!root.cliThemeOverride.active) applyConfiguredTheme(root.config, root.themeService);
 
   // Feed every `contributes.languages` entry discovered by `loadExtensions`
   // into the language registry (Task 2.8, Req 8.1-8.3) — the same
@@ -1978,7 +1999,12 @@ export interface RunTecodeResult {
  * resolved to an absolute path, as {@link verifyExplicitFileOverrides}
  * checks it. */
 interface ExplicitFileOverride {
-  /** The flag name, used only to compose this override's error message. */
+  /** The flag name — used both to compose this override's error message
+   * and (CodeRabbit PR #154 review) to pick which content shape to
+   * validate: `--settings` must parse to a top-level JSON object,
+   * `--keybindings` to a top-level JSON array, matching `config/
+   * service.ts`'s own `loadSettingsLayer`/`loadKeybindingsLayer`
+   * validation exactly. */
   flag: "--settings" | "--keybindings" | "--theme";
   /** `undefined` when the corresponding flag was never given — skipped
    * entirely rather than checked. */
@@ -1987,15 +2013,32 @@ interface ExplicitFileOverride {
 
 /**
  * Verify every given `--settings`/`--keybindings`/`--theme <file>` override
- * actually names a readable regular file (Req 9.7/7.6, Issue #149) —
- * unlike `--config <dir>`'s tolerant "missing file is an empty layer"
- * policy (`config/service.ts`'s own TSDoc), an EXPLICITLY named single
- * file that cannot be read is a typo the user would otherwise never learn
- * about, so this throws rather than degrading. Every problem found is
- * still reported through `log` first (design.md §14's "report, then
- * decide how to fail" discipline) before the combined error is thrown;
- * `runTecode`'s caller (`main()`) already exits the process on any
- * rejected promise, so throwing here — rather than calling
+ * is not just readable but genuinely well-formed (Req 9.7/7.6, Issue #149).
+ * A stat-only check (this function's earlier shape) let a MALFORMED
+ * explicit file through: `ConfigService`'s own loaders would then silently
+ * degrade it to an empty layer with just a logged warning — exactly the
+ * "typo silently ignored" outcome an explicit flag is supposed to avoid
+ * (CodeRabbit PR #154 review). So this actually reads and, for
+ * `--settings`/`--keybindings`, JSONC-parses each file, requiring the same
+ * top-level shape `config/service.ts`'s loaders require (object / array
+ * respectively). `--theme` only needs to be READABLE here — its JSON
+ * structure is validated, and gracefully degraded per-key to the base
+ * palette on a malformed file, by `ThemeRegistry.loadContributions` itself
+ * once `runTecode` loads it (`ui/themeLoader.ts`'s existing policy, shared
+ * by every OTHER theme source: built-in, extension-declared, and
+ * user-themes-directory) — enforcing full theme-schema validity here would
+ * make `--theme` stricter than every other theme source, which is not
+ * this flag's job.
+ *
+ * Unlike `--config <dir>`'s tolerant "missing file is an empty layer"
+ * policy (`config/service.ts`'s own TSDoc), an EXPLICITLY named file with
+ * a genuine problem — missing, unreadable, or (for `--settings`/
+ * `--keybindings`) malformed/wrong-shaped — is a typo the user would
+ * otherwise never learn about, so this throws rather than degrading.
+ * Every problem found is still reported through `log` first (design.md
+ * §14's "report, then decide how to fail" discipline) before the combined
+ * error is thrown; `runTecode`'s caller (`main()`) already exits the
+ * process on any rejected promise, so throwing here — rather than calling
  * `process.exit` directly — keeps this function safely callable from a
  * test that must never risk killing the test runner itself.
  */
@@ -2007,10 +2050,28 @@ async function verifyExplicitFileOverrides(
   for (const { flag, path } of overrides) {
     if (!path) continue;
     try {
-      const stats = await nodeStat(path);
-      if (!stats.isFile()) throw new Error("not a regular file");
+      const text = await nodeReadFile(path, "utf8");
+      if (flag === "--settings" || flag === "--keybindings") {
+        const parsed = parseJsonc<unknown>(text);
+        if (!parsed.ok) {
+          throw new Error(`line ${parsed.line}, column ${parsed.column}: ${parsed.message}`);
+        }
+        if (flag === "--settings") {
+          if (
+            typeof parsed.value !== "object" ||
+            parsed.value === null ||
+            Array.isArray(parsed.value)
+          ) {
+            throw new Error("must be a JSON object at the top level");
+          }
+        } else if (!Array.isArray(parsed.value)) {
+          throw new Error("must be a JSON array at the top level");
+        }
+      }
+      // --theme: readability alone is verified here — see this function's
+      // TSDoc for why its content shape is validated elsewhere instead.
     } catch (cause) {
-      const message = `${flag} file "${path}" could not be read: ${describeError(cause)}`;
+      const message = `${flag} file "${path}" is invalid: ${describeError(cause)}`;
       log.append("error", { message, path });
       problems.push(message);
     }

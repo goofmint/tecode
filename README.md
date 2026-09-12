@@ -534,9 +534,11 @@ the single highest-precedence layer of all, above even the user's own
 on top of `/path/to/cfg/settings.json`. Both files are watched and
 live-reloaded exactly like every other settings/keybindings file. Unlike
 `--config <dir>`'s tolerant missing-file policy above, a `--settings`/
-`--keybindings <file>` that does not exist or cannot be read is a
-**fatal startup error** — an explicitly-named file is assumed to be a
-deliberate choice, so a typo is reported rather than silently ignored. A
+`--keybindings <file>` that does not exist, cannot be read, or is not
+valid JSONC in the expected shape (an object for `--settings`, an array
+for `--keybindings`) is a **fatal startup error** — an explicitly-named
+file is assumed to be a deliberate choice, so a typo (missing or
+malformed alike) is reported rather than silently ignored. A
 relative `<file>` resolves against the current working directory, and
 neither flag's value is ever mistaken for the workspace argument
 (`tecode --settings ./s.json ./my-project` still opens `./my-project`).

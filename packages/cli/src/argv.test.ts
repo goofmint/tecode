@@ -285,6 +285,16 @@ test("resolveThemeFileOverride returns undefined when --theme is absent or is th
   expect(resolveThemeFileOverride(["--theme"])).toBeUndefined();
 });
 
+// --- CodeRabbit PR #154 review: a flag with no value at all must not
+// swallow the NEXT recognized flag as its own value. ---
+
+test("a flag immediately followed by another recognized flag is treated as having no value, not as that flag's name being the value", () => {
+  expect(resolveSettingsFileOverride(["--settings", "--theme", "theme.json"])).toBeUndefined();
+  expect(resolveThemeFileOverride(["--settings", "--theme", "theme.json"])).toBe("theme.json");
+  expect(resolveKeybindingsFileOverride(["--keybindings", "--config", "/tmp/cfg"])).toBeUndefined();
+  expect(resolveConfigDirOverride(["--config", "--settings", "./s.json"])).toBeUndefined();
+});
+
 test("--settings/--keybindings/--theme's values are not mistaken for the positional argument", async () => {
   dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
   const projectDir = join(dir, "proj");

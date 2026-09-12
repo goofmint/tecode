@@ -71,16 +71,24 @@ export interface ThemeSettingsWriterDeps {
   fs?: ThemeSettingsWriterFs;
   log?: HostLog;
   sink?: StatusSink;
-  /** Reports whether a `--theme <file>` CLI override is currently active
-   * (Req 7.6, Issue #149) — checked right before every actual disk write
-   * (`doWrite`). `setTheme` itself never calls `onCommit` (`theme.select`'s
-   * own `commitTheme` is the only thing that does), so this never
-   * suppresses the CLI theme's OWN activation; it suppresses a SUBSEQUENT
-   * `theme.select` commit made while the override is still active, which
-   * would otherwise succeed on disk but never be visibly reflected — the
-   * active theme stays the `--theme` file until tecode restarts without
-   * that flag. `undefined` (the default, when `--theme` was never given)
-   * never suppresses anything. */
+  /** Reports whether a write-back to `"workbench.colorTheme"` would
+   * currently have no visible effect (Req 7.6/9.7, Issue #149) — checked
+   * right before every actual disk write (`doWrite`). Two independent
+   * causes both call for this: a `--theme <file>` CLI override is active
+   * (`setTheme` itself never calls `onCommit` — `theme.select`'s own
+   * `commitTheme` is the only thing that does — so this never suppresses
+   * the CLI theme's OWN activation; it suppresses a SUBSEQUENT
+   * `theme.select` commit made while the override is still active), OR
+   * `--settings <file>` already sets `"workbench.colorTheme"` in the CLI
+   * settings layer (`ConfigService.isSetByCliLayer`), which would mask a
+   * write to the user layer right back out on the very next read — the
+   * same reasoning `ui/sidebarWidthSettingsWriter.ts`'s own
+   * `isCliLayerKeySet` applies to `"workbench.sidebarWidth"` (CodeRabbit PR
+   * #154 review: the original version of this dependency only checked the
+   * `--theme` case, silently missing the `--settings`-only one). Either
+   * way, the active theme stays whatever the CLI layer/`--theme` says
+   * until tecode restarts without that flag. `undefined` (the default,
+   * when neither flag applies) never suppresses anything. */
   cliThemeOverrideActive?: () => boolean;
 }
 
@@ -212,8 +220,9 @@ export function createThemeSettingsWriter(deps: ThemeSettingsWriterDeps = {}): T
     if (deps.cliThemeOverrideActive?.()) {
       logSafely("warning", {
         message:
-          `Skipped persisting "workbench.colorTheme" to ${path}: a --theme override ` +
-          `is active, so the active theme would not change on disk anyway (Issue #149).`,
+          `Skipped persisting "workbench.colorTheme" to ${path}: a --theme override is ` +
+          `active, or --settings already sets this key, so the write would not be ` +
+          `visibly reflected (Issue #149).`,
         path,
       });
       return;
