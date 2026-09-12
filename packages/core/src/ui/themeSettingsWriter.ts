@@ -71,6 +71,17 @@ export interface ThemeSettingsWriterDeps {
   fs?: ThemeSettingsWriterFs;
   log?: HostLog;
   sink?: StatusSink;
+  /** Reports whether a `--theme <file>` CLI override is currently active
+   * (Req 7.6, Issue #149) — checked right before every actual disk write
+   * (`doWrite`). `setTheme` itself never calls `onCommit` (`theme.select`'s
+   * own `commitTheme` is the only thing that does), so this never
+   * suppresses the CLI theme's OWN activation; it suppresses a SUBSEQUENT
+   * `theme.select` commit made while the override is still active, which
+   * would otherwise succeed on disk but never be visibly reflected — the
+   * active theme stays the `--theme` file until tecode restarts without
+   * that flag. `undefined` (the default, when `--theme` was never given)
+   * never suppresses anything. */
+  cliThemeOverrideActive?: () => boolean;
 }
 
 /** The theme settings writer's public surface (Req 7.5). */
@@ -198,6 +209,15 @@ export function createThemeSettingsWriter(deps: ThemeSettingsWriterDeps = {}): T
   }
 
   async function doWrite(themeId: string): Promise<void> {
+    if (deps.cliThemeOverrideActive?.()) {
+      logSafely("warning", {
+        message:
+          `Skipped persisting "workbench.colorTheme" to ${path}: a --theme override ` +
+          `is active, so the active theme would not change on disk anyway (Issue #149).`,
+        path,
+      });
+      return;
+    }
     let text: string;
     try {
       text = await fs.readFile(path);

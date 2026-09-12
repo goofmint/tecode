@@ -128,7 +128,7 @@ describe("the ctrl+k chord-shadowing hazard (Issue #105's own SIDEBAR_WIDTH_FOCU
    * own `when` clause, not about any particular extension's chord. */
   function buildTable(userEntries: Parameters<typeof createBindingTable>[0]["user"]) {
     return createBindingTable(
-      { defaults: SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS, fallback: [], extension: [], user: userEntries },
+      { defaults: SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS, fallback: [], extension: [], user: userEntries, cli: [] },
       { log: createHostLog() },
     );
   }

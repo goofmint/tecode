@@ -96,6 +96,20 @@ export interface SidebarWidthSettingsWriterDeps {
   debounceMs?: number;
   log?: HostLog;
   sink?: StatusSink;
+  /** Reports whether the CLI settings layer (`--settings <file>`, Req 9.7,
+   * Issue #149) currently holds `"workbench.sidebarWidth"` — checked right
+   * before every actual disk write (`doWrite`, not `write()`'s scheduling
+   * call), so it reflects the CLI layer's live-reloaded state at write
+   * time, not whatever it was when `write()` was first called. When it
+   * returns `true`, the write is skipped and a warning is logged instead of
+   * silently persisting a value `ConfigService`'s own merge order
+   * (`config/service.ts`'s `computeMerged`: CLI layer above user) would
+   * mask right back out on the very next read — writing it anyway would
+   * succeed on disk while never being visibly reflected, exactly the
+   * confusing non-effect this suppression exists to avoid. `undefined`
+   * (the default, when no `--settings` flag was given) never suppresses
+   * anything. */
+  isCliLayerKeySet?: () => boolean;
 }
 
 /** The sidebar-width settings writer's public surface (Issue #105). */
@@ -256,6 +270,16 @@ export function createSidebarWidthSettingsWriter(
   }
 
   async function doWrite(width: number): Promise<void> {
+    if (deps.isCliLayerKeySet?.()) {
+      logSafely("warning", {
+        message:
+          `Skipped persisting "workbench.sidebarWidth" to ${path}: a --settings ` +
+          `override already sets this key, which would mask the write right back ` +
+          `out on the next read (Issue #149).`,
+        path,
+      });
+      return;
+    }
     let text: string;
     try {
       text = await fs.readFile(path);

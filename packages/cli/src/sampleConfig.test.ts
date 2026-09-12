@@ -191,6 +191,7 @@ async function loadSamplesThroughRealPath(settingsText: string, keybindingsText:
       fallback: BUNDLED_FALLBACK_KEYBINDINGS,
       extension: loadResult.extensionKeybindings,
       user: userKeybindingEntries as KeybindingContribution[],
+      cli: [],
     },
     { log: bindingTableLog },
   );
@@ -353,6 +354,7 @@ test("samples/keybindings.emacs.json keeps Cut reachable despite making ctrl+x a
         { key: "ctrl+x", command: "editor.action.clipboardCut", when: "editorTextFocus" },
       ],
       user: parsed.ok ? parsed.value : [],
+      cli: [],
     },
     { log: createHostLog() },
   );

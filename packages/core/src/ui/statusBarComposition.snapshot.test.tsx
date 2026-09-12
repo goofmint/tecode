@@ -63,6 +63,7 @@ function layersOf(partial: Partial<KeymapLayers>): KeymapLayers {
     fallback: partial.fallback ?? [],
     extension: partial.extension ?? [],
     user: partial.user ?? [],
+    cli: partial.cli ?? [],
   };
 }
 

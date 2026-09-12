@@ -17,6 +17,7 @@ function layersOf(partial: Partial<KeymapLayers>): KeymapLayers {
     fallback: partial.fallback ?? [],
     extension: partial.extension ?? [],
     user: partial.user ?? [],
+    cli: partial.cli ?? [],
   };
 }
 
@@ -31,6 +32,31 @@ describe("createBindingTable — layer precedence", () => {
     const resolved = table.lookup("ctrl+p", contextOf());
     expect(resolved?.command).toBe("user.command");
     expect(resolved?.layer).toBe("user");
+  });
+
+  test("cli beats user on the same key (Req 9.7, Issue #149)", () => {
+    const layers = layersOf({
+      user: [{ key: "ctrl+p", command: "user.command" }],
+      cli: [{ key: "ctrl+p", command: "cli.command" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    const resolved = table.lookup("ctrl+p", contextOf());
+    expect(resolved?.command).toBe("cli.command");
+    expect(resolved?.layer).toBe("cli");
+  });
+
+  test("full stack: cli wins over user, extension, fallback, and defaults all on one key", () => {
+    const layers = layersOf({
+      defaults: [{ key: "ctrl+p", command: "defaults.command" }],
+      fallback: [{ key: "ctrl+p", command: "fallback.command" }],
+      extension: [{ key: "ctrl+p", command: "extension.command" }],
+      user: [{ key: "ctrl+p", command: "user.command" }],
+      cli: [{ key: "ctrl+p", command: "cli.command" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.lookup("ctrl+p", contextOf())?.command).toBe("cli.command");
   });
 
   test("extension beats fallback on the same key", () => {
@@ -76,6 +102,16 @@ describe("createBindingTable — layer precedence", () => {
 });
 
 describe("createBindingTable — removal records (Req 4.3)", () => {
+  test("a cli removal masks a user binding of the same command on that key (Req 9.7, Issue #149)", () => {
+    const layers = layersOf({
+      user: [{ key: "ctrl+p", command: "quickOpen.show" }],
+      cli: [{ key: "ctrl+p", command: "-quickOpen.show" }],
+    });
+    const table = createBindingTable(layers, { log: createHostLog() });
+
+    expect(table.lookup("ctrl+p", contextOf())).toBeUndefined();
+  });
+
   test("a user removal masks a defaults binding of the same command on that key", () => {
     const layers = layersOf({
       defaults: [{ key: "ctrl+p", command: "quickOpen.show" }],
@@ -400,6 +436,7 @@ test("non-string key or command entries are skipped with a warning, never thrown
       fallback: [],
       extension: [],
       user: [{ key: "ctrl+p", command: "quickOpen.show" }],
+      cli: [],
     },
     { log },
   );
@@ -531,6 +568,7 @@ test("a removal entry with a when clause is skipped with a warning, leaving lowe
       user: [
         { key: "ctrl+p", command: "-quickOpen.show", when: "editorFocus" },
       ],
+      cli: [],
     },
     { log },
   );

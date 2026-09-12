@@ -56,6 +56,7 @@ function buildRealTable() {
     fallback: BUNDLED_FALLBACK_KEYBINDINGS,
     extension: builtinManifests.flatMap((manifest) => manifest.contributes.keybindings ?? []),
     user: [],
+    cli: [],
   };
   const log = createHostLog();
   const table = createBindingTable(layers, { log });

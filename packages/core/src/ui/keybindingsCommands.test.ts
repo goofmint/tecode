@@ -58,6 +58,7 @@ function layersOf(partial: Partial<KeymapLayers>): KeymapLayers {
     fallback: partial.fallback ?? [],
     extension: partial.extension ?? [],
     user: partial.user ?? [],
+    cli: partial.cli ?? [],
   };
 }
 
@@ -212,6 +213,7 @@ describe("createKeybindingsCommandsHandlers — resolveTable (Req 11.7)", () => 
           { key: "ctrl+shift+r", command: "demo.run", extensionId: "demo.ext" },
         ],
         user: [{ key: "ctrl+alt+z", command: "user.command", when: "editorFocus" }],
+        cli: [],
       }),
       { log: createHostLog() },
     );

@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { createHostLog } from "../host/errors";
 import { parseJsonc } from "../config/jsonc";
 import {
   applySidebarWidthSetting,
@@ -260,6 +261,48 @@ describe("createSidebarWidthSettingsWriter (Issue #105)", () => {
     writer.write(40);
     await expect(writer.flush()).resolves.toBeUndefined();
     expect(messages).toHaveLength(1);
+  });
+
+  test("skips the write and logs a warning when isCliLayerKeySet() reports true (Req 9.7, Issue #149)", async () => {
+    const { fs, files, writeCount } = createFakeFs({ "/settings.json": "{}\n" });
+    const { timer } = createManualTimer();
+    const log = createHostLog();
+    const writer = createSidebarWidthSettingsWriter({
+      path: "/settings.json",
+      fs,
+      timer,
+      log,
+      isCliLayerKeySet: () => true,
+    });
+
+    writer.write(40);
+    await writer.flush();
+
+    expect(writeCount()).toBe(0);
+    expect(files["/settings.json"]).toBe("{}\n");
+    expect(
+      log.entries().some((e) => e.level === "warning" && e.error.message.includes("workbench.sidebarWidth")),
+    ).toBe(true);
+  });
+
+  test("writes normally when isCliLayerKeySet() reports false", async () => {
+    const { fs, files, writeCount } = createFakeFs({ "/settings.json": "{}\n" });
+    const { timer, runScheduled } = createManualTimer();
+    const writer = createSidebarWidthSettingsWriter({
+      path: "/settings.json",
+      fs,
+      timer,
+      isCliLayerKeySet: () => false,
+    });
+
+    writer.write(40);
+    runScheduled();
+    await writer.flush();
+
+    expect(writeCount()).toBe(1);
+    const parsed = parseJsonc<Record<string, unknown>>(files["/settings.json"]!);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value["workbench.sidebarWidth"]).toBe(40);
   });
 });
 

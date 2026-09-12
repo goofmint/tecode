@@ -125,6 +125,7 @@ The following points were open in the draft specification and are resolved here 
 3. THE core SHALL provide a `useTheme()` hook, and UI components SHALL obtain all colors from it; no component SHALL hard-code color literals.
 4. WHEN running on a terminal, THE system SHALL detect the color depth (truecolor vs 256 colors) and SHALL automatically quantize theme colors on 256-color terminals.
 5. THE active theme SHALL be selected by the `workbench.colorTheme` setting, and the `theme.select` command SHALL offer theme switching with live preview from the command palette.
+6. WHEN tecode is launched with `--theme <file>` (Issue #149), THE system SHALL load that theme JSON file directly and activate it immediately, independent of the `workbench.colorTheme` setting and without writing to any settings file. A subsequent live `workbench.colorTheme` change (whether a hand-edit or `theme.select`'s own commit) SHALL NOT replace the `--theme` override; the override SHALL remain active until tecode is restarted without the flag. An explicitly named `--theme` file that does not exist or cannot be read SHALL be treated as a fatal startup error.
 
 ### Requirement 8: Syntax Highlighting and Languages
 
@@ -150,6 +151,7 @@ The following points were open in the draft specification and are resolved here 
 4. WHEN a settings file is saved, THE system SHALL apply the changes immediately and fire `onDidChangeConfiguration`.
 5. THE MVP settings SHALL include at least: `workbench.colorTheme`, `editor.tabSize`, `editor.insertSpaces`, `editor.wordWrap`, `editor.lineNumbers`, `explorer.showHidden`, and `files.autoSave`.
 6. WHEN tecode is launched with `--config <dir>`, THE system SHALL read the user settings and user keybindings layers from `<dir>/settings.json` and `<dir>/keybindings.json` instead of their home-directory defaults, leaving the workspace settings layer (`.tecode/settings.json`) unaffected.
+7. WHEN tecode is launched with `--settings <file>` and/or `--keybindings <file>` (Issue #149), THE system SHALL layer each named file's contents on top of the home-directory (or `--config <dir>`-overridden) user layer, as a new CLI layer sitting below the workspace layer (`defaults ← user ← CLI ← workspace`) — the two flags compose with `--config <dir>` rather than replacing it. An explicitly named file that does not exist or cannot be read SHALL be treated as a fatal startup error, unlike `--config <dir>`'s tolerant "missing file is an empty layer" policy. A settings key set by the CLI layer SHALL NOT be silently overwritten by a write-back that would have no visible effect (e.g. `workbench.sidebarWidth`'s resize-commit persistence) — such a write-back SHALL be skipped with a warning instead.
 
 ### Requirement 10: Public Extension API
 

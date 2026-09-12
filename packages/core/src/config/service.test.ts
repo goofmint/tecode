@@ -306,6 +306,131 @@ describe("ConfigService — settingsPath/keybindingsPath overrides (Req 9.6, Iss
   });
 });
 
+describe("ConfigService — cliSettingsPath/cliKeybindingsPath layer (Req 9.7, Issue #149)", () => {
+  test("cliSettingsPath's layer overrides the user layer but loses to the workspace layer", async () => {
+    const userPath = getUserSettingsPath();
+    const cliSettingsPath = "/override/cli-settings.json";
+    const workspaceRoot = "/fake-workspace";
+    const workspacePath = getWorkspaceSettingsPath(workspaceRoot);
+    const fake = createFakeFs({
+      [userPath]: JSON.stringify({ "editor.tabSize": 2, "editor.wordWrap": "off" }),
+      [cliSettingsPath]: JSON.stringify({ "editor.tabSize": 4, "editor.wordWrap": "on" }),
+      [workspacePath]: JSON.stringify({ "editor.tabSize": 8 }),
+    });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({
+      log,
+      sink,
+      workspaceRoot,
+      cliSettingsPath,
+      fs: fake.fs,
+    });
+    await service.ready;
+
+    // CLI beats user...
+    expect(service.get<string>("editor.wordWrap")).toBe("on");
+    // ...but workspace still beats CLI.
+    expect(service.get<number>("editor.tabSize")).toBe(8);
+    expect(fake.watchedPaths()).toContain(cliSettingsPath);
+    service.dispose();
+  });
+
+  test("isSetByCliLayer is true only for a key the CLI layer itself names", async () => {
+    const cliSettingsPath = "/override/cli-settings.json";
+    const fake = createFakeFs({
+      [cliSettingsPath]: JSON.stringify({ "workbench.sidebarWidth": 40 }),
+    });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, cliSettingsPath, fs: fake.fs });
+    await service.ready;
+
+    expect(service.isSetByCliLayer("workbench.sidebarWidth")).toBe(true);
+    expect(service.isSetByCliLayer("workbench.colorTheme")).toBe(false);
+    // isExplicitlySet also recognizes the CLI layer.
+    expect(service.isExplicitlySet("workbench.sidebarWidth")).toBe(true);
+    service.dispose();
+  });
+
+  test("without cliSettingsPath, isSetByCliLayer is always false and nothing extra is watched", async () => {
+    const fake = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, fs: fake.fs });
+    await service.ready;
+
+    expect(service.isSetByCliLayer("anything")).toBe(false);
+    expect(fake.watchedPaths()).not.toContain("/override/cli-settings.json");
+    service.dispose();
+  });
+
+  test("a live edit to the cliSettingsPath file reloads the CLI layer", async () => {
+    const cliSettingsPath = "/override/cli-settings.json";
+    const fake = createFakeFs({ [cliSettingsPath]: JSON.stringify({ "editor.tabSize": 2 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({ log, sink, cliSettingsPath, fs: fake.fs });
+    await service.ready;
+    expect(service.get<number>("editor.tabSize")).toBe(2);
+
+    fake.setFile(cliSettingsPath, JSON.stringify({ "editor.tabSize": 6 }));
+    fake.triggerChange(cliSettingsPath);
+    await waitFor(() => service.get<number>("editor.tabSize") === 6);
+
+    service.dispose();
+  });
+
+  test("cliKeybindingsPath's entries feed onCliKeybindingsChange, separate from onKeybindingsChange", async () => {
+    const cliKeybindingsPath = "/override/cli-keybindings.json";
+    const cliEntries = [{ key: "ctrl+k", command: "cli.command" }];
+    const userEntries = [{ key: "ctrl+q", command: "user.command" }];
+    const userPath = getUserKeybindingsPath();
+    const fake = createFakeFs({
+      [cliKeybindingsPath]: JSON.stringify(cliEntries),
+      [userPath]: JSON.stringify(userEntries),
+    });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const userCalls: unknown[][] = [];
+    const cliCalls: unknown[][] = [];
+    const service = createConfigService({
+      log,
+      sink,
+      cliKeybindingsPath,
+      fs: fake.fs,
+      onKeybindingsChange: (entries) => userCalls.push(entries.slice()),
+      onCliKeybindingsChange: (entries) => cliCalls.push(entries.slice()),
+    });
+    await service.ready;
+
+    expect(service.getKeybindingEntries()).toEqual(userEntries);
+    expect(userCalls.at(-1)).toEqual(userEntries);
+    expect(cliCalls.at(-1)).toEqual(cliEntries);
+    service.dispose();
+  });
+
+  test("without cliKeybindingsPath, onCliKeybindingsChange still fires once (initial load) with an empty array", async () => {
+    // Mirrors onKeybindingsChange's own unconditional "called once on
+    // initial load, even with nothing configured" contract — a no-op
+    // `setCliEntries([])` downstream, never a real binding.
+    const fake = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const cliCalls: unknown[][] = [];
+    const service = createConfigService({
+      log,
+      sink,
+      fs: fake.fs,
+      onCliKeybindingsChange: (entries) => cliCalls.push(entries.slice()),
+    });
+    await service.ready;
+
+    expect(cliCalls).toEqual([[]]);
+    service.dispose();
+  });
+});
+
 describe("ConfigService.registerConfiguration (Req 9.3)", () => {
   test("populates defaults for properties that declare one", async () => {
     const fake = createFakeFs();

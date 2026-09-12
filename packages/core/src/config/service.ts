@@ -1,9 +1,11 @@
 /**
  * The configuration service (Req 9, design.md §11): layers defaults (from
  * `contributes.configuration` schemas) under the user's `settings.json`
+ * under an optional `--settings <file>` CLI layer (Req 9.7, Issue #149)
  * under a workspace's `.tecode/settings.json` (later wins), backs
- * `tecode.config.get`/`onDidChange`, and watches all three files (plus the
- * user's `keybindings.json`) for live reload.
+ * `tecode.config.get`/`onDidChange`, and watches every one of those files
+ * (plus the user's and, when given, the `--keybindings <file>` CLI
+ * layer's, `keybindings.json`) for live reload.
  *
  * Built with {@link createConfigService} rather than a class (house
  * convention — matches `createCommandRegistry`, `createDocumentManager`,
@@ -121,6 +123,28 @@ export interface ConfigServiceDeps {
    * 1) — same override convention and same "user layer only" scope as
    * {@link settingsPath}. Defaults to {@link getUserKeybindingsPath}. */
   keybindingsPath?: string;
+  /** A `--settings <file>` override (Req 9.7, Issue #149): a SEPARATE,
+   * higher-precedence settings layer than {@link settingsPath}'s USER layer
+   * — merge order is `defaults ← user ← CLI ← workspace`
+   * (`computeMerged`) — rather than another way to redirect the same one.
+   * `undefined` (the default, when no `--settings` flag was given) leaves
+   * this layer permanently empty and unwatched. Unlike a missing
+   * {@link settingsPath}/{@link keybindingsPath}, a path given here that
+   * cannot be read is treated as a fatal startup error by the CALLER
+   * (`cli/main.ts`'s `runTecode`, before this service is even constructed)
+   * — an explicitly-named single file should never be silently ignored;
+   * this service itself still degrades a read failure to "keep the last
+   * good layer" like every other layer, for live-reload robustness after
+   * that initial check has already passed. */
+  cliSettingsPath?: string;
+  /** A `--keybindings <file>` override (Req 9.7, Issue #149) — same
+   * "separate, higher-precedence layer" and "caller validates existence"
+   * relationship to {@link keybindingsPath} that {@link cliSettingsPath} has
+   * to {@link settingsPath}. Feeds {@link onCliKeybindingsChange} instead of
+   * {@link onKeybindingsChange} — the CLI keybindings layer is wired into
+   * the keymap's own `cli` layer (`keymap/bindingTable.ts`'s
+   * `KeymapLayers.cli`), not the `user` layer. */
+  cliKeybindingsPath?: string;
   /** Filesystem seam — see {@link ConfigServiceFs}. Defaults to
    * `node:fs/promises` + `node:fs.watch`. */
   fs?: ConfigServiceFs;
@@ -129,6 +153,15 @@ export interface ConfigServiceDeps {
    * real keymap-layer wiring lands in a later task (design.md §11); this is
    * just the hook it will attach to. */
   onKeybindingsChange?: (entries: readonly unknown[]) => void;
+  /** Same contract as {@link onKeybindingsChange}, but for
+   * {@link cliKeybindingsPath}'s entries (Req 9.7, Issue #149) — called
+   * (guarded) after the CLI keybindings file is first loaded and again
+   * after every successful reload. Still fires once on initial load with
+   * an empty array when {@link cliKeybindingsPath} is `undefined` (mirrors
+   * {@link onKeybindingsChange}'s own unconditional "called once even with
+   * nothing configured" behavior) — a harmless no-op `setCliEntries([])`
+   * downstream. */
+  onCliKeybindingsChange?: (entries: readonly unknown[]) => void;
 }
 
 /** The config service — the implementation behind `tecode.config`, plus the
@@ -157,6 +190,18 @@ export interface ConfigService {
    * apart from one who configured nothing at all.
    */
   isExplicitlySet(key: string): boolean;
+  /**
+   * Whether `key` is set by the CLI layer specifically (Req 9.7, Issue
+   * #149's `--settings <file>`) — i.e. whether {@link get}'s merged value
+   * for `key` came from `ConfigServiceDeps.cliSettingsPath`'s file. Used to
+   * suppress a settings write-back that would otherwise succeed on disk but
+   * never be visibly reflected, because the CLI layer sits ABOVE the user
+   * layer in `computeMerged`'s precedence order (`ui/
+   * sidebarWidthSettingsWriter.ts`/`ui/themeSettingsWriter.ts`'s own
+   * suppression checks). Always `false` when no `cliSettingsPath` was
+   * given.
+   */
+  isSetByCliLayer(key: string): boolean;
   /** Fires whenever a live reload changes the merged view (Req 9.4). Never
    * fires for a reload that reproduces identical values. */
   onDidChange: Event<ConfigChangeEvent>;
@@ -271,13 +316,21 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     ? getWorkspaceSettingsPath(workspaceRoot)
     : undefined;
   const keybindingsPath = deps.keybindingsPath ?? getUserKeybindingsPath();
+  // `--settings <file>`/`--keybindings <file>` (Req 9.7, Issue #149): a
+  // SEPARATE layer from the USER one above — `undefined` (no flag given)
+  // leaves it permanently empty and unwatched, unlike `userSettingsPath`/
+  // `keybindingsPath`, which always have a real home-directory default.
+  const cliSettingsPath = deps.cliSettingsPath;
+  const cliKeybindingsPath = deps.cliKeybindingsPath;
 
   const schemas = new Map<string, ConfigurationPropertySchema>();
   const defaultsLayer: Record<string, unknown> = {};
   let userLayer: Record<string, unknown> = {};
+  let cliLayer: Record<string, unknown> = {};
   let workspaceLayer: Record<string, unknown> = {};
   let merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   let keybindingEntries: unknown[] = [];
+  let cliKeybindingEntries: unknown[] = [];
 
   const changeListeners = new Set<Listener<ConfigChangeEvent>>();
   const watcherHandles: { close(): void }[] = [];
@@ -305,10 +358,19 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     // Null prototype: config keys are arbitrary strings, so a plain
     // literal would leak Object.prototype members — get("toString") must
     // be undefined unless actually configured.
+    //
+    // Layer order `defaults ← user ← CLI ← workspace` (Req 9.7, Issue
+    // #149): the `--settings <file>` layer sits ABOVE the user layer (it
+    // overrides the home-directory default) but BELOW the workspace layer
+    // (a workspace's own `.tecode/settings.json` still wins) — matching
+    // `--config <dir>`'s own established "overrides the USER layer only,
+    // never the workspace one" policy applied to a second, independent
+    // layer rather than a redirect of the first.
     return Object.assign(
       Object.create(null) as Record<string, unknown>,
       defaultsLayer,
       userLayer,
+      cliLayer,
       workspaceLayer,
     );
   }
@@ -411,15 +473,23 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     return layer;
   }
 
-  /** Read + parse `keybindings.json` into a raw entry array. Same
-   * keep-last-good-on-failure contract as {@link loadSettingsLayer}. */
-  async function loadKeybindingsLayer(path: string): Promise<unknown[] | undefined> {
+  /** Read + parse a keybindings JSON file into a raw entry array. Same
+   * keep-last-good-on-failure contract as {@link loadSettingsLayer}.
+   * `label` (Req 9.7, Issue #149) names the layer in error messages —
+   * this used to be hardcoded to `"user keybindings"`; it is now a
+   * parameter so {@link reloadCliKeybindings} can share this same loader
+   * for the CLI layer's file without every error message lying about which
+   * file failed. */
+  async function loadKeybindingsLayer(
+    path: string,
+    label: string,
+  ): Promise<unknown[] | undefined> {
     let text: string;
     try {
       text = await fs.readFile(path);
     } catch (cause) {
       if (errorCode(cause) === "ENOENT") return [];
-      const message = `Failed to read user keybindings (${path}): ${describeError(cause)}`;
+      const message = `Failed to read ${label} (${path}): ${describeError(cause)}`;
       logSafely("error", { message, path });
       notifySafely({ message, path });
       return undefined;
@@ -427,13 +497,13 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
 
     const parsed = parseJsonc<unknown>(text);
     if (!parsed.ok) {
-      const message = `user keybindings (${path}) line ${parsed.line}, column ${parsed.column}: ${parsed.message}`;
+      const message = `${label} (${path}) line ${parsed.line}, column ${parsed.column}: ${parsed.message}`;
       logSafely("error", { message, path });
       notifySafely({ message, path });
       return undefined;
     }
     if (!Array.isArray(parsed.value)) {
-      const message = `user keybindings (${path}) must be a JSON array at the top level`;
+      const message = `${label} (${path}) must be a JSON array at the top level`;
       logSafely("error", { message, path });
       notifySafely({ message, path });
       return undefined;
@@ -448,6 +518,20 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     } catch (cause) {
       logSafely("error", {
         message: `onKeybindingsChange callback threw: ${describeError(cause)}`,
+      });
+    }
+  }
+
+  /** Same contract as {@link invokeKeybindingsHook}, but for
+   * {@link cliKeybindingEntries}/{@link ConfigServiceDeps.onCliKeybindingsChange}
+   * (Req 9.7, Issue #149). */
+  function invokeCliKeybindingsHook(): void {
+    if (!deps.onCliKeybindingsChange) return;
+    try {
+      deps.onCliKeybindingsChange(cliKeybindingEntries.slice());
+    } catch (cause) {
+      logSafely("error", {
+        message: `onCliKeybindingsChange callback threw: ${describeError(cause)}`,
       });
     }
   }
@@ -470,12 +554,36 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     }
   }
 
+  /** Reload the `--settings <file>` layer (Req 9.7, Issue #149) — a no-op
+   * when `cliSettingsPath` was never given, matching
+   * {@link reloadWorkspaceSettings}'s own "no-op without this layer's
+   * path" shape. */
+  async function reloadCliSettings(): Promise<void> {
+    if (disposed || !cliSettingsPath) return;
+    const next = await loadSettingsLayer(cliSettingsPath, "CLI settings");
+    if (next !== undefined) {
+      cliLayer = next;
+      rebuildMerged();
+    }
+  }
+
   async function reloadKeybindings(): Promise<void> {
     if (disposed) return;
-    const next = await loadKeybindingsLayer(keybindingsPath);
+    const next = await loadKeybindingsLayer(keybindingsPath, "user keybindings");
     if (next !== undefined) {
       keybindingEntries = next;
       invokeKeybindingsHook();
+    }
+  }
+
+  /** Reload the `--keybindings <file>` layer (Req 9.7, Issue #149) — same
+   * "no-op without this layer's path" shape as {@link reloadCliSettings}. */
+  async function reloadCliKeybindings(): Promise<void> {
+    if (disposed || !cliKeybindingsPath) return;
+    const next = await loadKeybindingsLayer(cliKeybindingsPath, "CLI keybindings");
+    if (next !== undefined) {
+      cliKeybindingEntries = next;
+      invokeCliKeybindingsHook();
     }
   }
 
@@ -489,6 +597,8 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
   let userReloadChain: Promise<void> = Promise.resolve();
   let workspaceReloadChain: Promise<void> = Promise.resolve();
   let keybindingsReloadChain: Promise<void> = Promise.resolve();
+  let cliSettingsReloadChain: Promise<void> = Promise.resolve();
+  let cliKeybindingsReloadChain: Promise<void> = Promise.resolve();
 
   function scheduleUserReload(): void {
     userReloadChain = userReloadChain.then(reloadUserSettings, reloadUserSettings);
@@ -503,6 +613,15 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     keybindingsReloadChain = keybindingsReloadChain.then(
       reloadKeybindings,
       reloadKeybindings,
+    );
+  }
+  function scheduleCliSettingsReload(): void {
+    cliSettingsReloadChain = cliSettingsReloadChain.then(reloadCliSettings, reloadCliSettings);
+  }
+  function scheduleCliKeybindingsReload(): void {
+    cliKeybindingsReloadChain = cliKeybindingsReloadChain.then(
+      reloadCliKeybindings,
+      reloadCliKeybindings,
     );
   }
 
@@ -554,26 +673,46 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
       watchFile(workspaceSettingsPath, scheduleWorkspaceReload, "workspace settings");
     }
     watchFile(keybindingsPath, scheduleKeybindingsReload, "user keybindings");
+    // `--settings`/`--keybindings <file>` (Req 9.7, Issue #149): watched
+    // exactly like every other layer's file, live-reload included — but
+    // only when a path was actually given, matching `workspaceSettingsPath`'s
+    // own "no path, no watch" shape above.
+    if (cliSettingsPath) {
+      watchFile(cliSettingsPath, scheduleCliSettingsReload, "CLI settings");
+    }
+    if (cliKeybindingsPath) {
+      watchFile(cliKeybindingsPath, scheduleCliKeybindingsReload, "CLI keybindings");
+    }
   }
 
   async function initialLoad(): Promise<void> {
-    const [userResult, workspaceResult, keybindingsResult] = await Promise.all([
-      loadSettingsLayer(userSettingsPath, "user settings"),
-      workspaceSettingsPath
-        ? loadSettingsLayer(workspaceSettingsPath, "workspace settings")
-        : Promise.resolve<Record<string, unknown>>({}),
-      loadKeybindingsLayer(keybindingsPath),
-    ]);
+    const [userResult, workspaceResult, keybindingsResult, cliSettingsResult, cliKeybindingsResult] =
+      await Promise.all([
+        loadSettingsLayer(userSettingsPath, "user settings"),
+        workspaceSettingsPath
+          ? loadSettingsLayer(workspaceSettingsPath, "workspace settings")
+          : Promise.resolve<Record<string, unknown>>({}),
+        loadKeybindingsLayer(keybindingsPath, "user keybindings"),
+        cliSettingsPath
+          ? loadSettingsLayer(cliSettingsPath, "CLI settings")
+          : Promise.resolve<Record<string, unknown>>({}),
+        cliKeybindingsPath
+          ? loadKeybindingsLayer(cliKeybindingsPath, "CLI keybindings")
+          : Promise.resolve<unknown[]>([]),
+      ]);
     if (disposed) return;
     userLayer = userResult ?? {};
     workspaceLayer = workspaceResult ?? {};
     keybindingEntries = keybindingsResult ?? [];
+    cliLayer = cliSettingsResult ?? {};
+    cliKeybindingEntries = cliKeybindingsResult ?? [];
     // Initial build: set directly rather than going through rebuildMerged
     // — there is no meaningful "previous" state to diff against yet, and
     // no listener could have subscribed before this promise was even
     // returned to the caller, so no onDidChange fires for startup.
     merged = computeMerged();
     invokeKeybindingsHook();
+    invokeCliKeybindingsHook();
     startWatchers();
   }
 
@@ -583,7 +722,12 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
 
   function isExplicitlySet(key: string): boolean {
     return Object.prototype.hasOwnProperty.call(userLayer, key) ||
+      Object.prototype.hasOwnProperty.call(cliLayer, key) ||
       Object.prototype.hasOwnProperty.call(workspaceLayer, key);
+  }
+
+  function isSetByCliLayer(key: string): boolean {
+    return Object.prototype.hasOwnProperty.call(cliLayer, key);
   }
 
   function onDidChange(listener: Listener<ConfigChangeEvent>): Disposable {
@@ -653,6 +797,7 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
   return {
     get,
     isExplicitlySet,
+    isSetByCliLayer,
     onDidChange,
     registerConfiguration,
     getKeybindingEntries,

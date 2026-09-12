@@ -127,27 +127,52 @@ async function tryResolveAsNewFile(
   return { workspaceRoot: parent, initialFilePath: resolved };
 }
 
-/** Every index in `argv` holding a `--config` flag's value — i.e. the token
- * immediately after each `--config` occurrence (Issue #81 Phase 1). Shared
- * by {@link resolveConfigDirOverride} and {@link resolveStartupTarget} so
- * both agree on exactly which tokens are flag values rather than the
- * positional argument.
+/** Every flag whose immediately-following token is a value, never the
+ * positional argument (Issue #81 Phase 1's `--config`, extended by Issue
+ * #149's `--settings`/`--keybindings`/`--theme`) — shared by
+ * {@link findConfigValueIndices} so adding a new single-value flag never
+ * requires touching {@link resolveStartupTarget} itself. */
+const VALUE_FLAGS: readonly string[] = ["--config", "--settings", "--keybindings", "--theme"];
+
+/** Every index in `argv` holding one of {@link VALUE_FLAGS}' values — i.e.
+ * the token immediately after each such flag's occurrence. Shared by
+ * {@link resolveConfigDirOverride}/{@link resolveSettingsFileOverride}/
+ * {@link resolveKeybindingsFileOverride}/{@link resolveThemeFileOverride} and
+ * {@link resolveStartupTarget} so both agree on exactly which tokens are
+ * flag values rather than the positional argument.
  *
- * **Every occurrence, not just the first**: which `--config` *wins* is a
- * separate question from which tokens are values. The override itself takes
- * the first occurrence (see {@link resolveConfigDirOverride}, matching this
- * module's "first token wins" treatment of the positional argument below),
- * but a repeated flag's value must STILL be excluded from the positional
- * scan. Considering only the first occurrence would leave the second value
- * looking like a bare positional, so `tecode --config /a --config /b` would
- * silently open `/b` as the workspace — a different thing entirely from
- * what was asked (CodeRabbit finding on PR #85). */
+ * **Every occurrence, not just the first**: which occurrence *wins* is a
+ * separate question from which tokens are values. Each override itself takes
+ * the first occurrence (see {@link resolveConfigDirOverride} et al., matching
+ * this module's "first token wins" treatment of the positional argument
+ * below), but a repeated flag's value must STILL be excluded from the
+ * positional scan. Considering only the first occurrence would leave the
+ * second value looking like a bare positional, so `tecode --config /a
+ * --config /b` would silently open `/b` as the workspace — a different thing
+ * entirely from what was asked (CodeRabbit finding on PR #85). */
 function findConfigValueIndices(argv: readonly string[]): ReadonlySet<number> {
   const indices = new Set<number>();
   for (const [index, arg] of argv.entries()) {
-    if (arg === "--config" && index + 1 < argv.length) indices.add(index + 1);
+    if (VALUE_FLAGS.includes(arg) && index + 1 < argv.length) indices.add(index + 1);
   }
   return indices;
+}
+
+/**
+ * Resolve one single-value flag's argument from argv, matching
+ * {@link resolveConfigDirOverride}'s exact shape: the token immediately
+ * following the first occurrence of `flag`, or `undefined` when `flag` is
+ * absent from `argv` entirely, or when it is present but is the very last
+ * token (no value follows). Never throws — it does no I/O and cannot fail.
+ * Shared by {@link resolveSettingsFileOverride}/
+ * {@link resolveKeybindingsFileOverride}/{@link resolveThemeFileOverride}
+ * (Req 9.7/7.6, Issue #149) so the three new flags stay in lockstep with
+ * {@link resolveConfigDirOverride}'s own long-established behavior.
+ */
+function resolveFlagValue(argv: readonly string[], flag: string): string | undefined {
+  const flagIndex = argv.indexOf(flag);
+  if (flagIndex === -1) return undefined;
+  return argv[flagIndex + 1];
 }
 
 /**
@@ -168,9 +193,43 @@ function findConfigValueIndices(argv: readonly string[]): ReadonlySet<number> {
  * TSDoc) — nothing here needs to special-case it.
  */
 export function resolveConfigDirOverride(argv: readonly string[]): string | undefined {
-  const flagIndex = argv.indexOf("--config");
-  if (flagIndex === -1) return undefined;
-  return argv[flagIndex + 1];
+  return resolveFlagValue(argv, "--config");
+}
+
+/**
+ * Resolve `--settings <file>`'s value from argv (Req 9.7, Issue #149).
+ * Same shape and contract as {@link resolveConfigDirOverride}: the token
+ * immediately following the first `--settings` flag, or `undefined` when
+ * absent or when `--settings` is the very last token. Never throws — no
+ * I/O, and does not validate that the returned string names a real,
+ * readable file; unlike `--config`'s tolerant "missing file is an empty
+ * layer" policy, an explicitly-named `--settings <file>` that cannot be
+ * read is treated as a fatal startup error where this value is actually
+ * used (`cli/main.ts`'s `runTecode`) — a typo in an explicit flag should
+ * never be silently ignored.
+ */
+export function resolveSettingsFileOverride(argv: readonly string[]): string | undefined {
+  return resolveFlagValue(argv, "--settings");
+}
+
+/**
+ * Resolve `--keybindings <file>`'s value from argv (Req 9.7, Issue #149).
+ * Same shape, contract, and "explicit file must exist" policy as
+ * {@link resolveSettingsFileOverride} — see that function's TSDoc.
+ */
+export function resolveKeybindingsFileOverride(argv: readonly string[]): string | undefined {
+  return resolveFlagValue(argv, "--keybindings");
+}
+
+/**
+ * Resolve `--theme <file>`'s value from argv (Req 7.6, Issue #149): a
+ * theme JSON file to load and activate directly, independent of the
+ * `workbench.colorTheme` setting. Same shape, contract, and "explicit file
+ * must exist" policy as {@link resolveSettingsFileOverride} — see that
+ * function's TSDoc.
+ */
+export function resolveThemeFileOverride(argv: readonly string[]): string | undefined {
+  return resolveFlagValue(argv, "--theme");
 }
 
 /**

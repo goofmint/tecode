@@ -3,7 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHostLog, type HostLogEntry } from "@tecode/core";
-import { resolveConfigDirOverride, resolveStartupTarget } from "./argv";
+import {
+  resolveConfigDirOverride,
+  resolveKeybindingsFileOverride,
+  resolveSettingsFileOverride,
+  resolveStartupTarget,
+  resolveThemeFileOverride,
+} from "./argv";
 
 let dir: string | undefined;
 
@@ -242,4 +248,82 @@ test("a plain positional argument still opens normally when --config is entirely
   const log = createHostLog();
   const target = await resolveStartupTarget([dir], "/irrelevant", log);
   expect(target).toEqual({ workspaceRoot: dir });
+});
+
+// --- resolveSettingsFileOverride / resolveKeybindingsFileOverride /
+// resolveThemeFileOverride (Req 9.7/7.6, Issue #149) ---
+
+test("resolveSettingsFileOverride returns the token immediately after --settings", () => {
+  expect(resolveSettingsFileOverride(["--settings", "./my-settings.json"])).toBe(
+    "./my-settings.json",
+  );
+});
+
+test("resolveSettingsFileOverride returns undefined when --settings is absent or is the last token", () => {
+  expect(resolveSettingsFileOverride([])).toBeUndefined();
+  expect(resolveSettingsFileOverride(["./src"])).toBeUndefined();
+  expect(resolveSettingsFileOverride(["--settings"])).toBeUndefined();
+});
+
+test("resolveKeybindingsFileOverride returns the token immediately after --keybindings", () => {
+  expect(resolveKeybindingsFileOverride(["--keybindings", "./my-keybindings.json"])).toBe(
+    "./my-keybindings.json",
+  );
+});
+
+test("resolveKeybindingsFileOverride returns undefined when --keybindings is absent or is the last token", () => {
+  expect(resolveKeybindingsFileOverride([])).toBeUndefined();
+  expect(resolveKeybindingsFileOverride(["--keybindings"])).toBeUndefined();
+});
+
+test("resolveThemeFileOverride returns the token immediately after --theme", () => {
+  expect(resolveThemeFileOverride(["--theme", "./my-theme.json"])).toBe("./my-theme.json");
+});
+
+test("resolveThemeFileOverride returns undefined when --theme is absent or is the last token", () => {
+  expect(resolveThemeFileOverride([])).toBeUndefined();
+  expect(resolveThemeFileOverride(["--theme"])).toBeUndefined();
+});
+
+test("--settings/--keybindings/--theme's values are not mistaken for the positional argument", async () => {
+  dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+  const projectDir = join(dir, "proj");
+  await mkdir(projectDir, { recursive: true });
+
+  const log = createHostLog();
+  const target = await resolveStartupTarget(
+    [
+      "--settings",
+      "./my-settings.json",
+      "--keybindings",
+      "./my-keybindings.json",
+      "--theme",
+      "./my-theme.json",
+      projectDir,
+    ],
+    "/irrelevant",
+    log,
+  );
+  expect(target).toEqual({ workspaceRoot: projectDir });
+});
+
+test("tecode --settings ./s.json ./proj resolves ./proj as the positional argument", async () => {
+  dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+  const projectDir = join(dir, "proj");
+  await mkdir(projectDir, { recursive: true });
+
+  const log = createHostLog();
+  const target = await resolveStartupTarget(
+    ["--settings", "./s.json", projectDir],
+    "/irrelevant",
+    log,
+  );
+  expect(target).toEqual({ workspaceRoot: projectDir });
+});
+
+test("a flag with no following positional opens nothing (falls back to cwd)", async () => {
+  const log = createHostLog();
+  const target = await resolveStartupTarget(["--settings", "./my-settings.json"], "/fallback-cwd", log);
+  expect(target).toEqual({ workspaceRoot: "/fallback-cwd" });
+  expect(log.entries()).toEqual([]);
 });
