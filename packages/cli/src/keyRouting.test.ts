@@ -502,6 +502,55 @@ describe("handleKeyEvent — terminal focus routing (Issue #98 Phase 3)", () => 
     expect(terminal.written).toEqual(["\x03"]);
   });
 
+  test("Issue #145: Ctrl+G decoded from a Kitty CSI-u sequence (raw = ESC[103;5u) is written to the pty as the legacy control byte 0x07, not the raw CSI-u bytes", () => {
+    const terminal = fakeTerminal(true);
+    const event = keyOf({ name: "g", ctrl: true });
+    (event as RoutableKeyEvent).raw = "\x1b[103;5u";
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["\x07"]);
+  });
+
+  test("Issue #145: Ctrl+C decoded from a legacy raw control byte (sequence = \\x03, no CSI-u) still writes 0x03 — no regression", () => {
+    const terminal = fakeTerminal(true);
+    const event = keyOf({ name: "c", ctrl: true, sequence: "\x03" });
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["\x03"]);
+  });
+
+  test("Issue #145: an arrow key (raw = ESC[B, no ctrl) is still forwarded unmodified, not reshaped into a control byte", () => {
+    const terminal = fakeTerminal(true);
+    const event = keyOf({ name: "down", sequence: "\x1b[B" });
+    (event as RoutableKeyEvent).raw = "\x1b[B";
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["\x1b[B"]);
+  });
+
+  test("Issue #145: an IME-committed string (no ctrl) is still forwarded unmodified", () => {
+    const terminal = fakeTerminal(true);
+    const event = keyOf({ name: "日本語", sequence: "日本語" });
+    (event as RoutableKeyEvent).raw = "日本語";
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["日本語"]);
+  });
+
+  test("Issue #145: Alt+Ctrl+G (option held) prefixes ESC onto the recomputed control byte", () => {
+    const terminal = fakeTerminal(true);
+    const event = keyOf({ name: "g", ctrl: true, option: true });
+    (event as RoutableKeyEvent).raw = "\x1b[103;7u";
+
+    handleKeyEvent({ ...forbiddenPipeline(), terminal }, event);
+
+    expect(terminal.written).toEqual(["\x1b\x07"]);
+  });
+
   test("the reserved escape stroke (ctrl+o) while focused calls terminal.escape(), writes nothing, and never reaches chordMachine/editorInputRouter", () => {
     const terminal = fakeTerminal(true);
     let prevented = false;

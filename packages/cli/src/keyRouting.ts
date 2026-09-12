@@ -14,6 +14,7 @@
  */
 
 import { keyEventToStroke, type ChordStateMachine, type EditorInputRouter, type KeyEventLike } from "@tecode/core";
+import { encodeKeyEventForPty } from "./ptyKeyEncoding";
 
 /** A real OpenTUI `KeyEvent` (`@opentui/core`'s `lib/KeyHandler.ts`) also
  * has `preventDefault()`/`stopPropagation()`, which
@@ -27,16 +28,22 @@ export interface RoutableKeyEvent extends KeyEventLike {
   preventDefault?: () => void;
   /** The literal raw terminal bytes `@opentui/core`'s `KeyHandler`/
    * `parseKeypress` decoded this keystroke from (its `KeyEvent.raw`,
-   * `lib/parse.keypress.d.ts`) — forwarded VERBATIM to the pty when the
-   * terminal panel has focus (Issue #98 Phase 3, {@link
-   * TerminalKeyRoutingDeps.write}). Replaying the exact bytes the real
-   * terminal received is the only way to reproduce arrow keys/Ctrl
-   * chords/etc. inside the child process without this module re-deriving
-   * an escape sequence from `name`/modifiers by hand — a real terminal
-   * emulator never does that either, it just forwards what it read.
-   * Optional purely so a test can pass a bare `KeyEventLike` without it;
-   * production wiring (`renderShell.tsx`) always hands `handleKeyEvent` a
-   * real OpenTUI `KeyEvent`, which always has this field. */
+   * `lib/parse.keypress.d.ts`) — forwarded to the pty when the terminal
+   * panel has focus (Issue #98 Phase 3, {@link TerminalKeyRoutingDeps.write})
+   * for every stroke `ptyKeyEncoding.ts`'s `encodeKeyEventForPty` does not
+   * specifically reshape (Issue #145: a plain `ctrl+<letter>` combo IS
+   * reshaped, since a Kitty-capable terminal's raw bytes for that shape are
+   * a CSI-u sequence the child process cannot decode — see that module's
+   * own TSDoc). Replaying the exact bytes the real terminal received is
+   * still the only way to reproduce arrow keys/function keys/IME text/etc.
+   * inside the child process without this module re-deriving an escape
+   * sequence from `name`/modifiers by hand for every possible key — a real
+   * terminal emulator never does that either, it just forwards what it
+   * read; `encodeKeyEventForPty` only narrowly departs from that for the
+   * one shape that is actually broken. Optional purely so a test can pass
+   * a bare `KeyEventLike` without it; production wiring (`renderShell.tsx`)
+   * always hands `handleKeyEvent` a real OpenTUI `KeyEvent`, which always
+   * has this field. */
   raw?: string;
 }
 
@@ -150,9 +157,12 @@ export interface KeyRoutingDeps {
  * forward-to-pty branch, never reachable by the child) is the one thing
  * this function guarantees above everything else. Every other
  * terminal-focused stroke is forwarded via {@link
- * TerminalKeyRoutingDeps.write} using the event's raw bytes (`event.raw`
- * — `RoutableKeyEvent`'s own TSDoc on why raw bytes, not a re-derived
- * escape sequence). Either way, `event.preventDefault()` is called and
+ * TerminalKeyRoutingDeps.write} using {@link encodeKeyEventForPty}
+ * (`ptyKeyEncoding.ts`, Issue #145) — which re-derives a legacy control
+ * byte for plain `ctrl+<letter>` combos so a Kitty-encoded keystroke never
+ * reaches the child process as raw, unparseable CSI-u bytes, and otherwise
+ * falls back to the event's raw bytes (`event.raw` — `RoutableKeyEvent`'s
+ * own TSDoc) unchanged. Either way, `event.preventDefault()` is called and
  * this function returns — the chord machine and editor input router never
  * run at all while the terminal has focus.
  *
@@ -173,7 +183,7 @@ export function handleKeyEvent(deps: KeyRoutingDeps, event: RoutableKeyEvent): v
     if (stroke === TERMINAL_ESCAPE_STROKE) {
       deps.terminal.escape();
     } else {
-      deps.terminal.write(event.raw ?? event.sequence ?? "");
+      deps.terminal.write(encodeKeyEventForPty(event));
     }
     event.preventDefault?.();
     return;
