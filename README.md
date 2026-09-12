@@ -299,7 +299,7 @@ under-document exactly the keys most used day to day.
 | `ctrl+d` | Add selection to next find match |
 | `(` `)` `[` `]` `{` `}` `"` `'` | Bracket/quote auto-close (insert-pair, type-over, or wrap a selection) |
 | `ctrl+shift+[` (or `ctrl+r` on a non-Kitty terminal) | Fold the region at the cursor |
-| `ctrl+shift+]` (or `ctrl+t` on a non-Kitty terminal) | Unfold the region at the cursor |
+| `ctrl+shift+]` (or `ctrl+u` on a non-Kitty terminal) | Unfold the region at the cursor |
 
 ### Code folding (editor-core)
 
@@ -313,7 +313,7 @@ collapsed; **clicking that marker toggles the fold**.
 | Key | Command |
 |---|---|
 | `ctrl+shift+[` (or `ctrl+r` on a non-Kitty terminal) | `editor.action.fold` |
-| `ctrl+shift+]` (or `ctrl+t` on a non-Kitty terminal) | `editor.action.unfold` |
+| `ctrl+shift+]` (or `ctrl+u` on a non-Kitty terminal) | `editor.action.unfold` |
 | — (command palette / your own `keybindings.json`) | `editor.action.toggleFold`, `editor.action.foldAll`, `editor.action.unfoldAll` |
 
 Collapsed regions are per-tab UI state: they are not written to the file,
@@ -640,8 +640,9 @@ entries today:
 | `ctrl+e` | `explorer.focus` | — |
 | `ctrl+l` | `editor.action.deleteLine` | `editorTextFocus` |
 | `ctrl+b` | `workbench.action.toggleSidebarVisibility` | — |
+| `ctrl+t` | `search.focus` | — |
 | `ctrl+r` | `editor.action.fold` | `editorTextFocus` |
-| `ctrl+t` | `editor.action.unfold` | `editorTextFocus` |
+| `ctrl+u` | `editor.action.unfold` | `editorTextFocus` |
 
 The first three each patch a real `ctrl+shift+<letter>` ambiguity that a
 legacy terminal collapses to the same raw control byte as its unshifted
@@ -655,7 +656,12 @@ entry is its ONLY default keybinding, placed here rather than in the
 `defaults` layer simply because this is the layer this codebase's other
 core-owned, non-per-extension keybindings already live in.
 
-`ctrl+r`/`ctrl+t` (Issue #150) are hazard-driven like the first three:
+`ctrl+t` (Issue #147) patches the same `ctrl+shift+<letter>` ambiguity the
+first three do — `search.focus`'s own default is `ctrl+shift+f`, which a
+legacy terminal collapses onto `ctrl+f`'s find — with a plain, unclaimed
+key bound directly.
+
+`ctrl+r`/`ctrl+u` (Issue #150) are hazard-driven like the first three:
 folding's default `ctrl+shift+[`/`ctrl+shift+]` only ever parse into a
 stroke on a Kitty-capable terminal (a legacy terminal sends bare `0x1B`
 for Ctrl+[, indistinguishable from Escape — which is exactly why plain
