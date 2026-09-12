@@ -31,6 +31,16 @@
  * text, since `stripComments` never changes a string's length; if the key
  * is absent, it is appended just inside the object's opening `{`, exactly
  * like `applySidebarWidthSetting`'s own fallback.
+ *
+ * **A missing top-level object is only ever bootstrapped when there is
+ * NOTHING there to lose** (CodeRabbit PR #156 review): `applyPanelHeightSetting`
+ * returns `null` — a "do not write" signal, never silently discarding
+ * existing content — for any NON-EMPTY `text` that has no discoverable
+ * `{` at all (a comment-only file, a mid-edit fragment, or otherwise
+ * malformed JSONC). Only a genuinely empty `text` (`""` — no prior content
+ * whatsoever) still bootstraps a fresh minimal file, matching `doWrite`'s
+ * own ENOENT branch, which sets `text` to `"{}\n"` (itself brace-having,
+ * so it never reaches this fallback) for the "no file at all" case.
  */
 
 import { readFile as nodeReadFile, writeFile as nodeWriteFile, mkdir as nodeMkdir } from "node:fs/promises";
@@ -176,8 +186,17 @@ function findObjectOpenBrace(text: string): number {
  * Exported for direct unit testing of the text-splicing logic, independent
  * of any filesystem I/O — mirrors `sidebarWidthSettingsWriter.ts`'s
  * `applySidebarWidthSetting`.
+ *
+ * Returns `null` (CodeRabbit PR #156 review) instead of a spliced string
+ * when `text` is NON-EMPTY but has no discoverable top-level `{` at all —
+ * a comment-only file, a mid-edit fragment, or otherwise malformed
+ * JSONC — since bootstrapping a fresh minimal object over such content
+ * would silently discard whatever the user (or their editor) actually
+ * wrote. Callers must treat `null` as "do not write" (`doWrite` reports it
+ * through `log`/`sink` instead). Only a genuinely empty `text` (`""`) still
+ * returns the fresh-file string — see this module's own TSDoc.
  */
-export function applyPanelHeightSetting(text: string, height: number): string {
+export function applyPanelHeightSetting(text: string, height: number): string | null {
   // Match against COMMENT-STRIPPED text, not `text` itself — `stripComments`
   // blanks `//`/`/* */` spans to spaces without ever changing the string's
   // length (`config/jsonc.ts`'s own `stripComments`), so a match's
@@ -204,7 +223,21 @@ export function applyPanelHeightSetting(text: string, height: number): string {
 
   const openBrace = findObjectOpenBrace(text);
   if (openBrace === -1) {
-    return `{\n  "workbench.panelHeight": ${encodedHeight}\n}\n`;
+    // A genuinely EMPTY file (zero bytes — nothing existed to lose) is the
+    // "no file at all" bootstrap case `doWrite`'s own ENOENT branch already
+    // sets `text` to `"{}\n"` for — which DOES have a brace and never
+    // reaches this branch. This one only fires for a directly-empty `text`
+    // (this function called with `""`, or a real on-disk file that is
+    // truly 0 bytes).
+    if (text === "") {
+      return `{\n  "workbench.panelHeight": ${encodedHeight}\n}\n`;
+    }
+    // Any OTHER content with no discoverable top-level object — a
+    // comment-only file, a mid-edit fragment, or otherwise malformed
+    // JSONC — is NOT safe to silently replace: doing so would discard
+    // whatever the user (or their editor) actually wrote (CodeRabbit PR
+    // #156 review). Signal the caller to skip writing entirely.
+    return null;
   }
   // The trailing comma is only correct when a property actually FOLLOWS
   // the inserted one. An empty object (`{}`, or `{}` with only whitespace/
@@ -264,6 +297,16 @@ export function createPanelHeightSettingsWriter(
     }
 
     const next = applyPanelHeightSetting(text, height);
+    if (next === null) {
+      // `applyPanelHeightSetting` refuses to splice — the existing file has
+      // real content but no discoverable top-level JSON object (this
+      // module's TSDoc, CodeRabbit PR #156 review). Report it and leave the
+      // file untouched rather than overwriting it with a fresh minimal one.
+      const message = `Failed to persist workbench.panelHeight: settings (${path}) has no parseable top-level JSON object — leaving its existing content untouched`;
+      logSafely("error", { message, path });
+      notifySafely({ message, path });
+      return;
+    }
     try {
       await fs.mkdir(dirname(path));
       await fs.writeFile(path, next);

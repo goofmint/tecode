@@ -25,14 +25,14 @@ describe("applyPanelHeightSetting (Issue #146, text-replace)", () => {
     const before = `{\n  "editor.tabSize": 2\n}\n`;
     const after = applyPanelHeightSetting(before, 15);
     expect(after).toBe(`{\n  "workbench.panelHeight": 15,\n  "editor.tabSize": 2\n}\n`);
-    const parsed = parseJsonc<Record<string, unknown>>(after);
+    const parsed = parseJsonc<Record<string, unknown>>(after!);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.value["workbench.panelHeight"]).toBe(15);
   });
 
   test("appends the key into an otherwise-empty object", () => {
     const after = applyPanelHeightSetting("{}\n", 11);
-    const parsed = parseJsonc<Record<string, unknown>>(after);
+    const parsed = parseJsonc<Record<string, unknown>>(after!);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
       expect(parsed.value["workbench.panelHeight"]).toBe(11);
@@ -40,11 +40,21 @@ describe("applyPanelHeightSetting (Issue #146, text-replace)", () => {
     }
   });
 
-  test("falls back to a fresh minimal file when there is no object to insert into", () => {
+  test("falls back to a fresh minimal file when there is no object to insert into (a genuinely empty file — nothing existed to lose)", () => {
     const after = applyPanelHeightSetting("", 11);
-    const parsed = parseJsonc<Record<string, unknown>>(after);
+    expect(after).not.toBeNull();
+    const parsed = parseJsonc<Record<string, unknown>>(after!);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.value["workbench.panelHeight"]).toBe(11);
+  });
+
+  test("returns null (refuses to apply) for an existing NON-EMPTY file with no discoverable top-level object — a comment-only or incomplete file must not be silently replaced (CodeRabbit PR #156)", () => {
+    expect(applyPanelHeightSetting("// TODO: fill in real settings later\n", 20)).toBeNull();
+    // A bare fragment mid-edit — no braces at all.
+    expect(applyPanelHeightSetting('"workbench.panelHeight"', 20)).toBeNull();
+    // Whitespace-only content still counts as "something existed" here —
+    // only the literal empty string bootstraps (this module's own TSDoc).
+    expect(applyPanelHeightSetting("   \n", 20)).toBeNull();
   });
 
   test("replaces an existing non-numeric value in place rather than appending a duplicate key (regression)", () => {
@@ -53,7 +63,7 @@ describe("applyPanelHeightSetting (Issue #146, text-replace)", () => {
     expect(after).toBe(
       `{\n  "editor.tabSize": 2,\n  "workbench.panelHeight": 13,\n  "editor.wordWrap": true\n}\n`,
     );
-    expect(after.match(/"workbench\.panelHeight"/g)).toHaveLength(1);
+    expect(after!.match(/"workbench\.panelHeight"/g)).toHaveLength(1);
   });
 
   test("does not disturb a different key sharing a suffix with the real key", () => {
@@ -75,7 +85,7 @@ describe("applyPanelHeightSetting (Issue #146, text-replace)", () => {
     // The comment survives byte-for-byte...
     expect(after).toContain('// "workbench.panelHeight": 10,');
     // ...and a REAL key was appended rather than spliced into the comment.
-    const parsed = parseJsonc<Record<string, unknown>>(after);
+    const parsed = parseJsonc<Record<string, unknown>>(after!);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
       expect(parsed.value["workbench.panelHeight"]).toBe(18);
@@ -261,6 +271,27 @@ describe("createPanelHeightSettingsWriter (Issue #146)", () => {
     await expect(writer.flush()).resolves.toBeUndefined();
     expect(messages).toHaveLength(1);
   });
+
+  test("an existing settings.json with no parseable top-level object is left untouched, reported through log/sink instead of overwritten (CodeRabbit PR #156)", async () => {
+    const before = "// mid-edit, not valid JSON yet\n";
+    const { fs, files, writeCount } = createFakeFs({ "/settings.json": before });
+    const { timer } = createManualTimer();
+    const messages: string[] = [];
+    const writer = createPanelHeightSettingsWriter({
+      path: "/settings.json",
+      fs,
+      timer,
+      sink: { error: (e) => messages.push(e.message) },
+    });
+
+    writer.write(20);
+    await writer.flush();
+
+    // Untouched — NOT overwritten with a fresh minimal file.
+    expect(files["/settings.json"]).toBe(before);
+    expect(writeCount()).toBe(0);
+    expect(messages).toHaveLength(1);
+  });
 });
 
 test("appending into an EMPTY object emits no trailing comma — a fresh install's first resize must not write invalid JSON", () => {
@@ -273,14 +304,15 @@ test("appending into an EMPTY object emits no trailing comma — a fresh install
   // install.
   for (const input of ["{}\n", "{}", "{\n}\n", "{\n  // only a comment\n}\n"]) {
     const out = applyPanelHeightSetting(input, 13);
+    expect(out).not.toBeNull();
     expect(out).not.toContain(",}");
     expect(out).not.toContain(",\n}");
     // Strict JSON, once comments are stripped the way a reader would.
-    expect(() => JSON.parse(out.replace(/^\s*\/\/.*$/gm, ""))).not.toThrow();
-    expect(JSON.parse(out.replace(/^\s*\/\/.*$/gm, ""))).toEqual({ "workbench.panelHeight": 13 });
+    expect(() => JSON.parse(out!.replace(/^\s*\/\/.*$/gm, ""))).not.toThrow();
+    expect(JSON.parse(out!.replace(/^\s*\/\/.*$/gm, ""))).toEqual({ "workbench.panelHeight": 13 });
   }
 
   // A non-empty object still gets its separating comma.
   const withSibling = applyPanelHeightSetting('{\n  "editor.tabSize": 2\n}\n', 13);
-  expect(JSON.parse(withSibling)).toEqual({ "workbench.panelHeight": 13, "editor.tabSize": 2 });
+  expect(JSON.parse(withSibling!)).toEqual({ "workbench.panelHeight": 13, "editor.tabSize": 2 });
 });
