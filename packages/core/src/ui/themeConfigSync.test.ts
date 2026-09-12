@@ -135,4 +135,29 @@ describe("wireThemeConfigSync (Req 7.5, config-file-driven live switching)", () 
 
     expect(themeService.getActiveThemeId()).toBe(BASE_THEME_ID);
   });
+
+  test("a --theme CLI override (cliThemeActive: () => true) suppresses live workbench.colorTheme changes (Req 7.6, Issue #149)", async () => {
+    const { config, configFs, themeRegistry, themeService } = await buildHarness(`{}`);
+    // A second, genuinely-known theme, distinct from the one --theme
+    // activated below — if suppression failed, the live config change
+    // WOULD switch to this one, making the failure visible rather than
+    // hidden behind an unknown-id no-op.
+    themeRegistry.register({
+      id: "light",
+      label: "Light",
+      path: "/dark.json", // path is irrelevant to this test — id/label are what matter.
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    themeService.setTheme("dark"); // simulates main.ts's --theme activation
+    const sub = wireThemeConfigSync({ config, themeService, cliThemeActive: () => true });
+
+    configFs.set(USER_SETTINGS_PATH, `{ "workbench.colorTheme": "light" }`);
+    configFs.trigger(USER_SETTINGS_PATH);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Still "dark" — the config change was suppressed, not applied.
+    expect(themeService.getActiveThemeId()).toBe("dark");
+    sub.dispose();
+  });
 });

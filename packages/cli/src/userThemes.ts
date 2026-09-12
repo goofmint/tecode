@@ -40,7 +40,7 @@
  */
 
 import { readdir as nodeReaddir, readFile as nodeReadFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   getUserThemesDir,
   parseJsonc,
@@ -193,5 +193,72 @@ export async function scanUserThemes(deps: ScanUserThemesDeps = {}): Promise<Sca
   return {
     pending,
     extensionDirs: { [USER_THEMES_EXTENSION_ID]: themesDir },
+  };
+}
+
+/** The narrow filesystem seam {@link loadThemeFileOverride} needs: reading
+ * one theme file's text. Injectable (matches {@link UserThemesFs}'s own
+ * seam) so tests never touch the real filesystem. */
+export interface ThemeFileOverrideFs {
+  readFile(path: string): Promise<string>;
+}
+
+function createNodeThemeFileOverrideFs(): ThemeFileOverrideFs {
+  return { readFile: (path) => nodeReadFile(path, "utf8") };
+}
+
+/** Dependencies for {@link loadThemeFileOverride}. */
+export interface LoadThemeFileOverrideDeps {
+  /** Filesystem seam — see {@link ThemeFileOverrideFs}. Defaults to
+   * `node:fs/promises`. */
+  fs?: ThemeFileOverrideFs;
+}
+
+/**
+ * Build a single-file `PendingThemeContribution` from an explicit `--theme
+ * <file>` path (Req 7.6, Issue #149) — `main.ts`'s `runTecode` feeds the
+ * result straight into the SAME `ThemeRegistry.loadContributions` call
+ * every other theme goes through (this module's own TSDoc: "no new
+ * distribution or loading mechanism"), with an EMPTY `extensionDirs` map
+ * (`{}`) so the already-absolute `path` is used as-is rather than joined
+ * against a (nonexistent) owning extension directory
+ * (`themeRegistry.ts`'s `loadContributions`: `dir ? join(dir, ...) :
+ * entry.theme.path`).
+ *
+ * `path` MUST already be absolute (`main.ts` resolves the raw `--theme`
+ * argv value against `cwd` before calling this, exactly like
+ * `argv.ts`'s `resolveStartupTarget` does for the positional argument) —
+ * this function does no path resolution of its own.
+ *
+ * Its id is `path`'s filename stem (`basename(path, ".json")`, matching
+ * {@link scanUserThemes}'s own id derivation); its label is the theme
+ * JSON's own top-level `"name"` string when present, otherwise that same
+ * id ({@link resolveLabel}, shared with {@link scanUserThemes}).
+ *
+ * Returns `undefined` on ANY read failure — this is a single, explicit
+ * target (unlike {@link scanUserThemes}'s tolerant "missing directory is
+ * normal" policy for a whole directory scan), so a `--theme` file that
+ * cannot be read is a fatal, immediate startup error where this value is
+ * actually used (`main.ts`'s `runTecode`), never a silent fallback to the
+ * base palette.
+ */
+export async function loadThemeFileOverride(
+  path: string,
+  deps: LoadThemeFileOverrideDeps = {},
+): Promise<PendingThemeContribution | undefined> {
+  const fs = deps.fs ?? createNodeThemeFileOverrideFs();
+  const stem = basename(path, ".json");
+  if (stem.length === 0) return undefined;
+
+  let text: string;
+  try {
+    text = await fs.readFile(path);
+  } catch {
+    return undefined;
+  }
+
+  return {
+    extensionId: USER_THEMES_EXTENSION_ID,
+    theme: { id: stem, label: resolveLabel(text, stem), path },
   };
 }

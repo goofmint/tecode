@@ -16,7 +16,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostLog } from "@tecode/core";
-import { scanUserThemes, USER_THEMES_EXTENSION_ID, type UserThemesFs } from "./userThemes";
+import {
+  loadThemeFileOverride,
+  scanUserThemes,
+  USER_THEMES_EXTENSION_ID,
+  type ThemeFileOverrideFs,
+  type UserThemesFs,
+} from "./userThemes";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "tecode-user-themes-"));
@@ -177,5 +183,50 @@ describe("scanUserThemes (Req 11.4, Issue #124)", () => {
     // directory if the developer has one. Either way `scanUserThemes` must
     // never reject.
     await expect(scanUserThemes()).resolves.toBeDefined();
+  });
+});
+
+describe("loadThemeFileOverride (Req 7.6, Issue #149)", () => {
+  test("a real theme file becomes a PendingThemeContribution, id = filename stem, label = the JSON's own name", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "my-theme.json");
+      await writeFile(path, JSON.stringify({ name: "My Theme", colors: {} }), "utf8");
+
+      const contribution = await loadThemeFileOverride(path);
+      expect(contribution).toEqual({
+        extensionId: USER_THEMES_EXTENSION_ID,
+        theme: { id: "my-theme", label: "My Theme", path },
+      });
+    });
+  });
+
+  test("label falls back to the filename stem when the JSON has no name", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "ocean.json");
+      await writeFile(path, JSON.stringify({ colors: {} }), "utf8");
+
+      const contribution = await loadThemeFileOverride(path);
+      expect(contribution?.theme.label).toBe("ocean");
+    });
+  });
+
+  test("an unreadable file returns undefined rather than throwing", async () => {
+    const fs: ThemeFileOverrideFs = {
+      readFile: () => Promise.reject(Object.assign(new Error("ENOENT"), { code: "ENOENT" })),
+    };
+    const contribution = await loadThemeFileOverride("/does/not/exist.json", { fs });
+    expect(contribution).toBeUndefined();
+  });
+
+  test("the returned path is used as-is (an absolute path, not joined against any directory)", async () => {
+    await withTempDir(async (dir) => {
+      const path = join(dir, "sub", "nested-theme.json");
+      await mkdir(join(dir, "sub"), { recursive: true });
+      await writeFile(path, JSON.stringify({ colors: {} }), "utf8");
+
+      const contribution = await loadThemeFileOverride(path);
+      expect(contribution?.theme.path).toBe(path);
+      expect(contribution?.theme.id).toBe("nested-theme");
+    });
   });
 });

@@ -4,6 +4,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { createHostLog } from "../host/errors";
 import { parseJsonc } from "../config/jsonc";
 import {
   applyColorThemeSetting,
@@ -181,5 +182,38 @@ describe("createThemeSettingsWriter (Req 7.5)", () => {
     });
     await expect(writer.write("dark")).resolves.toBeUndefined();
     expect(messages).toHaveLength(1);
+  });
+
+  test("skips the write and logs a warning when cliThemeOverrideActive() reports true (Req 7.6, Issue #149)", async () => {
+    const { fs, files } = createFakeFs({ "/settings.json": "{}\n" });
+    const log = createHostLog();
+    const writer = createThemeSettingsWriter({
+      path: "/settings.json",
+      fs,
+      log,
+      cliThemeOverrideActive: () => true,
+    });
+
+    await writer.write("dark");
+
+    expect(files["/settings.json"]).toBe("{}\n");
+    expect(
+      log.entries().some((e) => e.level === "warning" && e.error.message.includes("workbench.colorTheme")),
+    ).toBe(true);
+  });
+
+  test("writes normally when cliThemeOverrideActive() reports false", async () => {
+    const { fs, files } = createFakeFs({ "/settings.json": "{}\n" });
+    const writer = createThemeSettingsWriter({
+      path: "/settings.json",
+      fs,
+      cliThemeOverrideActive: () => false,
+    });
+
+    await writer.write("dark");
+
+    const parsed = parseJsonc<Record<string, unknown>>(files["/settings.json"]!);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value["workbench.colorTheme"]).toBe("dark");
   });
 });

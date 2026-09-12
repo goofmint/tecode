@@ -125,7 +125,7 @@ describe("the ctrl+k chord-shadowing hazard (Issue #146's own PANEL_HEIGHT_FOCUS
    * `when` clause, not about any particular extension's chord. */
   function buildTable(userEntries: Parameters<typeof createBindingTable>[0]["user"]) {
     return createBindingTable(
-      { defaults: PANEL_HEIGHT_DEFAULT_KEYBINDINGS, fallback: [], extension: [], user: userEntries },
+      { defaults: PANEL_HEIGHT_DEFAULT_KEYBINDINGS, fallback: [], extension: [], user: userEntries, cli: [] },
       { log: createHostLog() },
     );
   }

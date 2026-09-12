@@ -129,6 +129,45 @@ test("later setFallbackEntries calls fully replace the previous fallback layer",
   expect(state.getTable().lookup("ctrl+l", () => undefined)?.command).toBe("two");
 });
 
+// --- Req 9.7, Issue #149: `--keybindings <file>`'s `cli` layer ---
+
+test("cli layer starts empty (no setCliEntries call yet)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  expect(state.getTable().lookup("ctrl+k", () => undefined)).toBeUndefined();
+});
+
+test("setCliEntries rebuilds the table with the cli layer", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setCliEntries([{ key: "ctrl+k", command: "cli.command" }]);
+
+  const resolved = state.getTable().lookup("ctrl+k", () => undefined);
+  expect(resolved?.command).toBe("cli.command");
+  expect(resolved?.layer).toBe("cli");
+});
+
+test("cli entries outrank user entries on the same key — highest precedence of all (Req 9.7)", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setUserEntries([{ key: "ctrl+k", command: "user.command" }]);
+  state.setCliEntries([{ key: "ctrl+k", command: "cli.command" }]);
+
+  const resolved = state.getTable().lookup("ctrl+k", () => undefined);
+  expect(resolved?.command).toBe("cli.command");
+  expect(resolved?.layer).toBe("cli");
+});
+
+test("later setCliEntries calls fully replace the previous cli layer", () => {
+  const log = createHostLog();
+  const state = createKeymapState(log);
+  state.setCliEntries([{ key: "ctrl+k", command: "one" }]);
+  state.setCliEntries([{ key: "ctrl+l", command: "two" }]);
+
+  expect(state.getTable().lookup("ctrl+k", () => undefined)).toBeUndefined();
+  expect(state.getTable().lookup("ctrl+l", () => undefined)?.command).toBe("two");
+});
+
 // --- Issue #72: reserving a command id against extension override is a
 // `CommandRegistry` (`commands/registry.ts`) concept, entirely separate
 // from the keymap/`BindingTable` layer here — a user must still be able to

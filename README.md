@@ -516,6 +516,40 @@ no directory argument after it is ignored (no override applied), and it
 never consumes the directory/file argument that opens a workspace —
 `tecode --config /path/to/cfg ./my-project` still opens `./my-project`.
 
+Pass `--settings <file>` and/or `--keybindings <file>` (Req 9.7, Issue
+#149) to layer one specific settings/keybindings file on top of the
+above, instead of redirecting a whole directory:
+
+```sh
+tecode --settings ./my-settings.json --keybindings ./my-keybindings.json ./my-project
+```
+
+Each file becomes its own CLI layer — settings merge as `defaults ← user
+← CLI ← workspace` (the CLI layer overrides the user/`--config` layer but
+still loses to a workspace's own `.tecode/settings.json`); keybindings
+merge as `defaults → fallback → extension → user → CLI` (the CLI layer is
+the single highest-precedence layer of all, above even the user's own
+`keybindings.json`). Both compose with `--config <dir>`: `--config
+/path/to/cfg --settings ./my-settings.json` layers `./my-settings.json`
+on top of `/path/to/cfg/settings.json`. Both files are watched and
+live-reloaded exactly like every other settings/keybindings file. Unlike
+`--config <dir>`'s tolerant missing-file policy above, a `--settings`/
+`--keybindings <file>` that does not exist, cannot be read, or is not
+valid JSONC in the expected shape (an object for `--settings`, an array
+for `--keybindings`) is a **fatal startup error** — an explicitly-named
+file is assumed to be a deliberate choice, so a typo (missing or
+malformed alike) is reported rather than silently ignored. A
+relative `<file>` resolves against the current working directory, and
+neither flag's value is ever mistaken for the workspace argument
+(`tecode --settings ./s.json ./my-project` still opens `./my-project`).
+
+A settings key the CLI layer sets is not silently overwritten by an
+in-app write-back that would have no visible effect: for example, a
+sidebar drag-resize commit normally persists `workbench.sidebarWidth`
+into `settings.json`, but if `--settings` already sets that key, the
+write is skipped (with a logged warning) instead of writing a value the
+CLI layer would immediately mask back out on the next read.
+
 Req 9.5 names six MVP settings; the table marks which of them a real
 `contributes.configuration` schema registers today, and which do not
 exist yet:
@@ -578,6 +612,28 @@ normally on Dark Modern either way. A theme file that fails to parse still
 registers (so it shows up as a `theme.select` entry) but resolves to the
 built-in base palette if selected, rather than failing startup
 (`themeLoader.ts`'s existing per-theme degrade policy, design.md §9).
+
+Pass `--theme <file>` at startup (Req 7.6, Issue #149) to load and
+activate a theme file directly, without copying it anywhere or touching
+`settings.json`:
+
+```sh
+tecode --theme ./my-theme.json ./my-project
+```
+
+This activates immediately, independent of whatever `workbench.colorTheme`
+is currently set to, and stays active for the rest of the run: a
+subsequent live edit to `workbench.colorTheme` (or a `theme.select`
+commit) does not replace it, and `theme.select`'s own write-back to
+`settings.json` is skipped (with a logged warning) while the override is
+active, since it would have no visible effect anyway. Its id/label follow
+the same rule as a user-themes-directory file above (filename stem, or
+the JSON's own `"name"`). A `--theme` file that does not exist, cannot be
+read, or is not valid JSON with a top-level object structure is a fatal
+startup error, the same as `--settings`/`--keybindings` above; a
+syntactically valid theme object with incomplete or unrecognized content
+(e.g. an unknown color key) still activates and degrades per-key to the
+base palette, exactly like every other theme source.
 
 ## Terminal support
 

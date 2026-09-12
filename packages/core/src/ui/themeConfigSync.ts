@@ -60,6 +60,16 @@ export interface WireThemeConfigSyncDeps {
   /** Overrides the config key watched — defaults to
    * `"workbench.colorTheme"`. Test-only knob; production never sets this. */
   configKey?: string;
+  /** Reports whether a `--theme <file>` CLI override is currently active
+   * (Req 7.6, Issue #149) — when it returns `true`, a live
+   * `workbench.colorTheme` change is NOT re-applied, so the explicitly
+   * loaded theme file stays active until restart rather than being
+   * silently replaced by a config edit (or `theme.select`'s own commit
+   * round-tripping back through `ConfigService`'s file watcher).
+   * `undefined` (the default, when `--theme` was never given) never
+   * suppresses anything — every `workbench.colorTheme` change is applied
+   * exactly as before this flag existed. */
+  cliThemeActive?: () => boolean;
 }
 
 /**
@@ -73,6 +83,7 @@ export function wireThemeConfigSync(deps: WireThemeConfigSyncDeps): Disposable {
   const key = deps.configKey ?? DEFAULT_CONFIG_KEY;
 
   const sub = deps.config.onDidChange((event) => {
+    if (deps.cliThemeActive?.()) return;
     if (event.affectsConfiguration(key)) {
       applyConfiguredTheme(deps.config, deps.themeService, key);
     }

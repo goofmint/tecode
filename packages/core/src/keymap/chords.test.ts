@@ -22,6 +22,7 @@ function layersOf(partial: Partial<KeymapLayers>): KeymapLayers {
     fallback: partial.fallback ?? [],
     extension: partial.extension ?? [],
     user: partial.user ?? [],
+    cli: partial.cli ?? [],
   };
 }
 
@@ -405,6 +406,7 @@ test("a disposed machine passes strokes through and executes nothing", () => {
       fallback: [],
       extension: [],
       user: [],
+      cli: [],
     },
     { log: createHostLog() },
   );
@@ -430,6 +432,7 @@ test("a scheduler whose set() throws does not break pending entry", () => {
       fallback: [],
       extension: [],
       user: [],
+      cli: [],
     },
     { log: createHostLog() },
   );

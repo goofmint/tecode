@@ -81,6 +81,14 @@ export interface KeymapState {
    * certainly the user's own `keybindings.json`, always wins over this
    * overlay on the same key. */
   setFallbackEntries(entries: readonly KeybindingContribution[]): void;
+  /** Rebuild with a new `cli` layer (Req 9.7, Issue #149) — wired as
+   * `ConfigService`'s `onCliKeybindingsChange` hook (`config/service.ts`),
+   * fed by a `--keybindings <file>` CLI override. Highest precedence of
+   * all (`bindingTable.ts`'s `LAYER_ORDER`): even the user's own
+   * `keybindings.json` loses to this layer on the same key. Same
+   * "raw, unvalidated entries" contract as {@link setUserEntries} — see
+   * that method's TSDoc. */
+  setCliEntries(entries: readonly unknown[]): void;
 }
 
 /** Build a {@link KeymapState} (Req 4.1-4.3). `defaults` seeds the
@@ -96,6 +104,7 @@ export function createKeymapState(
   let userEntries: KeybindingContribution[] = [];
   let extensionEntries: KeybindingContribution[] = [];
   let fallbackEntries: KeybindingContribution[] = [];
+  let cliEntries: KeybindingContribution[] = [];
   let table = build();
 
   function build(): BindingTable {
@@ -105,6 +114,7 @@ export function createKeymapState(
         fallback: fallbackEntries,
         extension: extensionEntries,
         user: userEntries,
+        cli: cliEntries,
       },
       { log },
     );
@@ -122,6 +132,10 @@ export function createKeymapState(
     },
     setFallbackEntries(entries) {
       fallbackEntries = entries.slice();
+      table = build();
+    },
+    setCliEntries(entries) {
+      cliEntries = entries as KeybindingContribution[];
       table = build();
     },
   };

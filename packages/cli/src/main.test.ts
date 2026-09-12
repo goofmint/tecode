@@ -10,11 +10,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   BASE_THEME_ID,
   createHostLog,
   EXTENSIONS_RELOAD_COMMAND_ID,
+  getUserConfigDir,
   getUserExtensionsDir,
   KEYBINDINGS_ENSURE_FILE_COMMAND_ID,
   KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID,
@@ -33,7 +34,14 @@ import {
 } from "@tecode/core";
 import pkg from "../package.json";
 import { resolveStartupTarget } from "./argv";
-import { buildAssemblyRoot, createShutdown, runDeferredPhase } from "./main";
+import {
+  buildAssemblyRoot,
+  createShutdown,
+  runDeferredPhase,
+  runTecode,
+  verifyExplicitFileOverrides,
+} from "./main";
+import { loadThemeFileOverride } from "./userThemes";
 
 /** A {@link DiscoveryFs} backed by the real filesystem, except the real
  * user extensions directory, which is always reported as missing
@@ -342,6 +350,519 @@ test("buildAssemblyRoot's configDir makes layoutState persist to the --config di
     await rm(workspaceDir, { recursive: true, force: true });
     await rm(configDir, { recursive: true, force: true });
     await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+// --- buildAssemblyRoot's `settingsFile`/`keybindingsFile` deps (Req 9.7,
+// Issue #149's `--settings`/`--keybindings <file>` flags) — the end-to-end
+// proof that the CLI layer genuinely sits ABOVE the user layer but BELOW
+// the workspace layer, exactly as `config/service.ts`'s `computeMerged`
+// TSDoc documents. ---
+
+test("buildAssemblyRoot's settingsFile overrides the user layer but still loses to the workspace layer", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const settingsFile = join(await mkdtemp(join(tmpdir(), "tecode-cli-settingsfile-")), "my-settings.json");
+  await writeFile(settingsFile, JSON.stringify({ "editor.tabSize": 2, "editor.insertSpaces": false }), "utf8");
+
+  const workspaceTecodeDir = join(workspaceDir, ".tecode");
+  await mkdir(workspaceTecodeDir, { recursive: true });
+  await writeFile(
+    join(workspaceTecodeDir, "settings.json"),
+    JSON.stringify({ "editor.tabSize": 8 }),
+    "utf8",
+  );
+
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { settingsFile });
+    await root.config.ready;
+
+    // Workspace still wins over the CLI layer...
+    expect(root.config.get<number>("editor.tabSize")).toBe(8);
+    // ...but the CLI layer wins over the (empty, in this test) user layer,
+    // for a key the workspace settings never touch.
+    expect(root.config.get<boolean>("editor.insertSpaces")).toBe(false);
+    expect(root.config.isSetByCliLayer("editor.insertSpaces")).toBe(true);
+    expect(root.config.isSetByCliLayer("editor.tabSize")).toBe(true);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("buildAssemblyRoot's initialCliSettings/initialCliKeybindings are used even when settingsFile/keybindingsFile no longer exist on disk — the TOCTOU race the caller's own prior read closes (CodeRabbit PR #154 review)", async () => {
+  // Regression test: `verifyExplicitFileOverrides` (main.ts's `runTecode`)
+  // reads and validates the file ONCE, before `buildAssemblyRoot` is even
+  // called. Without threading that already-parsed content through as
+  // `initialCliSettings`/`initialCliKeybindings`, `ConfigService`'s own
+  // first load would re-read the same path — and if it had been deleted
+  // in between (simulated here by simply never creating it), silently
+  // degrade to an empty CLI layer instead of the fatal startup error an
+  // explicitly-named file is supposed to get.
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  // Deliberately never created on disk.
+  const settingsFile = join(workspaceDir, "never-written-settings.json");
+  const keybindingsFile = join(workspaceDir, "never-written-keybindings.json");
+
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, {
+      settingsFile,
+      keybindingsFile,
+      initialCliSettings: { "editor.tabSize": 3 },
+      initialCliKeybindings: [{ key: "ctrl+alt+r", command: "fixture.fromRace" }],
+    });
+    await root.config.ready;
+
+    expect(root.config.get<number>("editor.tabSize")).toBe(3);
+    expect(root.config.isSetByCliLayer("editor.tabSize")).toBe(true);
+    const resolved = root.keymap.getTable().lookup("ctrl+alt+r", () => undefined);
+    expect(resolved?.command).toBe("fixture.fromRace");
+    expect(resolved?.layer).toBe("cli");
+    // No spurious error logged over the (nonexistent) files.
+    expect(root.log.entries().filter((e) => e.level === "error")).toHaveLength(0);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a theme.select commit does not persist workbench.colorTheme back when --settings ALONE (no --theme) already sets it (CodeRabbit PR #154 review)", async () => {
+  // Regression test: the writer used to only suppress when a --theme
+  // override was active; --settings setting workbench.colorTheme with no
+  // --theme at all still masked a write-back the exact same way, but
+  // nothing suppressed it, so a commit would silently write a value the
+  // CLI layer immediately hid again on the next read.
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const settingsFile = join(
+    await mkdtemp(join(tmpdir(), "tecode-cli-settingsfile-")),
+    "my-settings.json",
+  );
+  const originalContent = JSON.stringify({ "workbench.colorTheme": BASE_THEME_ID });
+  await writeFile(settingsFile, originalContent, "utf8");
+
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  // The ACTUAL write target ThemeSettingsWriter defaults to
+  // (`getUserSettingsPath()`, since `buildAssemblyRoot` never passes it a
+  // `path:` override) — seeded with its own sentinel so a suppression
+  // regression is genuinely caught. Checking only `settingsFile` above
+  // proves nothing on its own: the writer never targets that file in the
+  // first place, so it would trivially stay unchanged even if suppression
+  // were completely broken (CodeRabbit PR #154 review).
+  //
+  // SAFETY (CodeRabbit PR #154 review, 4th pass): `getUserConfigDir()`
+  // resolves through `node:os`'s `homedir()`, which Bun does NOT reload
+  // from a runtime `process.env.HOME` mutation (confirmed empirically;
+  // this file's own `createHermeticDiscoveryFs` TSDoc above already
+  // documents the identical caching quirk for `discover()`'s real fs
+  // scan) — so despite the `HOME`/`APPDATA` mutation above, `userSettingsPath`
+  // below is the developer's REAL `~/.config/tecode/settings.json`, not a
+  // path under the temp `homeDir`. Back up whatever is genuinely there
+  // first, and restore that exact content (or remove the file if it did
+  // not exist before) in `finally`, unconditionally — this test must never
+  // leave the developer's own tecode settings clobbered by its sentinel.
+  const userSettingsPath = join(getUserConfigDir(), "settings.json");
+  let originalUserSettings: string | undefined;
+  try {
+    originalUserSettings = await readFile(userSettingsPath, "utf8");
+  } catch {
+    originalUserSettings = undefined; // Did not exist before this test.
+  }
+  await mkdir(dirname(userSettingsPath), { recursive: true });
+  const userSentinel = JSON.stringify({ sentinel: true });
+  await writeFile(userSettingsPath, userSentinel, "utf8");
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { settingsFile });
+    await root.config.ready;
+    expect(root.config.isSetByCliLayer("workbench.colorTheme")).toBe(true);
+
+    // theme.select's real commit path — no --theme flag involved at all.
+    root.themeService.previewTheme(BASE_THEME_ID);
+    root.themeService.commitTheme();
+
+    // Give the fire-and-forget write a moment to settle.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const onDisk = await readFile(settingsFile, "utf8");
+    expect(onDisk).toBe(originalContent);
+    // The real target — the one that would actually receive a non-suppressed
+    // write — must also be untouched.
+    const userOnDisk = await readFile(userSettingsPath, "utf8");
+    expect(userOnDisk).toBe(userSentinel);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    if (originalUserSettings === undefined) {
+      await rm(userSettingsPath, { force: true });
+    } else {
+      await writeFile(userSettingsPath, originalUserSettings, "utf8");
+    }
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("buildAssemblyRoot's keybindingsFile's entries win over the user layer — the cli keymap layer is genuinely highest precedence", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const keybindingsFile = join(
+    await mkdtemp(join(tmpdir(), "tecode-cli-keybindingsfile-")),
+    "my-keybindings.json",
+  );
+  await writeFile(
+    keybindingsFile,
+    JSON.stringify([{ key: "ctrl+alt+k", command: "fixture.fromCliFile" }]),
+    "utf8",
+  );
+
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, { keybindingsFile });
+    await root.config.ready;
+
+    expect(root.config.getKeybindingEntries()).toEqual([]); // no user keybindings.json exists
+
+    const resolved = root.keymap.getTable().lookup("ctrl+alt+k", () => undefined);
+    expect(resolved?.command).toBe("fixture.fromCliFile");
+    expect(resolved?.layer).toBe("cli");
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+// --- `--theme <file>` (Req 7.6, Issue #149): the same wiring `runTecode`
+// performs (load the file, register it, `setTheme`, flip
+// `cliThemeOverride.active`) exercised directly against `buildAssemblyRoot`
+// — `runTecode` itself cannot be called in-process here since its headless
+// path ends in a real `process.exit(0)` (see `shutdownOnDestroy.test.ts`'s
+// own TSDoc for why that module spawns a subprocess instead). ---
+
+test("a --theme file, once loaded/registered/activated, becomes the active theme and survives a live workbench.colorTheme config change", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const themeDir = await mkdtemp(join(tmpdir(), "tecode-cli-themefile-"));
+  const themeFile = join(themeDir, "my-cli-theme.json");
+  await writeFile(
+    themeFile,
+    JSON.stringify({ name: "My CLI Theme", colors: { "editor.background": "#123456" } }),
+    "utf8",
+  );
+
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir);
+    await root.config.ready;
+    await root.themesReadyPromise;
+
+    // The same sequence runTecode's own --theme handling performs.
+    const cliTheme = await loadThemeFileOverride(themeFile);
+    expect(cliTheme).toBeDefined();
+    await root.themeRegistry.loadContributions([cliTheme!], {});
+    root.themeService.setTheme(cliTheme!.theme.id);
+    root.cliThemeOverride.active = true;
+
+    expect(root.themeService.getActiveThemeId()).toBe("my-cli-theme");
+
+    // A live workbench.colorTheme edit must NOT dislodge the CLI theme —
+    // this is themeConfigSync's cliThemeActive suppression, wired in
+    // buildAssemblyRoot against the SAME cliThemeOverride ref.
+    const workspaceTecodeDir = join(workspaceDir, ".tecode");
+    await mkdir(workspaceTecodeDir, { recursive: true });
+    await writeFile(
+      join(workspaceTecodeDir, "settings.json"),
+      JSON.stringify({ "workbench.colorTheme": "tecode-base" }),
+      "utf8",
+    );
+    // Give ConfigService's real fs.watch a moment; the assertion right
+    // after already covers the synchronous-suppression case regardless of
+    // whether the watch fires within this window.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(root.themeService.getActiveThemeId()).toBe("my-cli-theme");
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(themeDir, { recursive: true, force: true });
+  }
+});
+
+// --- Explicit `--settings`/`--keybindings`/`--theme <file>` overrides are
+// strict (Req 9.7/7.6, Issue #149): unlike `--config <dir>`'s tolerant
+// "missing file is an empty layer" policy, a typo'd EXPLICIT file rejects
+// `runTecode`'s promise before any render/process.exit is ever reached, so
+// this is safe to assert in-process. ---
+
+test("runTecode rejects when --settings names a file that does not exist", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  try {
+    await expect(
+      runTecode([], {
+        cwd: workspaceDir,
+        settingsFile: join(workspaceDir, "does-not-exist.json"),
+      }),
+    ).rejects.toThrow(/--settings/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("runTecode rejects when --theme names a file that does not exist", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  try {
+    await expect(
+      runTecode([], {
+        cwd: workspaceDir,
+        themeFile: join(workspaceDir, "does-not-exist.json"),
+      }),
+    ).rejects.toThrow(/--theme/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+// --- CodeRabbit PR #154 review: a stat-only check let a MALFORMED
+// explicit --settings/--keybindings file through, silently degrading to an
+// empty layer instead of failing startup. ---
+
+test("runTecode rejects when --settings names a file that exists but is not valid JSONC", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const settingsFile = join(workspaceDir, "broken-settings.json");
+  await writeFile(settingsFile, "{ not valid json !!", "utf8");
+  try {
+    await expect(runTecode([], { cwd: workspaceDir, settingsFile })).rejects.toThrow(/--settings/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("runTecode rejects when --settings names a file whose top level is a JSON array, not an object", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const settingsFile = join(workspaceDir, "array-settings.json");
+  await writeFile(settingsFile, JSON.stringify([1, 2, 3]), "utf8");
+  try {
+    await expect(runTecode([], { cwd: workspaceDir, settingsFile })).rejects.toThrow(/--settings/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("runTecode rejects when --keybindings names a file whose top level is a JSON object, not an array", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const keybindingsFile = join(workspaceDir, "object-keybindings.json");
+  await writeFile(keybindingsFile, JSON.stringify({ key: "ctrl+k", command: "x" }), "utf8");
+  try {
+    await expect(
+      runTecode([], { cwd: workspaceDir, keybindingsFile }),
+    ).rejects.toThrow(/--keybindings/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+// --- CodeRabbit PR #154 review (third pass): a readable --theme file that
+// is not valid JSON, or whose top level isn't an object, must be just as
+// fatal as the equivalent --settings problem — a syntactically valid
+// theme object with incomplete/unrecognized content, however, must still
+// succeed (Req 7.1's per-key degrade policy, unchanged). ---
+
+test("runTecode rejects when --theme names a file that exists but is not valid JSON", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const themeFile = join(workspaceDir, "broken-theme.json");
+  await writeFile(themeFile, "{ not valid json !!", "utf8");
+  try {
+    await expect(runTecode([], { cwd: workspaceDir, themeFile })).rejects.toThrow(/--theme/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("runTecode rejects when --theme names a file whose top level is a JSON array, not an object", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const themeFile = join(workspaceDir, "array-theme.json");
+  await writeFile(themeFile, JSON.stringify([1, 2, 3]), "utf8");
+  try {
+    await expect(runTecode([], { cwd: workspaceDir, themeFile })).rejects.toThrow(/--theme/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("verifyExplicitFileOverrides does NOT reject a syntactically valid but schema-incomplete --theme file — themeLoader.ts's per-key degrade policy still applies", async () => {
+  // Exercises `verifyExplicitFileOverrides` directly rather than through
+  // `runTecode`: a SUCCESSFUL validation there falls through to
+  // `buildAssemblyRoot`/`renderShell`/a headless `process.exit(0)`, which
+  // would kill the test runner itself if called end-to-end here (matches
+  // `shutdownOnDestroy.test.ts`'s own reasoning for why it spawns a real
+  // subprocess instead of calling `runTecode` in-process for a
+  // success path).
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const themeFile = join(workspaceDir, "incomplete-theme.json");
+  // A valid top-level JSON object, but with no recognized "colors"/
+  // "tokenColors" content at all — themeLoader.ts's own per-key degrade
+  // policy handles this gracefully; it must not be treated as fatal.
+  await writeFile(themeFile, JSON.stringify({ someUnrelatedField: 42 }), "utf8");
+  try {
+    const log = createHostLog();
+    await expect(
+      verifyExplicitFileOverrides([{ flag: "--theme", path: themeFile }], log),
+    ).resolves.toBeDefined();
+    expect(log.entries().filter((e) => e.level === "error")).toHaveLength(0);
+
+    // And the file genuinely still activates via the real downstream path.
+    const contribution = await loadThemeFileOverride(themeFile);
+    expect(contribution).toBeDefined();
+    expect(contribution?.theme.id).toBe("incomplete-theme");
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+// --- CodeRabbit PR #154 review: runDeferredPhase's own two
+// applyConfiguredTheme call sites must also respect an active --theme
+// override, not just the live onDidChange path themeConfigSync guards. ---
+
+test("runDeferredPhase does not let a workspace-configured theme override an active CLI --theme override", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  const themeDir = await mkdtemp(join(tmpdir(), "tecode-cli-themefile-"));
+  const cliThemeFile = join(themeDir, "cli-theme.json");
+  const configThemeFile = join(themeDir, "config-theme.json");
+  await writeFile(cliThemeFile, JSON.stringify({ name: "CLI Theme", colors: {} }), "utf8");
+  await writeFile(configThemeFile, JSON.stringify({ name: "Config Theme", colors: {} }), "utf8");
+
+  const workspaceTecodeDir = join(workspaceDir, ".tecode");
+  await mkdir(workspaceTecodeDir, { recursive: true });
+  // Names a theme that WILL be registered below — without the guard this
+  // would win once runDeferredPhase re-applies workbench.colorTheme.
+  await writeFile(
+    join(workspaceTecodeDir, "settings.json"),
+    JSON.stringify({ "workbench.colorTheme": "config-theme" }),
+    "utf8",
+  );
+
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+  }
+
+  try {
+    await root.config.ready;
+    await root.themesReadyPromise;
+
+    // Register both themes directly (standing in for the deferred phase's
+    // own extension/user-theme loading) BEFORE simulating runTecode's
+    // --theme activation, exactly like a real extension/user theme that
+    // finishes loading during runDeferredPhase.
+    root.themeRegistry.register({ id: "config-theme", label: "Config Theme", path: configThemeFile });
+    root.themeRegistry.register({ id: "cli-theme", label: "CLI Theme", path: cliThemeFile });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Simulate runTecode's own --theme <file> handling.
+    root.themeService.setTheme("cli-theme");
+    root.cliThemeOverride.active = true;
+
+    const { loadResult } = await runDeferredPhase(root, {
+      fs: createHermeticDiscoveryFs(),
+      builtins: [],
+    });
+    expect(loadResult.skipped).toEqual([]);
+
+    // "config-theme" is now registered and named by workbench.colorTheme —
+    // without the guard, runDeferredPhase's own applyConfiguredTheme calls
+    // would switch to it.
+    expect(root.themeService.getActiveThemeId()).toBe("cli-theme");
+  } finally {
+    root.config.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(themeDir, { recursive: true, force: true });
   }
 });
 

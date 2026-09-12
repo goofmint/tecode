@@ -46,8 +46,8 @@ import type { HostLog } from "../host/errors";
 import { normalizeKeySequence } from "./normalize";
 import { compileWhen, WhenParseError, type CompiledWhen, type WhenContextGetter } from "./when";
 
-/** The four binding layers, in ascending precedence order (design.md §6.2,
- * §6.5): defaults < fallback < extension < user. `fallback` is the
+/** The five binding layers, in ascending precedence order (design.md §6.2,
+ * §6.5): defaults < fallback < extension < user < cli. `fallback` is the
  * terminal-capability overlay (Req 4.7) — legitimately empty until it is
  * populated in Task 4.2, so every layer is required here rather than
  * optional, keeping precedence order a fact about array position, not
@@ -60,7 +60,14 @@ import { compileWhen, WhenParseError, type CompiledWhen, type WhenContextGetter 
  * default binding; a plain `user`-layer entry in
  * `~/.config/tecode/keybindings.json` already sits at the HIGHEST
  * precedence, so it inherits that same override power for free with no
- * dedicated layer needed. */
+ * dedicated layer needed.
+ *
+ * **`cli` (Req 9.7, Issue #149)** is a NEW, genuinely highest-precedence
+ * layer, added above `user` rather than replacing it: a `--keybindings
+ * <file>` CLI override layers ON TOP of `~/.config/tecode/keybindings.json`
+ * rather than redirecting it (`config/service.ts`'s `ConfigServiceDeps.
+ * cliKeybindingsPath`, a SEPARATE path from `keybindingsPath`'s own USER
+ * layer). */
 export interface KeymapLayers {
   /** Core default bindings. */
   defaults: KeybindingContribution[];
@@ -70,12 +77,16 @@ export interface KeymapLayers {
   fallback: KeybindingContribution[];
   /** Bindings contributed by extension manifests (`contributes.keybindings`). */
   extension: KeybindingContribution[];
-  /** The user's `keybindings.json` entries — highest precedence. */
+  /** The user's `keybindings.json` entries. */
   user: KeybindingContribution[];
+  /** The `--keybindings <file>` CLI override's entries (Req 9.7, Issue
+   * #149) — highest precedence of all, above `user`. Empty when no
+   * `--keybindings` flag was given. */
+  cli: KeybindingContribution[];
 }
 
 /** The layer a resolved binding (or `entries()` row) came from. */
-export type BindingLayer = "defaults" | "fallback" | "extension" | "user";
+export type BindingLayer = "defaults" | "fallback" | "extension" | "user" | "cli";
 
 /** Dependencies {@link createBindingTable} reports through rather than
  * owning directly (design.md §5, §14) — a structured log for skipped,
@@ -186,7 +197,7 @@ function logSafely(log: HostLog, level: "error" | "warning", message: string): v
   }
 }
 
-const LAYER_ORDER: readonly BindingLayer[] = ["defaults", "fallback", "extension", "user"];
+const LAYER_ORDER: readonly BindingLayer[] = ["defaults", "fallback", "extension", "user", "cli"];
 
 /**
  * Build the layered keybinding table (Req 4.1-4.3, design.md §6.2).
