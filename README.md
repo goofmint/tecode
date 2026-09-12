@@ -628,8 +628,12 @@ commit) does not replace it, and `theme.select`'s own write-back to
 `settings.json` is skipped (with a logged warning) while the override is
 active, since it would have no visible effect anyway. Its id/label follow
 the same rule as a user-themes-directory file above (filename stem, or
-the JSON's own `"name"`). An unreadable `--theme` file is a fatal startup
-error, the same as `--settings`/`--keybindings` above.
+the JSON's own `"name"`). A `--theme` file that does not exist, cannot be
+read, or is not valid JSON with a top-level object structure is a fatal
+startup error, the same as `--settings`/`--keybindings` above; a
+syntactically valid theme object with incomplete or unrecognized content
+(e.g. an unknown color key) still activates and degrades per-key to the
+base palette, exactly like every other theme source.
 
 ## Terminal support
 

@@ -34,7 +34,13 @@ import {
 } from "@tecode/core";
 import pkg from "../package.json";
 import { resolveStartupTarget } from "./argv";
-import { buildAssemblyRoot, createShutdown, runDeferredPhase, runTecode } from "./main";
+import {
+  buildAssemblyRoot,
+  createShutdown,
+  runDeferredPhase,
+  runTecode,
+  verifyExplicitFileOverrides,
+} from "./main";
 import { loadThemeFileOverride } from "./userThemes";
 
 /** A {@link DiscoveryFs} backed by the real filesystem, except the real
@@ -702,6 +708,64 @@ test("runTecode rejects when --keybindings names a file whose top level is a JSO
     await expect(
       runTecode([], { cwd: workspaceDir, keybindingsFile }),
     ).rejects.toThrow(/--keybindings/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+// --- CodeRabbit PR #154 review (third pass): a readable --theme file that
+// is not valid JSON, or whose top level isn't an object, must be just as
+// fatal as the equivalent --settings problem — a syntactically valid
+// theme object with incomplete/unrecognized content, however, must still
+// succeed (Req 7.1's per-key degrade policy, unchanged). ---
+
+test("runTecode rejects when --theme names a file that exists but is not valid JSON", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const themeFile = join(workspaceDir, "broken-theme.json");
+  await writeFile(themeFile, "{ not valid json !!", "utf8");
+  try {
+    await expect(runTecode([], { cwd: workspaceDir, themeFile })).rejects.toThrow(/--theme/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("runTecode rejects when --theme names a file whose top level is a JSON array, not an object", async () => {
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const themeFile = join(workspaceDir, "array-theme.json");
+  await writeFile(themeFile, JSON.stringify([1, 2, 3]), "utf8");
+  try {
+    await expect(runTecode([], { cwd: workspaceDir, themeFile })).rejects.toThrow(/--theme/);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});
+
+test("verifyExplicitFileOverrides does NOT reject a syntactically valid but schema-incomplete --theme file — themeLoader.ts's per-key degrade policy still applies", async () => {
+  // Exercises `verifyExplicitFileOverrides` directly rather than through
+  // `runTecode`: a SUCCESSFUL validation there falls through to
+  // `buildAssemblyRoot`/`renderShell`/a headless `process.exit(0)`, which
+  // would kill the test runner itself if called end-to-end here (matches
+  // `shutdownOnDestroy.test.ts`'s own reasoning for why it spawns a real
+  // subprocess instead of calling `runTecode` in-process for a
+  // success path).
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const themeFile = join(workspaceDir, "incomplete-theme.json");
+  // A valid top-level JSON object, but with no recognized "colors"/
+  // "tokenColors" content at all — themeLoader.ts's own per-key degrade
+  // policy handles this gracefully; it must not be treated as fatal.
+  await writeFile(themeFile, JSON.stringify({ someUnrelatedField: 42 }), "utf8");
+  try {
+    const log = createHostLog();
+    await expect(
+      verifyExplicitFileOverrides([{ flag: "--theme", path: themeFile }], log),
+    ).resolves.toBeDefined();
+    expect(log.entries().filter((e) => e.level === "error")).toHaveLength(0);
+
+    // And the file genuinely still activates via the real downstream path.
+    const contribution = await loadThemeFileOverride(themeFile);
+    expect(contribution).toBeDefined();
+    expect(contribution?.theme.id).toBe("incomplete-theme");
   } finally {
     await rm(workspaceDir, { recursive: true, force: true });
   }

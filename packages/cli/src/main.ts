@@ -2013,7 +2013,7 @@ export interface RunTecodeResult {
 /** One `--settings`/`--keybindings`/`--theme <file>` override, already
  * resolved to an absolute path, as {@link verifyExplicitFileOverrides}
  * checks it. */
-interface ExplicitFileOverride {
+export interface ExplicitFileOverride {
   /** The flag name — used both to compose this override's error message
    * and (CodeRabbit PR #154 review) to pick which content shape to
    * validate: `--settings` must parse to a top-level JSON object,
@@ -2026,37 +2026,6 @@ interface ExplicitFileOverride {
   path: string | undefined;
 }
 
-/**
- * Verify every given `--settings`/`--keybindings`/`--theme <file>` override
- * is not just readable but genuinely well-formed (Req 9.7/7.6, Issue #149).
- * A stat-only check (this function's earlier shape) let a MALFORMED
- * explicit file through: `ConfigService`'s own loaders would then silently
- * degrade it to an empty layer with just a logged warning — exactly the
- * "typo silently ignored" outcome an explicit flag is supposed to avoid
- * (CodeRabbit PR #154 review). So this actually reads and, for
- * `--settings`/`--keybindings`, JSONC-parses each file, requiring the same
- * top-level shape `config/service.ts`'s loaders require (object / array
- * respectively). `--theme` only needs to be READABLE here — its JSON
- * structure is validated, and gracefully degraded per-key to the base
- * palette on a malformed file, by `ThemeRegistry.loadContributions` itself
- * once `runTecode` loads it (`ui/themeLoader.ts`'s existing policy, shared
- * by every OTHER theme source: built-in, extension-declared, and
- * user-themes-directory) — enforcing full theme-schema validity here would
- * make `--theme` stricter than every other theme source, which is not
- * this flag's job.
- *
- * Unlike `--config <dir>`'s tolerant "missing file is an empty layer"
- * policy (`config/service.ts`'s own TSDoc), an EXPLICITLY named file with
- * a genuine problem — missing, unreadable, or (for `--settings`/
- * `--keybindings`) malformed/wrong-shaped — is a typo the user would
- * otherwise never learn about, so this throws rather than degrading.
- * Every problem found is still reported through `log` first (design.md
- * §14's "report, then decide how to fail" discipline) before the combined
- * error is thrown; `runTecode`'s caller (`main()`) already exits the
- * process on any rejected promise, so throwing here — rather than calling
- * `process.exit` directly — keeps this function safely callable from a
- * test that must never risk killing the test runner itself.
- */
 /** What {@link verifyExplicitFileOverrides} hands back on success: the
  * ALREADY-parsed content for whichever of `--settings`/`--keybindings` was
  * given (Req 9.7, Issue #149, CodeRabbit PR #154 review) — `runTecode`
@@ -2064,7 +2033,7 @@ interface ExplicitFileOverride {
  * `initialCliKeybindings` instead of letting the service re-read the same
  * file a second time (see those fields' own TSDoc for the TOCTOU race this
  * closes). `undefined` for a flag that was never given. */
-interface VerifiedExplicitFileOverrides {
+export interface VerifiedExplicitFileOverrides {
   settings?: Record<string, unknown>;
   keybindings?: unknown[];
 }
@@ -2073,41 +2042,53 @@ interface VerifiedExplicitFileOverrides {
  * Verify every given `--settings`/`--keybindings`/`--theme <file>` override
  * is not just readable but genuinely well-formed (Req 9.7/7.6, Issue #149).
  * A stat-only check (this function's earlier shape) let a MALFORMED
- * explicit file through: `ConfigService`'s own loaders would then silently
- * degrade it to an empty layer with just a logged warning — exactly the
- * "typo silently ignored" outcome an explicit flag is supposed to avoid
- * (CodeRabbit PR #154 review). So this actually reads and, for
- * `--settings`/`--keybindings`, JSONC-parses each file, requiring the same
- * top-level shape `config/service.ts`'s loaders require (object / array
- * respectively) — and returns that already-parsed content
+ * explicit file through: `ConfigService`'s own loaders (for `--settings`/
+ * `--keybindings`) or `ThemeRegistry.loadContributions` (for `--theme`)
+ * would then silently degrade it — an empty layer, or the base palette —
+ * with just a logged warning, exactly the "typo silently ignored" outcome
+ * an explicit flag is supposed to avoid (CodeRabbit PR #154 review). So
+ * this actually reads and JSONC-parses each file: `--settings`/`--theme`
+ * must parse to a top-level JSON object, `--keybindings` to a top-level
+ * JSON array — the SAME two checks `config/service.ts`'s
+ * `loadSettingsLayer`/`loadKeybindingsLayer` and `ui/themeLoader.ts`'s
+ * `loadThemeFromJsonText` each already make before doing anything else
+ * with their file, so this adds no new validation rule beyond what each
+ * loader already requires; it only moves the SAME check earlier, before
+ * `buildAssemblyRoot`, so a failure aborts startup instead of silently
+ * degrading a layer/theme that was supposed to be explicit. `--settings`'s
+ * and `--keybindings`'s already-parsed content is returned
  * ({@link VerifiedExplicitFileOverrides}) so the caller can hand it
  * straight to `createConfigService` instead of reading the file again,
  * closing a TOCTOU race a second CodeRabbit pass on this same PR found: a
  * file deleted/replaced in the window between this check and
  * `ConfigService`'s OWN first read used to silently degrade to an empty
  * CLI layer instead of failing startup, the exact "typo silently ignored"
- * outcome this function otherwise exists to prevent. `--theme` only needs
- * to be READABLE here — its JSON structure is validated, and gracefully
- * degraded per-key to the base palette on a malformed file, by
- * `ThemeRegistry.loadContributions` itself once `runTecode` loads it
- * (`ui/themeLoader.ts`'s existing policy, shared by every OTHER theme
- * source: built-in, extension-declared, and user-themes-directory) —
- * enforcing full theme-schema validity here would make `--theme` stricter
- * than every other theme source, which is not this flag's job.
+ * outcome this function otherwise exists to prevent. `--theme`'s parsed
+ * value is NOT returned the same way (`runTecode` re-reads it once more via
+ * `userThemes.ts`'s `loadThemeFileOverride`, since that is also where its
+ * id/label are derived) — deliberately out of scope here is `--theme`'s
+ * deeper theme SCHEMA validity (which `colors`/`tokenColors`
+ * keys are recognized, whether their values parse as colors, ...): a
+ * syntactically valid theme object with incomplete or unrecognized content
+ * still registers and degrades per-key to the base palette, exactly like
+ * every OTHER theme source (built-in, extension-declared,
+ * user-themes-directory) already does (`themeLoader.ts`'s per-key fallback
+ * policy) — enforcing that here would make `--theme` stricter than the
+ * rest of the theming subsystem, which is not this flag's job.
  *
  * Unlike `--config <dir>`'s tolerant "missing file is an empty layer"
  * policy (`config/service.ts`'s own TSDoc), an EXPLICITLY named file with
- * a genuine problem — missing, unreadable, or (for `--settings`/
- * `--keybindings`) malformed/wrong-shaped — is a typo the user would
- * otherwise never learn about, so this throws rather than degrading.
- * Every problem found is still reported through `log` first (design.md
- * §14's "report, then decide how to fail" discipline) before the combined
- * error is thrown; `runTecode`'s caller (`main()`) already exits the
- * process on any rejected promise, so throwing here — rather than calling
- * `process.exit` directly — keeps this function safely callable from a
- * test that must never risk killing the test runner itself.
+ * a genuine problem — missing, unreadable, or not valid JSON in the
+ * required top-level shape — is a typo the user would otherwise never
+ * learn about, so this throws rather than degrading. Every problem found
+ * is still reported through `log` first (design.md §14's "report, then
+ * decide how to fail" discipline) before the combined error is thrown;
+ * `runTecode`'s caller (`main()`) already exits the process on any
+ * rejected promise, so throwing here — rather than calling `process.exit`
+ * directly — keeps this function safely callable from a test that must
+ * never risk killing the test runner itself.
  */
-async function verifyExplicitFileOverrides(
+export async function verifyExplicitFileOverrides(
   overrides: readonly ExplicitFileOverride[],
   log: HostLog,
 ): Promise<VerifiedExplicitFileOverrides> {
@@ -2117,12 +2098,28 @@ async function verifyExplicitFileOverrides(
     if (!path) continue;
     try {
       const text = await nodeReadFile(path, "utf8");
-      if (flag === "--settings" || flag === "--keybindings") {
+      // `--theme` joins the JSON-syntax + top-level-object check here too
+      // (CodeRabbit PR #154 review, third pass): a readable file that
+      // isn't even valid JSON, or whose top level isn't an object, is a
+      // typo exactly like a malformed `--settings` file — the SAME two
+      // checks `ui/themeLoader.ts`'s `loadThemeFromJsonText` itself makes
+      // before resolving a single color/token, so this adds no new
+      // validation rule beyond what that loader already requires. What
+      // this does NOT do is validate theme SCHEMA (which `colors`/
+      // `tokenColors` keys are recognized, whether their values parse as
+      // colors, ...) — a syntactically valid theme object with incomplete
+      // or unrecognized content still registers and degrades per-key to
+      // the base palette, exactly like every OTHER theme source (built-in,
+      // extension-declared, user-themes-directory) already does
+      // (`themeLoader.ts`'s per-key fallback policy) — enforcing that here
+      // would make `--theme` a stricter contract than the rest of the
+      // theming subsystem, which is not this flag's job.
+      if (flag === "--settings" || flag === "--keybindings" || flag === "--theme") {
         const parsed = parseJsonc<unknown>(text);
         if (!parsed.ok) {
           throw new Error(`line ${parsed.line}, column ${parsed.column}: ${parsed.message}`);
         }
-        if (flag === "--settings") {
+        if (flag === "--settings" || flag === "--theme") {
           if (
             typeof parsed.value !== "object" ||
             parsed.value === null ||
@@ -2130,7 +2127,7 @@ async function verifyExplicitFileOverrides(
           ) {
             throw new Error("must be a JSON object at the top level");
           }
-          verified.settings = parsed.value as Record<string, unknown>;
+          if (flag === "--settings") verified.settings = parsed.value as Record<string, unknown>;
         } else {
           if (!Array.isArray(parsed.value)) {
             throw new Error("must be a JSON array at the top level");
@@ -2138,8 +2135,6 @@ async function verifyExplicitFileOverrides(
           verified.keybindings = parsed.value;
         }
       }
-      // --theme: readability alone is verified here — see this function's
-      // TSDoc for why its content shape is validated elsewhere instead.
     } catch (cause) {
       const message = `${flag} file "${path}" is invalid: ${describeError(cause)}`;
       log.append("error", { message, path });
