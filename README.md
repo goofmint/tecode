@@ -631,7 +631,7 @@ user binding means the user's own `keybindings.json` always wins, with no
 special-casing needed to override a fallback entry.
 
 The bundled fallback keymap
-(`packages/core/src/keymap/keybindings.fallback.json`) ships six
+(`packages/core/src/keymap/keybindings.fallback.json`) ships seven
 entries today:
 
 | Key | Command | When |
