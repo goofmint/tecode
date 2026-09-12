@@ -30,6 +30,8 @@ export {
   type WebTreeSitterParserBackendDeps,
 } from "./parserBackend";
 
+export { createFoldService, type FoldService, type FoldServiceDeps } from "./foldService";
+
 export {
   createHighlightService,
   type HighlightService,

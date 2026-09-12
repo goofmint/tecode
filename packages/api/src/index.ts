@@ -9,6 +9,7 @@
 export type {
   Position,
   Range,
+  FoldRange,
   Selection,
   TextEdit,
   Uri,
@@ -67,6 +68,7 @@ export type {
   Editor,
   WindowNamespace,
   FindNamespace,
+  FoldNamespace,
   EditorNamespace,
   SlotId,
   ComponentType,

@@ -25,6 +25,7 @@ import {
   type EditorInputRouter,
   type EditorSessionService,
   type FindService,
+  type FoldController,
   type HighlightService,
   type LayoutStateService,
   type ModalService,
@@ -97,6 +98,13 @@ export interface ShellRenderDeps {
    * omits it keeps `EditorView`'s current (unhighlighted) rendering
    * unchanged. */
   highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
+  /**
+   * Code folding (Issue #150, `@tecode/core`'s `ui/foldController.ts`) —
+   * threaded straight through to `Shell`'s own `foldController` prop, the
+   * same way `highlightService` above is. Optional: omitted, the editor
+   * renders with no fold markers and an inert gutter click.
+   */
+  foldController?: Pick<FoldController, "getFoldRanges" | "onDidChange" | "toggleAt">;
   /** The live chord state machine (Req 4.4, design.md §6.1) —
    * {@link renderShellToTerminal} wires `renderer.keyInput` through it (and
    * `editorInputRouter` below) only when BOTH are given; either omitted
@@ -356,6 +364,7 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
           editorSession={deps.editorSession}
           findService={deps.findService}
           highlightService={deps.highlightService}
+          foldController={deps.foldController}
           onEditorFocusHandleChange={deps.onEditorFocusHandleChange}
         />
         {/* LAST sibling of <Shell> (Task 3.1, `ui/modalOverlay.tsx`'s

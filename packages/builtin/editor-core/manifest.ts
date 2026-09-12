@@ -198,6 +198,43 @@
  * `exitOnCtrlC: false` plus a real quit command) is a product decision for
  * the app owner, out of scope here — do not "fix" this by adding a
  * `ctrl+c` binding without that decision being made first.
+ *
+ * **Folding keybindings (Issue #150)**: `editor.action.fold`/`unfold` take
+ * VS Code's own `ctrl+shift+[`/`ctrl+shift+]`. Issue #150 flags `ctrl+[` as
+ * dangerous — a non-Kitty terminal sends the SAME single `0x1B` byte for
+ * Ctrl+[ as it does for Escape — so both strokes were run through
+ * `@opentui/core@0.1.107`'s actual `parseKeypress` + this repo's own
+ * `keymap/keyEvent.ts`'s `keyEventToStroke`, per this TSDoc's methodology,
+ * before being chosen:
+ *
+ * - bare `0x1B` -> `name: "escape"` -> stroke `"escape"`, under BOTH
+ *   `useKittyKeyboard: false` and `true`. It never produces `"ctrl+["`, and
+ *   therefore can never resolve to a `ctrl+shift+[` binding.
+ * - Kitty's `CSI 91;6u` -> `name: "["`, ctrl+shift set -> stroke
+ *   `"ctrl+shift+["` (and `CSI 93;6u` -> `"ctrl+shift+]"`), but ONLY with
+ *   `useKittyKeyboard: true`; the legacy parser returns no name at all for
+ *   those bytes.
+ *
+ * So the collision Issue #150 warns about is specific to `ctrl+[` (which is
+ * NOT bound here) and cannot occur for `ctrl+shift+[`: the stroke simply
+ * never materializes outside a Kitty-capable terminal, where Escape is
+ * disambiguated anyway. The cost is that on a non-Kitty terminal these two
+ * bindings are unreachable — which is exactly what
+ * `keymap/keybindings.fallback.json`'s layer exists for (README's "Fallback
+ * keymap"): it maps `ctrl+r`/`ctrl+t` onto the same two commands, both
+ * verified unclaimed against this file's full `ctrl+<letter>` inventory,
+ * against every other built-in manifest's, and against
+ * `TERMINAL_ESCAPE_STROKE = "ctrl+o"`, and both parsing identically under
+ * either mode (`ctrl+r` -> `"ctrl+r"`, `ctrl+t` -> `"ctrl+t"`) — unlike
+ * `ctrl+j`, whose `0x0A` parses as `name: "linefeed"` and never yields a
+ * `"ctrl+j"` stroke at all.
+ *
+ * `toggleFold`/`foldAll`/`unfoldAll` are registered as commands with NO
+ * default keybinding — palette- and `commands.execute`-reachable, and
+ * user-bindable through `keybindings.json` — rather than spending more of
+ * the small pool of unclaimed strokes on them. `toggleFold` additionally
+ * has a mouse gesture (a click on the gutter's fold marker, `@tecode/core`'s
+ * `ui/editorView.tsx`), which is the primary way it is reached.
  */
 
 import type { Manifest } from "@tecode/api";
@@ -290,6 +327,14 @@ export default {
       // "Clipboard commands (Issue #91)" section, just below the
       // keybindings table, for why `clipboardCopy` alone has no default
       // keybinding.
+      // Issue #150: code folding. See this file's TSDoc's "Folding
+      // keybindings (Issue #150)" section for why `ctrl+shift+[`/`ctrl+shift+]`
+      // are safe here and what non-Kitty terminals get instead.
+      { id: "editor.action.fold", title: "Fold", category: "Editor" },
+      { id: "editor.action.unfold", title: "Unfold", category: "Editor" },
+      { id: "editor.action.toggleFold", title: "Toggle Fold", category: "Editor" },
+      { id: "editor.action.foldAll", title: "Fold All", category: "Editor" },
+      { id: "editor.action.unfoldAll", title: "Unfold All", category: "Editor" },
       { id: "editor.action.clipboardCopy", title: "Copy", category: "Editor" },
       { id: "editor.action.clipboardCut", title: "Cut", category: "Editor" },
       { id: "editor.action.clipboardPaste", title: "Paste", category: "Editor" },
@@ -370,6 +415,11 @@ export default {
       // Issue #91: clipboard cut/paste. See this file's TSDoc's "Clipboard
       // commands (Issue #91)" section for why `clipboardCopy` has no
       // keybinding entry here at all.
+      // Issue #150: code folding. `toggleFold`/`foldAll`/`unfoldAll` are
+      // palette-/`commands.execute`-reachable with no default keybinding —
+      // see this file's TSDoc's "Folding keybindings (Issue #150)".
+      { key: "ctrl+shift+[", command: "editor.action.fold", when: WHEN_EDITOR_TEXT_FOCUS },
+      { key: "ctrl+shift+]", command: "editor.action.unfold", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: "ctrl+x", command: "editor.action.clipboardCut", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: "ctrl+v", command: "editor.action.clipboardPaste", when: WHEN_EDITOR_TEXT_FOCUS },
     ],

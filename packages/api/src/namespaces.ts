@@ -7,6 +7,7 @@
 import type {
   Disposable,
   Event,
+  FoldRange,
   Listener,
   Position,
   Selection,
@@ -322,6 +323,58 @@ export interface FindNamespace {
 }
 
 /* ------------------------------------------------------------------ */
+/* tecode.editor.folds                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Code folding for the active editor (Issue #150), reached as
+ * `tecode.editor.folds`. Foldable regions come from the active document's
+ * language fold query (`LanguageContribution.folds`); which of them are
+ * currently COLLAPSED is per-tab editor state, not a document property.
+ *
+ * Every method no-ops (and every read reports "nothing") with no active
+ * editor, or when the host was built without a folding backend — the same
+ * absent-safe contract {@link FindNamespace} has.
+ */
+export interface FoldNamespace {
+  /** Every foldable region of the active document, in document order. */
+  ranges(): readonly FoldRange[];
+  /** The regions currently collapsed in the active editor, in document
+   * order — always a subset of {@link ranges}. */
+  collapsed(): readonly FoldRange[];
+  /**
+   * Collapse the innermost foldable region containing `line` (the primary
+   * cursor's line when omitted). A no-op when no region contains it, or
+   * when every containing region is already collapsed.
+   */
+  fold(line?: number): void;
+  /**
+   * Expand the innermost COLLAPSED region containing `line` (the primary
+   * cursor's line when omitted). A no-op when no collapsed region
+   * contains it.
+   */
+  unfold(line?: number): void;
+  /**
+   * {@link unfold} when a collapsed region contains `line`, otherwise
+   * {@link fold} — the gesture a gutter click and `editor.action.toggleFold`
+   * both perform.
+   */
+  toggle(line?: number): void;
+  /** Collapse every foldable region of the active document. */
+  foldAll(): void;
+  /** Expand every collapsed region of the active editor. */
+  unfoldAll(): void;
+  /**
+   * Whether `line` is currently drawn — `false` exactly when it is hidden
+   * inside a collapsed region (a region's own `startLine` always stays
+   * visible). Always `true` with no active editor and with nothing
+   * collapsed, so a caller that just wants "the next line I can move to"
+   * needs no folding-specific branch of its own.
+   */
+  isLineVisible(line: number): boolean;
+}
+
+/* ------------------------------------------------------------------ */
 /* tecode.editor                                                       */
 /* ------------------------------------------------------------------ */
 
@@ -361,6 +414,8 @@ export interface EditorNamespace {
   setSelections(selections: readonly Selection[]): void;
   /** In-buffer find/replace (Req 11.1, design.md §13). */
   find: FindNamespace;
+  /** Code folding (Issue #150). */
+  folds: FoldNamespace;
   /**
    * Fires whenever the active editor changes in a way a status line or
    * similar always-on summary view would want to redraw for (Task 3.4, Req

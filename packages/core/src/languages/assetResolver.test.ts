@@ -37,6 +37,14 @@ describe("createAssetResolver — path resolution (Req 8.2)", () => {
     expect(text).toBe("(query text for /ext/languages-basic/ts.scm)");
   });
 
+  test("resolveFolds joins baseDir with the contribution's folds path (Issue #150)", async () => {
+    const fs = fakeFs();
+    const resolver = createAssetResolver({ fs });
+    const text = await resolver.resolveFolds("ts.folds.scm", "/ext/languages-basic");
+    expect(fs.reads).toEqual(["text:/ext/languages-basic/ts.folds.scm"]);
+    expect(text).toBe("(query text for /ext/languages-basic/ts.folds.scm)");
+  });
+
   test("an omitted baseDir uses the path as-is (runtime tecode.languages.register)", async () => {
     const fs = fakeFs();
     const resolver = createAssetResolver({ fs });

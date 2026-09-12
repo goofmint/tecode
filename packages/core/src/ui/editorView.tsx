@@ -96,14 +96,16 @@
 
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRenderer, useTerminalDimensions } from "@opentui/react";
-import { RenderableEvents, type RGBA } from "@opentui/core";
+import { RenderableEvents, type MouseEvent as OpenTuiMouseEvent, type RGBA } from "@opentui/core";
 import type { CaptureName, Range, Selection, Style } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { ConfigService } from "../config/service";
 import type { HighlightService, HighlightSpan } from "../languages/highlightService";
 import { CONTROL_CHAR_PLACEHOLDER, isUnsafeRenderChar } from "./cellWidth";
 import { computeHardwareCursorPosition } from "./cursorPosition";
-import { useHighlightRevision, useLineTicks, type EditorState } from "./editorState";
+import { useFoldRevision, useHighlightRevision, useLineTicks, type EditorState } from "./editorState";
+import type { FoldController } from "./foldController";
+import { createFoldMapping, foldStartingAt } from "./foldMapping";
 import type { FocusableNode, FocusEmitter } from "./focus";
 import { useFocusContextService, useFocusTracking } from "./focus";
 import { resolveCaptureStyle } from "./themeLoader";
@@ -158,6 +160,31 @@ const HARDWARE_CURSOR_VISIBLE = true;
  * part of {@link editorLineRowPropsEqual}'s comparison now (`prev.spans ===
  * next.spans`), not just an allocation saving. */
 const EMPTY_SPANS: readonly HighlightSpan[] = [];
+
+/**
+ * What a row's fold marker shows (Issue #150): nothing (this line starts no
+ * foldable region), an expandable region, or a collapsed one.
+ *
+ * The marker is drawn in the gutter's LAST column — the single space that
+ * has always separated the line number from the text (`gutterWidth ===
+ * digitWidth + 1`). Reusing that column, rather than adding a column of its
+ * own, is what keeps folding from shifting every existing cursor/selection
+ * column measurement: `gutterWidth` is unchanged, so `cursorPosition.ts`'s
+ * math, the snapshot tests' expected layout, and the mouse hit test below
+ * all keep agreeing with each other.
+ */
+type FoldMarker = "none" | "expanded" | "collapsed";
+
+/** The glyphs {@link FoldMarker} renders as. Both markers are
+ * single-cell-wide (`cellWidth.ts`'s measurement) so they occupy exactly
+ * the one gutter column they replace, and both are pure ASCII-adjacent
+ * geometric shapes rather than Nerd Font/Powerline glyphs, which a bare
+ * terminal would render as a placeholder box. */
+const FOLD_MARKER_GLYPHS: Record<FoldMarker, string> = {
+  none: " ",
+  expanded: "▾", // ▾
+  collapsed: "▸", // ▸
+};
 
 /** One line's worth of colored text, after {@link buildLineRuns} has merged
  * the base/selection/cursor layers for that line (this module's TSDoc). */
@@ -526,6 +553,11 @@ interface EditorLineRowProps {
   gutterWidth: number;
   showLineNumbers: boolean;
   isActiveLine: boolean;
+  /** This row's fold marker (Issue #150) — a plain string compared by value
+   * in {@link editorLineRowPropsEqual}, so collapsing a region re-renders
+   * exactly the header row whose glyph flipped (plus whatever rows the
+   * mapping shift brought into view), not every visible row. */
+  foldMarker: FoldMarker;
   colors: EditorLineColors;
   /** Test-only instrumentation: called once per actual invocation of this
    * row's render body (never on a memo-skipped re-render) — the dirty-range
@@ -545,6 +577,7 @@ function editorLineRowPropsEqual(prev: EditorLineRowProps, next: EditorLineRowPr
     prev.gutterWidth === next.gutterWidth &&
     prev.showLineNumbers === next.showLineNumbers &&
     prev.isActiveLine === next.isActiveLine &&
+    prev.foldMarker === next.foldMarker &&
     prev.colors === next.colors
   );
 }
@@ -564,8 +597,13 @@ const EditorLineRow = memo(function EditorLineRow(props: EditorLineRowProps): Re
     activeFindMatchIndex: props.activeFindMatchIndex,
     spans: props.spans,
   });
+  // The gutter's trailing column carries the fold marker (Issue #150) —
+  // `FOLD_MARKER_GLYPHS.none` is the single space it has always been, so a
+  // row with nothing to fold renders byte-for-byte what it rendered before
+  // folding existed.
   const lineNumberText =
-    String(props.lineIndex + 1).padStart(Math.max(0, props.gutterWidth - 1), " ") + " ";
+    String(props.lineIndex + 1).padStart(Math.max(0, props.gutterWidth - 1), " ") +
+    FOLD_MARKER_GLYPHS[props.foldMarker];
 
   return (
     <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
@@ -665,6 +703,23 @@ export interface EditorViewProps {
    */
   highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
   /**
+   * Code folding (Issue #150, `ui/foldController.ts`) — threaded through
+   * the composition root exactly like {@link highlightService}. Supplies
+   * all three things this component needs at once: which regions are
+   * foldable (`getFoldRanges`), when that set changes (`onDidChange`), and
+   * the write path a gutter click takes (`toggleAt`). One prop rather than
+   * a service-plus-callback pair, so a keyboard fold command and a gutter
+   * click provably act on the same state through the same code.
+   *
+   * Optional and absent-safe: omitted (every existing caller/test), no row
+   * ever gets a fold marker and the gutter click is inert — the exact
+   * pre-folding behavior. Note that a document can still RENDER folded
+   * without this prop, since `state.collapsedFolds` alone drives the
+   * display-line mapping; only discovering and toggling regions needs the
+   * controller.
+   */
+  foldController?: Pick<FoldController, "getFoldRanges" | "onDidChange" | "toggleAt">;
+  /**
    * Reports the text plane's underlying OpenTUI node (or `null` on
    * detach/unmount) alongside this component's own internal focus-tracking
    * ref callbacks (Req 11.1) — `shell.tsx`'s `EditorArea` captures it so
@@ -695,6 +750,12 @@ export function EditorView(props: EditorViewProps): ReactNode {
   // row's `spans` reference, not a shared revision number, is what
   // actually drives the per-row memo comparison below.
   useHighlightRevision(highlightService);
+  const foldController = props.foldController;
+  // Same "subscribe purely to force a re-render" contract as
+  // `useHighlightRevision` just above (Issue #150) — the fold RANGES can
+  // change asynchronously (the grammar's first parse settling, an edit
+  // adding a function), with no prop of this component changing with them.
+  useFoldRevision(foldController);
   const contextFocusRef = useFocusTracking("editorTextFocus");
   const [isFocused, isFocusedRef] = useIsFocused();
   const onTextPlaneNode = props.onTextPlaneNode;
@@ -735,11 +796,29 @@ export function EditorView(props: EditorViewProps): ReactNode {
       ? state.find.matches[state.find.activeMatchIndex]
       : undefined;
   const revealTargetLine = activeFindMatch ? activeFindMatch.start.line : primary?.active.line;
+
+  // Code folding (Issue #150): from here down, every scroll/viewport
+  // quantity — `scrollTop`, `startLine`, `endLine`, and the hardware
+  // cursor's row — is a DISPLAY line, not a document line, and
+  // `mapping.toDocumentLine` is the only bridge back. That keeps
+  // `viewport.ts` the same pure line-count arithmetic it always was (it is
+  // simply handed `visibleLineCount` instead of `lineCount`) and confines
+  // the whole coordinate change to this one component. With nothing
+  // collapsed the mapping is the identity and every number below is
+  // exactly what it was before folding existed.
+  const collapsedFolds = state.collapsedFolds;
+  const mapping = useMemo(() => createFoldMapping(collapsedFolds, lineCount), [collapsedFolds, lineCount]);
+  const visibleLineCount = mapping.visibleLineCount;
+  // A reveal target inside a collapsed region maps to that region's own
+  // (still visible) header row — scrolling to a fold that contains the
+  // match/caret, rather than to a row that isn't drawn at all.
+  const revealTargetDisplayLine =
+    revealTargetLine !== undefined ? mapping.toDisplayLine(revealTargetLine) : undefined;
   const scrollTop =
-    revealTargetLine !== undefined
-      ? revealLine(revealTargetLine, state.scrollTop, viewportHeight, lineCount)
-      : Math.max(0, Math.min(state.scrollTop, lineCount - 1));
-  const { startLine, endLine } = computeVisibleLineRange(scrollTop, viewportHeight, lineCount);
+    revealTargetDisplayLine !== undefined
+      ? revealLine(revealTargetDisplayLine, state.scrollTop, viewportHeight, visibleLineCount)
+      : Math.max(0, Math.min(state.scrollTop, visibleLineCount - 1));
+  const { startLine, endLine } = computeVisibleLineRange(scrollTop, viewportHeight, visibleLineCount);
   const findMatches = state.find?.isOpen ? state.find.matches : [];
   const activeFindMatchIndex = state.find?.isOpen ? state.find.activeMatchIndex : -1;
 
@@ -827,11 +906,22 @@ export function EditorView(props: EditorViewProps): ReactNode {
       renderer.setCursorPosition(1, 1, false);
       return;
     }
+    // Issue #150: a caret hidden inside a collapsed region has no
+    // on-screen cell of its own — the same "nothing to point at" case the
+    // scrolled-off-screen branch below (`position.visible`) covers.
+    if (mapping.isLineHidden(cursorLine)) {
+      renderer.setCursorPosition(1, 1, false);
+      return;
+    }
     const position = computeHardwareCursorPosition({
       screenX: node.screenX,
       screenY: node.screenY,
       gutterWidth,
-      cursorLine,
+      // Display row, not document line — `scrollTop`/`endLine` below are
+      // display-space too, so the subtraction inside
+      // `computeHardwareCursorPosition` still yields a row offset within
+      // the drawn window (Issue #150).
+      cursorLine: mapping.toDisplayLine(cursorLine),
       scrollTop,
       endLine,
       lineText: document.getLine(cursorLine),
@@ -915,8 +1005,27 @@ export function EditorView(props: EditorViewProps): ReactNode {
     [theme, isFocused],
   );
 
+  // The foldable regions of THIS document, re-read every render (Issue
+  // #150). `FoldService.getFoldRanges` is a map lookup returning a
+  // reference-stable array, and `useFoldRevision` above is what makes a
+  // render happen when that array changes.
+  const foldRanges = foldController?.getFoldRanges(document.uri);
+
+  /** This row's fold marker: `"none"` unless a foldable region STARTS
+   * here, `"collapsed"` when that region is currently collapsed. Resolved
+   * against `state.collapsedFolds` (a header row's own line is never
+   * hidden, so a collapsed region's header is always on screen to show
+   * it). */
+  function foldMarkerFor(line: number): FoldMarker {
+    if (!foldRanges || foldRanges.length === 0) return "none";
+    if (!foldStartingAt(foldRanges, line)) return "none";
+    if (collapsedFolds?.some((fold) => fold.startLine === line)) return "collapsed";
+    return "expanded";
+  }
+
   const rows: ReactNode[] = [];
-  for (let line = startLine; line < endLine; line++) {
+  for (let displayLine = startLine; displayLine < endLine; displayLine++) {
+    const line = mapping.toDocumentLine(displayLine);
     rows.push(
       <EditorLineRow
         key={line}
@@ -931,17 +1040,58 @@ export function EditorView(props: EditorViewProps): ReactNode {
         gutterWidth={gutterWidth}
         showLineNumbers={showLineNumbers}
         isActiveLine={primary ? primary.active.line === line : false}
+        foldMarker={foldMarkerFor(line)}
         colors={colors}
         onDebugRender={props.onDebugLineRender}
       />,
     );
   }
 
+  /**
+   * The editor's first mouse gesture (Issue #150): a click on a row's fold
+   * marker toggles that row's region.
+   *
+   * ONE handler on the text plane, not a per-row handler — `EditorLineRow`
+   * is memoized precisely so an unchanged row never re-renders, and giving
+   * each row a closure over its own line would hand every row a fresh
+   * prop on every render and defeat that. The single-handler plus
+   * global-coordinate-inversion shape is the same one `components.tsx`'s
+   * `Tabs` (Issue #138) and `shell.tsx`'s `Sidebar` border-drag already
+   * use, including their `event.button !== 0` primary-button guard:
+   * `@opentui/core@0.1.107` delivers a `down` for EVERY button to whichever
+   * renderable the pointer hit.
+   *
+   * `event.x`/`event.y` are GLOBAL terminal cells, so both are translated
+   * against the text plane's own `screenX`/`screenY` — the very same node
+   * position the hardware-cursor effect above reads, which is what keeps
+   * the click's row math the exact inverse of `cursorPosition.ts`'s row
+   * math.
+   */
+  const handleMouseDown = (event: OpenTuiMouseEvent): void => {
+    if (event.button !== 0) return;
+    if (!foldController || !showLineNumbers) return;
+    const node = positionedNodeRef.current;
+    if (!node) return;
+    // Only the gutter's marker column (its last one) is a fold target —
+    // a click on the line number itself, or anywhere in the text, is left
+    // alone rather than guessed at.
+    const localX = event.x - node.screenX;
+    if (localX !== gutterWidth - 1) return;
+    const clickedDisplayLine = scrollTop + (event.y - node.screenY);
+    if (clickedDisplayLine < startLine || clickedDisplayLine >= endLine) return;
+    const line = mapping.toDocumentLine(clickedDisplayLine);
+    // Only act where a marker is actually drawn — clicking the blank
+    // marker column of a non-foldable row must not fold that row's parent.
+    if (foldMarkerFor(line) === "none") return;
+    foldController.toggleAt(document.uri, line);
+  };
+
   return (
     <box
       ref={textPlaneRef}
       focusable
       style={{ flexDirection: "column", flexGrow: 1, overflow: "hidden" }}
+      onMouseDown={handleMouseDown}
     >
       {rows}
     </box>

@@ -9,8 +9,9 @@
  */
 
 import { useEffect, useReducer, useRef } from "react";
-import type { Position, Range, Selection, Uri } from "@tecode/api";
+import type { FoldRange, Position, Range, Selection, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
+import type { FoldService } from "../languages/foldService";
 import type { HighlightService } from "../languages/highlightService";
 
 /**
@@ -35,6 +36,20 @@ export interface EditorState {
    * `findWidget.tsx` only ever READ it off the active tab's `EditorState`.
    */
   find?: FindState;
+  /**
+   * The fold regions currently COLLAPSED in this tab (Issue #150) — each
+   * one hides `startLine + 1 ..= endLine` from the rendered rows
+   * (`ui/foldMapping.ts`). `undefined` until this tab folds something for
+   * the first time, exactly like {@link find} (an unfolded document is by
+   * far the common case, and `createFoldMapping`'s identity fast path
+   * keys off precisely this emptiness).
+   *
+   * Which regions are FOLDABLE is a document/language fact served by
+   * `languages/foldService.ts`; which of them are collapsed is per-tab UI
+   * state, which is why it lives here. Owned by `ui/foldController.ts` —
+   * `EditorView` only ever reads it.
+   */
+  collapsedFolds?: FoldRange[];
 }
 
 /**
@@ -273,5 +288,33 @@ export function useHighlightRevision(
     forceRender();
     return () => sub.dispose();
   }, [highlightService]);
+  return revision;
+}
+
+/**
+ * {@link useHighlightRevision}'s exact counterpart for code folding (Issue
+ * #150): re-render the calling component whenever `foldService` reports
+ * that some document's fold RANGES changed (a grammar finishing its
+ * initial load, an edit adding or removing a foldable region).
+ *
+ * A separate hook, not a second subscription folded into the one above,
+ * for the same reason `FoldService` is a separate service: the two fire on
+ * different occasions, and a caller may have one wired and not the other.
+ * `foldService` omitted yields a constant `0` that never bumps — the
+ * component then has no fold markers to draw either.
+ *
+ * Note this only covers the FOLDABLE ranges. Collapsing/expanding goes
+ * through `EditorSessionService.setState`, which already re-renders
+ * `Shell` on its own `onDidChange`.
+ */
+export function useFoldRevision(foldService: Pick<FoldService, "onDidChange"> | undefined): number {
+  const [revision, forceRender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!foldService) return undefined;
+    const sub = foldService.onDidChange(() => forceRender());
+    // Closes the subscribe-after-render race — see this module's TSDoc.
+    forceRender();
+    return () => sub.dispose();
+  }, [foldService]);
   return revision;
 }

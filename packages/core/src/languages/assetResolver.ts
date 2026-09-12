@@ -59,6 +59,11 @@ export interface AssetResolver {
   /** Read a language's `highlights.scm` query text. Same `baseDir`
    * resolution rule as {@link resolveGrammar}. */
   resolveHighlights(highlightsPath: string, baseDir?: string): Promise<string>;
+  /** Read a language's fold query (`<lang>.folds.scm`) text (Issue #150).
+   * Same `baseDir` resolution rule — and the same `AssetResolverFs.readText`
+   * seam — as {@link resolveHighlights}; only the caller
+   * (`foldService.ts` rather than `highlightService.ts`) differs. */
+  resolveFolds(foldsPath: string, baseDir?: string): Promise<string>;
 }
 
 function resolvePath(path: string, baseDir?: string): string {
@@ -74,6 +79,9 @@ export function createAssetResolver(deps: AssetResolverDeps = {}): AssetResolver
     },
     resolveHighlights(highlightsPath, baseDir) {
       return fs.readText(resolvePath(highlightsPath, baseDir));
+    },
+    resolveFolds(foldsPath, baseDir) {
+      return fs.readText(resolvePath(foldsPath, baseDir));
     },
   };
 }

@@ -15,11 +15,18 @@
  * `CreateTecodeApiDeps.editorSession` was supplied.
  */
 
-import type { EditorNamespace, FindNamespace, Position, Selection, TextEdit } from "@tecode/api";
+import type {
+  EditorNamespace,
+  FindNamespace,
+  FoldNamespace,
+  Position,
+  Selection,
+  TextEdit,
+} from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { StatusSink } from "../host/errors";
 import type { EditorSessionService } from "../ui/editorSession";
-import { createFindStub } from "./stubs";
+import { createFindStub, createFoldStub } from "./stubs";
 
 /** The primary cursor's placeholder position when there is no active
  * editor: the document origin. A fresh object every call — mirrors
@@ -82,6 +89,13 @@ export interface EditorNamespaceDeps {
    * predates this task, and any future caller with genuinely no find/
    * replace UI to back it). */
   find?: FindNamespace;
+  /** Backs `tecode.editor.folds` (Issue #150) — the ready-made
+   * `FoldNamespace` `create.ts` builds from a `FoldController`, or omitted
+   * for `createFoldStub()`'s inert no-op surface (a caller that wires a
+   * real `editorSession` but no folding backend: every test that predates
+   * this issue, and any future caller with genuinely no folding to back).
+   * Exactly the same optionality contract as {@link find} above. */
+  folds?: FoldNamespace;
 }
 
 /**
@@ -202,6 +216,8 @@ export function createEditorNamespace(deps: EditorNamespaceDeps): EditorNamespac
     },
 
     find: deps.find ?? createFindStub(),
+
+    folds: deps.folds ?? createFoldStub(),
 
     // Direct passthrough (this module's TSDoc): `EditorSessionService.
     // onDidChange` already fires on precisely the union `EditorNamespace.

@@ -19,6 +19,20 @@ import { nextGraphemeEnd, previousGraphemeStart, wordBoundaryLeft, wordBoundaryR
 export interface LineReader {
   getLine(line: number): string;
   lineCount: number;
+  /**
+   * Whether `line` is currently DRAWN — `false` only for a line hidden
+   * inside a collapsed fold (Issue #150, `tecode.editor.folds.isLineVisible`).
+   *
+   * Optional on purpose: omitted (every caller and every test that predates
+   * folding, and `tecode.editor` itself, which satisfies the two required
+   * members structurally), {@link moveLineUp}/{@link moveLineDown} move by
+   * exactly ±1 document line the way they always have. Supplied, an up/down
+   * move skips over the hidden lines instead of landing inside a collapsed
+   * region — which is the only movement behavior folding changes. Every
+   * other granularity (char, word, home/end, document) is deliberately
+   * untouched: those are text-structure moves, not screen-row moves.
+   */
+  isLineVisible?(line: number): boolean;
 }
 
 /** `Math.trunc` a possibly-fractional/`NaN` tab size down to a positive
@@ -141,6 +155,34 @@ export function moveLineEnd(reader: LineReader, position: Position): Position {
   return { line: position.line, character: reader.getLine(position.line).length };
 }
 
+/**
+ * The line `deltaLines` VISIBLE lines away from `line` (Issue #150): with
+ * no `isLineVisible` reader supplied, or with nothing folded, exactly
+ * `line + deltaLines` — the raw ±1 step this has always been. Otherwise,
+ * keep stepping in the same direction past every hidden line, so one Down
+ * press over a collapsed region lands on the first drawn line after it
+ * rather than inside it.
+ *
+ * Returns an out-of-bounds line when the search runs off either end (every
+ * remaining line is hidden), which {@link moveVertical}'s existing bounds
+ * check already turns into "stay put" — the same answer it gives for
+ * pressing Up on line 0.
+ */
+function nextVisibleLine(reader: LineReader, line: number, deltaLines: number): number {
+  const isLineVisible = reader.isLineVisible;
+  if (!isLineVisible) return line + deltaLines;
+  const step = deltaLines < 0 ? -1 : 1;
+  const lastLine = reader.lineCount - 1;
+  let remaining = Math.abs(deltaLines);
+  let candidate = line;
+  while (remaining > 0) {
+    candidate += step;
+    if (candidate < 0 || candidate > lastLine) return candidate;
+    if (isLineVisible.call(reader, candidate)) remaining--;
+  }
+  return candidate;
+}
+
 /** Move `deltaLines` lines up/down, preserving the caret's visual column
  * (this module's TSDoc's tab-stop algorithm) — the SAME move's target
  * column, not a "sticky" column remembered across several consecutive
@@ -149,7 +191,7 @@ export function moveLineEnd(reader: LineReader, position: Position): Position {
  * (or down from the last) leaves `position` unchanged rather than jumping
  * to a boundary line. */
 function moveVertical(reader: LineReader, position: Position, tabSize: number, deltaLines: number): Position {
-  const targetLine = position.line + deltaLines;
+  const targetLine = nextVisibleLine(reader, position.line, deltaLines);
   if (targetLine < 0 || targetLine > reader.lineCount - 1) return position;
   const column = charToVisualColumn(reader.getLine(position.line), position.character, tabSize);
   const targetLineText = reader.getLine(targetLine);

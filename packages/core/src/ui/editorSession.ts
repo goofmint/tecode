@@ -35,6 +35,7 @@ import type { Disposable, Event, Listener, Selection, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
 import { clampSelectionsToDocument, createInitialEditorState, type EditorState } from "./editorState";
+import { clampFoldsToDocument } from "./foldMapping";
 
 /** Whether `a` and `b` describe the exact same selection (all four
  * positions equal) — used only to decide whether a reload's clamp pass
@@ -180,11 +181,20 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
     const selectionsChanged =
       clampedSelections.length !== state.selections.length ||
       clampedSelections.some((s, i) => !selectionEquals(s, state.selections[i]!));
-    if (!selectionsChanged && clampedScrollTop === state.scrollTop) return;
+    // Issue #150: the same shrink can strand a COLLAPSED fold past the
+    // document's new end. `clampFoldsToDocument` returns the original
+    // array when nothing needed changing, so this reference comparison is
+    // exactly the "did the clamp do anything" test the two above are.
+    const clampedFolds = state.collapsedFolds
+      ? clampFoldsToDocument(state.collapsedFolds, document.lineCount)
+      : undefined;
+    const foldsChanged = clampedFolds !== state.collapsedFolds;
+    if (!selectionsChanged && !foldsChanged && clampedScrollTop === state.scrollTop) return;
     setState(document.uri, {
       ...state,
       selections: clampedSelections,
       scrollTop: clampedScrollTop,
+      collapsedFolds: clampedFolds ? Array.from(clampedFolds) : state.collapsedFolds,
     });
   });
 

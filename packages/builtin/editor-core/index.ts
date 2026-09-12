@@ -202,7 +202,16 @@ export function activate(ctx: ExtensionContext): void {
    * `lineCount`) — this just narrows the reference for `movement.ts`/
    * `editing.ts`'s call signatures. */
   function reader(): LineReader {
-    return { getLine: (line) => api.editor.getLine(line), lineCount: api.editor.lineCount };
+    return {
+      getLine: (line) => api.editor.getLine(line),
+      lineCount: api.editor.lineCount,
+      // Issue #150: up/down movement steps over lines hidden inside a
+      // collapsed fold. Always supplied — with no folding backend wired,
+      // `tecode.editor.folds` is `stubs.ts`'s inert namespace whose
+      // `isLineVisible` is unconditionally `true`, so `moveVertical` takes
+      // exactly the same ±1 step it always did.
+      isLineVisible: (line) => api.editor.folds.isLineVisible(line),
+    };
   }
 
   /** Register a movement/selection command (Req 6.6, 11.1): map `moveOne`
@@ -484,6 +493,23 @@ export function activate(ctx: ExtensionContext): void {
         api.editor.find.close();
       }
     }),
+  );
+
+  // Issue #150: code folding. Every handler is a one-line delegation to
+  // `tecode.editor.folds` (`@tecode/core`'s `ui/foldController.ts` behind
+  // it), which already resolves "no active editor" and "no fold here" to
+  // documented no-ops — so there is nothing to guard here, exactly like
+  // the find handlers just above. Each also defaults its line to the
+  // primary cursor, which is what makes these keyboard commands mean "fold
+  // where I am".
+  ctx.subscriptions.push(api.commands.register("editor.action.fold", () => api.editor.folds.fold()));
+  ctx.subscriptions.push(api.commands.register("editor.action.unfold", () => api.editor.folds.unfold()));
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.toggleFold", () => api.editor.folds.toggle()),
+  );
+  ctx.subscriptions.push(api.commands.register("editor.action.foldAll", () => api.editor.folds.foldAll()));
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.unfoldAll", () => api.editor.folds.unfoldAll()),
   );
 
   // Issue #91: clipboard copy/cut/paste — pure builders in `clipboard.ts`,

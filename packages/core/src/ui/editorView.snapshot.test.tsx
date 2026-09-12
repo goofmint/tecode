@@ -1250,3 +1250,108 @@ describe("EditorView — control-character sanitization (Issue #137: a binary/co
     expect(frame).toMatch(/a {2,}b/);
   });
 });
+
+describe("EditorView — code folding (Issue #150)", () => {
+  /** A fold service slice serving one fixed region, plus an inert
+   * `toggleAt` — enough for the gutter marker, which is all these render
+   * assertions need (the toggle itself is covered by
+   * `foldController.test.ts`). */
+  function foldControllerFor(ranges: Array<{ startLine: number; endLine: number }>) {
+    return {
+      getFoldRanges: () => ranges,
+      onDidChange: (): Disposable => ({ dispose() {} }),
+      toggleAt: () => {},
+    };
+  }
+
+  test("a collapsed region's lines are not rendered, and the rows below shift up", async () => {
+    const document = createTestDocument(["L0", "L1", "L2", "L3", "L4"].join("\n"));
+    const state: EditorState = {
+      ...createInitialEditorState(document.uri),
+      collapsedFolds: [{ startLine: 1, endLine: 3 }],
+    };
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={5} />,
+      { width: 30, height: 6 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    expect(frame).toContain("L0");
+    expect(frame).toContain("L1"); // the header line itself stays visible
+    expect(frame).not.toContain("L2");
+    expect(frame).not.toContain("L3");
+    // The gutter still shows each line's own DOCUMENT number, so L4 reads
+    // as line 5 even though it is now drawn on the third row.
+    expect(frame).toMatch(/5 L4/);
+  });
+
+  test("with nothing collapsed, every line renders exactly as before", async () => {
+    const document = createTestDocument(["L0", "L1", "L2"].join("\n"));
+    const state = createInitialEditorState(document.uri);
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView document={document} state={state} viewportHeight={4} />,
+      { width: 30, height: 5 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    expect(frame).toMatch(/1 L0/);
+    expect(frame).toMatch(/2 L1/);
+    expect(frame).toMatch(/3 L2/);
+  });
+
+  test("a foldable region's header row gets an expanded marker in the gutter's last column", async () => {
+    const document = createTestDocument(["L0", "L1", "L2"].join("\n"));
+    const state = createInitialEditorState(document.uri);
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView
+        document={document}
+        state={state}
+        viewportHeight={4}
+        foldController={foldControllerFor([{ startLine: 0, endLine: 2 }])}
+      />,
+      { width: 30, height: 5 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    expect(frame).toMatch(/1\u25beL0/);
+    // A row that starts no region keeps the plain space it always had.
+    expect(frame).toMatch(/2 L1/);
+  });
+
+  test("a collapsed region's header row shows the collapsed marker instead", async () => {
+    const document = createTestDocument(["L0", "L1", "L2"].join("\n"));
+    const state: EditorState = {
+      ...createInitialEditorState(document.uri),
+      collapsedFolds: [{ startLine: 0, endLine: 2 }],
+    };
+
+    const { renderOnce, captureCharFrame } = await testRender(
+      <EditorView
+        document={document}
+        state={state}
+        viewportHeight={4}
+        foldController={foldControllerFor([{ startLine: 0, endLine: 2 }])}
+      />,
+      { width: 30, height: 5 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    const frame = captureCharFrame();
+    expect(frame).toMatch(/1\u25b8L0/);
+    expect(frame).not.toContain("L1");
+  });
+});

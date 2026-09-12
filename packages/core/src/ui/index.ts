@@ -233,6 +233,22 @@ export {
   type FindServiceDeps,
 } from "./findService";
 
+export {
+  clampFoldsToDocument,
+  createFoldMapping,
+  foldContainsLine,
+  foldStartingAt,
+  hasFold,
+  innermostFoldAt,
+  type FoldMapping,
+} from "./foldMapping";
+
+export {
+  createFoldController,
+  type FoldController,
+  type FoldControllerDeps,
+} from "./foldController";
+
 export { FindWidget, type FindWidgetProps } from "./findWidget";
 
 export { cursorCellColumn, EditorView, type EditorViewProps } from "./editorView";

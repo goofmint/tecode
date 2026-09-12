@@ -298,6 +298,27 @@ under-document exactly the keys most used day to day.
 | `ctrl+shift+z` (or `ctrl+y`) | Redo |
 | `ctrl+d` | Add selection to next find match |
 | `(` `)` `[` `]` `{` `}` `"` `'` | Bracket/quote auto-close (insert-pair, type-over, or wrap a selection) |
+| `ctrl+shift+[` (or `ctrl+r` on a non-Kitty terminal) | Fold the region at the cursor |
+| `ctrl+shift+]` (or `ctrl+t` on a non-Kitty terminal) | Unfold the region at the cursor |
+
+### Code folding (editor-core)
+
+Foldable regions come from each language's tree-sitter fold query
+(`packages/builtin/languages-basic/queries/<lang>.folds.scm`) — Markdown
+sections, function/class bodies, blocks, objects and arrays, and the
+equivalent container nodes in the other bundled languages. A foldable
+line shows a `▾` marker in the gutter's last column, `▸` once
+collapsed; **clicking that marker toggles the fold**.
+
+| Key | Command |
+|---|---|
+| `ctrl+shift+[` (or `ctrl+r` on a non-Kitty terminal) | `editor.action.fold` |
+| `ctrl+shift+]` (or `ctrl+t` on a non-Kitty terminal) | `editor.action.unfold` |
+| — (command palette / your own `keybindings.json`) | `editor.action.toggleFold`, `editor.action.foldAll`, `editor.action.unfoldAll` |
+
+Collapsed regions are per-tab UI state: they are not written to the file,
+and a reload that shrinks the document clamps or drops any fold that no
+longer fits.
 
 ### Find and replace (editor-core)
 
@@ -594,7 +615,7 @@ user binding means the user's own `keybindings.json` always wins, with no
 special-casing needed to override a fallback entry.
 
 The bundled fallback keymap
-(`packages/core/src/keymap/keybindings.fallback.json`) ships four
+(`packages/core/src/keymap/keybindings.fallback.json`) ships six
 entries today:
 
 | Key | Command | When |
@@ -603,6 +624,8 @@ entries today:
 | `ctrl+e` | `explorer.focus` | — |
 | `ctrl+l` | `editor.action.deleteLine` | `editorTextFocus` |
 | `ctrl+b` | `workbench.action.toggleSidebarVisibility` | — |
+| `ctrl+r` | `editor.action.fold` | `editorTextFocus` |
+| `ctrl+t` | `editor.action.unfold` | `editorTextFocus` |
 
 The first three each patch a real `ctrl+shift+<letter>` ambiguity that a
 legacy terminal collapses to the same raw control byte as its unshifted
@@ -615,6 +638,13 @@ has no separate `defaults`-layer binding to disambiguate — this fallback
 entry is its ONLY default keybinding, placed here rather than in the
 `defaults` layer simply because this is the layer this codebase's other
 core-owned, non-per-extension keybindings already live in.
+
+`ctrl+r`/`ctrl+t` (Issue #150) are hazard-driven like the first three:
+folding's default `ctrl+shift+[`/`ctrl+shift+]` only ever parse into a
+stroke on a Kitty-capable terminal (a legacy terminal sends bare `0x1B`
+for Ctrl+[, indistinguishable from Escape — which is exactly why plain
+`ctrl+[` is NOT bound anywhere), so these two entries are how every other
+terminal reaches fold/unfold.
 
 This file is user-overridable, separately from `keybindings.json`
 (`packages/core/src/host/paths.ts`'s `getUserFallbackKeybindingsPath`): a

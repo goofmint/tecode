@@ -25,6 +25,8 @@ import {
   createExtensionHost,
   createFileSystem,
   createFindService,
+  createFoldController,
+  createFoldService,
   createHighlightService,
   createHostErrorStatusSink,
   createHostLog,
@@ -74,6 +76,8 @@ import {
   type EditorSessionService,
   type ExtensionHost,
   type FindService,
+  type FoldController,
+  type FoldService,
   type HighlightService,
   type HostErrorStatusSink,
   type HostLog,
@@ -93,6 +97,7 @@ import {
 import {
   builtinLanguageGrammarAssets,
   builtinLanguageQueryAssets,
+  builtinLanguageFoldQueryAssets,
   builtinManifests,
   builtinThemeAssets,
 } from "@tecode/builtin";
@@ -450,6 +455,23 @@ export interface AssemblyRoot {
    * never touches the parser backend at all (design.md §10's Req 8.3
    * bypass). */
   highlightService: HighlightService;
+  /**
+   * The code-folding pipeline (Issue #150, `languages/foldService.ts`) —
+   * built alongside {@link highlightService}, against the same
+   * `documents`/`languageRegistry` and an asset resolver whose embedded
+   * map additionally serves `<lang>.folds.scm`. Independent of the
+   * highlight service on purpose: a broken fold query must never cost a
+   * document its syntax colors (that module's TSDoc).
+   */
+  foldService: FoldService;
+  /**
+   * Turns a fold gesture into an `EditorState.collapsedFolds` write
+   * (Issue #150, `ui/foldController.ts`) — the single implementation
+   * behind BOTH `tecode.editor.folds` (the fold commands) and
+   * `EditorView`'s gutter click, built over the SAME `editorSession`
+   * every other active-editor-scoped service here reads.
+   */
+  foldController: FoldController;
   /** Turns a keymap-fallthrough key event into a multi-cursor
    * `applyEdits` call (Req 4.6, 6.6, design.md §6.1, §8.3, Task 2.2) —
    * wired into `renderShellToTerminal`'s real `renderer.keyInput` listener
@@ -710,6 +732,29 @@ export function buildAssemblyRoot(
     // `getOrLoadLanguageAssets`'s own per-language cache means this can only
     // ever actually run once, on the first document of any registered
     // language.
+    backend: createWebTreeSitterParserBackend({
+      runtimeWasm: () => Bun.file(treeSitterRuntimeWasmPath).bytes(),
+    }),
+    log,
+    sink,
+  });
+  // The fold service (Issue #150, `languages/foldService.ts`): the same
+  // construction as `highlightService` just above — same `documents`/
+  // `languageRegistry`, same embedded-asset overlay, same pre-embedded
+  // tree-sitter runtime wasm — differing only in WHICH `.scm` it reads
+  // (`<lang>.folds.scm`, hence the extra `builtinLanguageFoldQueryAssets`
+  // entries merged into the overlay's text map; the two maps' keys cannot
+  // collide, `@tecode/builtin`'s own TSDoc) and in that a load failure
+  // here disables folding alone.
+  const foldService = createFoldService({
+    documents,
+    languageRegistry,
+    assetResolver: createAssetResolver({
+      fs: createBuiltinLanguageAssetsFs(builtinLanguageGrammarAssets, {
+        ...builtinLanguageQueryAssets,
+        ...builtinLanguageFoldQueryAssets,
+      }),
+    }),
     backend: createWebTreeSitterParserBackend({
       runtimeWasm: () => Bun.file(treeSitterRuntimeWasmPath).bytes(),
     }),
@@ -983,6 +1028,14 @@ export function buildAssemblyRoot(
   // rendered `Shell`'s `FindWidget` share one live state, exactly like
   // `editorSession` itself is shared above.
   const findService = createFindService({ editorSession });
+  // Issue #150: the fold controller joins `foldService` (which regions can
+  // fold) to `editorSession` (which of them this tab has collapsed). Built
+  // right after `findService` for the same reason that one is built here —
+  // `createTecodeApi` below needs it, and it must close over the SAME
+  // `editorSession` instance every other active-editor-scoped service does
+  // (a mismatch is exactly what `create.ts`'s own session identity check
+  // refuses to wire).
+  const foldController = createFoldController({ editorSession, foldService });
 
   // Task 3.1's core-owned modal overlay layer (Req 10.1, design.md §12):
   // built before `createTecodeApi` so the REAL `tecode.window.
@@ -1008,6 +1061,7 @@ export function buildAssemblyRoot(
     slotRegistry,
     editorSession,
     findService,
+    foldController,
     themeRegistry,
     themeService,
     languageRegistry,
@@ -1175,8 +1229,10 @@ export function buildAssemblyRoot(
     chordPendingIndicator,
     editorSession,
     findService,
+    foldController,
     languageRegistry,
     highlightService,
+    foldService,
     editorInputRouter,
     editorLangIdSync,
     modalService,
@@ -1478,6 +1534,7 @@ export interface ShutdownRoot {
   windowMessageService: Pick<Disposable, "dispose">;
   hostErrorSink: Pick<Disposable, "dispose">;
   highlightService: Pick<Disposable, "dispose">;
+  foldService: Pick<Disposable, "dispose">;
   languageRegistry: Pick<Disposable, "dispose">;
   clipboardConfigSync: Pick<Disposable, "dispose">;
   /** Releases every still-live external-change watch `documents` set up
@@ -1587,6 +1644,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.windowMessageService.dispose();
       root.hostErrorSink.dispose();
       root.highlightService.dispose();
+      root.foldService.dispose();
       root.languageRegistry.dispose();
       root.documents.dispose();
       await root.hostRef.current?.disposeAll();
@@ -1877,6 +1935,7 @@ export async function runTecode(
     editorSession: root.editorSession,
     findService: root.findService,
     highlightService: root.highlightService,
+    foldController: root.foldController,
     chordMachine: root.chordMachine,
     editorInputRouter: root.editorInputRouter,
     terminal: terminalKeyRoutingDeps,
@@ -2011,6 +2070,10 @@ export async function runTecode(
     // instead of what actually happened — see `HighlightService.whenIdle`'s
     // TSDoc (added for this same Finding 3).
     await root.highlightService.whenIdle();
+    // Same race for the fold pipeline (Issue #150) — its own
+    // per-language load is kicked off from the same fire-and-forget
+    // `documents.onDidOpen` path.
+    await root.foldService.whenIdle();
 
     // Computed BEFORE any disposal below — `deferred.extensionHost.
     // disposeAll()` a few lines down deactivates every currently-"active"

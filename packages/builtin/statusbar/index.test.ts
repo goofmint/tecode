@@ -139,6 +139,7 @@ function createFakeApi() {
       lineCount: 0,
       setSelections: () => {},
       find: undefined as never,
+      folds: undefined as never,
       onDidChange: editorChange.on,
     },
     ui: undefined as never,
