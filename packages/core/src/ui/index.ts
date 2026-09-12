@@ -61,6 +61,27 @@ export {
 } from "./sidebarWidthCommands";
 
 export {
+  applyPanelHeightSetting,
+  createPanelHeightSettingsWriter,
+  type PanelHeightSettingsWriter,
+  type PanelHeightSettingsWriterDeps,
+  type PanelHeightSettingsWriterFs,
+  type PanelHeightSettingsWriterTimer,
+} from "./panelHeightSettingsWriter";
+
+export {
+  createPanelHeightStepHandler,
+  DECREASE_PANEL_HEIGHT_COMMAND_ID,
+  INCREASE_PANEL_HEIGHT_COMMAND_ID,
+  registerPanelHeightCommands,
+  PANEL_HEIGHT_DEFAULT_KEYBINDINGS,
+  PANEL_HEIGHT_FOCUS_WHEN,
+  PANEL_HEIGHT_STEP,
+  type PanelHeightCommandsDeps,
+  type PanelHeightCommandsRegistrar,
+} from "./panelHeightCommands";
+
+export {
   ThemeProvider,
   toColorInput,
   styleToTextColors,
