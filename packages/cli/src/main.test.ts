@@ -486,7 +486,25 @@ test("a theme.select commit does not persist workbench.colorTheme back when --se
   // proves nothing on its own: the writer never targets that file in the
   // first place, so it would trivially stay unchanged even if suppression
   // were completely broken (CodeRabbit PR #154 review).
+  //
+  // SAFETY (CodeRabbit PR #154 review, 4th pass): `getUserConfigDir()`
+  // resolves through `node:os`'s `homedir()`, which Bun does NOT reload
+  // from a runtime `process.env.HOME` mutation (confirmed empirically;
+  // this file's own `createHermeticDiscoveryFs` TSDoc above already
+  // documents the identical caching quirk for `discover()`'s real fs
+  // scan) — so despite the `HOME`/`APPDATA` mutation above, `userSettingsPath`
+  // below is the developer's REAL `~/.config/tecode/settings.json`, not a
+  // path under the temp `homeDir`. Back up whatever is genuinely there
+  // first, and restore that exact content (or remove the file if it did
+  // not exist before) in `finally`, unconditionally — this test must never
+  // leave the developer's own tecode settings clobbered by its sentinel.
   const userSettingsPath = join(getUserConfigDir(), "settings.json");
+  let originalUserSettings: string | undefined;
+  try {
+    originalUserSettings = await readFile(userSettingsPath, "utf8");
+  } catch {
+    originalUserSettings = undefined; // Did not exist before this test.
+  }
   await mkdir(dirname(userSettingsPath), { recursive: true });
   const userSentinel = JSON.stringify({ sentinel: true });
   await writeFile(userSettingsPath, userSentinel, "utf8");
@@ -520,6 +538,11 @@ test("a theme.select commit does not persist workbench.colorTheme back when --se
     root!.editorLangIdSync.dispose();
     root!.themeConfigSync.dispose();
     root!.themeSelectCommand.dispose();
+    if (originalUserSettings === undefined) {
+      await rm(userSettingsPath, { force: true });
+    } else {
+      await writeFile(userSettingsPath, originalUserSettings, "utf8");
+    }
     await rm(workspaceDir, { recursive: true, force: true });
     await rm(homeDir, { recursive: true, force: true });
   }
