@@ -167,8 +167,10 @@ export interface SearchStore {
   getRootUri(): Uri | undefined;
   getMode(): SearchMode;
   /** Switches between filename and full-text search, discarding the other
-   * mode's results and re-running the current query (if any) in the new
-   * mode. A no-op when already in `mode`. */
+   * mode's results. Switching to `"files"` re-runs the current query
+   * immediately (in-memory ranking); switching to `"text"` only clears and
+   * waits for {@link submit} — see that method's TSDoc. A no-op when
+   * already in `mode`. */
   setMode(mode: SearchMode): void;
   getQuery(): string;
   /**
@@ -399,6 +401,16 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
     if (mode === value) return;
     mode = value;
     collapsed.clear();
+    // Switching INTO full-text mode only clears — it never starts a scan
+    // (CodeRabbit, PR #153): {@link SearchStore.submit} is the single entry
+    // point for a full-text search, for exactly the reason
+    // {@link SearchStore.setQuery} refuses to search on every keystroke
+    // there (reading every file in the workspace is far too expensive to
+    // trigger as a side effect of a mode toggle).
+    if (mode === "text") {
+      clearResults();
+      return;
+    }
     startSearch();
   }
 

@@ -290,8 +290,8 @@ describe("createSearchStore — full-text mode (Issue #147)", () => {
     expect(store.getResultCount()).toBe(0);
   });
 
-  test("switching modes discards the other mode's results and re-runs the query", async () => {
-    const { store } = createFixture({ "needle.ts": "nothing here" });
+  test("switching to text mode discards the filename results and waits for submit", async () => {
+    const { store } = createFixture({ "needle.ts": "needle inside too" });
     store.setQuery("needle");
     await settle(store);
     expect(store.getResultCount()).toBe(1);
@@ -300,6 +300,24 @@ describe("createSearchStore — full-text mode (Issue #147)", () => {
     await settle(store);
     expect(store.getMode()).toBe("text");
     expect(store.getResultCount()).toBe(0);
+    expect(store.isLoading()).toBe(false);
+
+    // Only `submit()` starts the full-text scan.
+    store.submit();
+    await settle(store);
+    expect(store.getResultCount()).toBe(1);
+  });
+
+  test("switching back to filename mode re-runs the query immediately", async () => {
+    const { store } = createFixture({ "needle.ts": "needle inside too" });
+    store.setMode("text");
+    store.setQuery("needle");
+    await settle(store);
+    expect(store.getResultCount()).toBe(0);
+
+    store.setMode("files");
+    await settle(store);
+    expect(store.getNodes().map((n) => n.label)).toEqual(["needle.ts"]);
   });
 });
 

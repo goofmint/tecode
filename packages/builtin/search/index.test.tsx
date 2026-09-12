@@ -221,6 +221,46 @@ function call<T extends unknown[]>(props: Record<string, unknown> | undefined, n
   (handler as (...a: T) => void)(...args);
 }
 
+/** The nodes the view last handed to the fake `tecode.ui.Tree` — `[]`
+ * before it has ever rendered one (`SearchView.tsx` renders no `Tree` at
+ * all while there are no results). */
+function treeNodes(
+  fixture: ReturnType<typeof createFixture>,
+): Array<{ id: string; label: string; children?: Array<{ id: string }> }> {
+  return (
+    (fixture.captured.tree?.["nodes"] as Array<{ id: string; label: string; children?: Array<{ id: string }> }>) ?? []
+  );
+}
+
+/**
+ * Re-renders until `predicate` holds, or fails with `description` once
+ * `timeoutMs` elapses (CodeRabbit, PR #153). A search started through the
+ * view runs asynchronously over a REAL temp workspace — a walk, a `git`
+ * availability probe, and one `read` per file — so a fixed sleep can only
+ * ever be a guess; polling makes the wait as long as the machine actually
+ * needs and turns a genuine hang into a clear failure instead of a flaky
+ * assertion. Matches `../explorer/index.test.tsx`'s own `waitFor`, with
+ * the extra `renderOnce()` this suite needs to refresh the captured props.
+ */
+async function waitForRender(
+  renderOnce: () => Promise<unknown>,
+  predicate: () => boolean,
+  description: string,
+  timeoutMs = 5000,
+): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    await act(async () => {
+      await renderOnce();
+    });
+    if (predicate()) return;
+    if (Date.now() - start > timeoutMs) throw new Error(`waitForRender: timed out waiting for ${description}`);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+}
+
 const tempDirs: string[] = [];
 
 async function createWorkspace(files: Record<string, string>): Promise<Uri> {
@@ -281,17 +321,16 @@ describe("search activate (Issue #147)", () => {
 
     await act(async () => {
       call(fixture.captured.input, "onChange", "alpha");
-      await new Promise((r) => setTimeout(r, 50));
     });
-    await renderOnce();
+    await waitForRender(renderOnce, () => treeNodes(fixture).length > 0, "the filename results");
 
-    const nodes = (fixture.captured.tree?.["nodes"] as Array<{ id: string; label: string }>) ?? [];
+    const nodes = treeNodes(fixture);
     expect(nodes.map((n) => n.label)).toEqual(["src/alpha.ts"]);
 
     await act(async () => {
       call(fixture.captured.tree, "onActivate", nodes[0]?.id ?? "");
-      await new Promise((r) => setTimeout(r, 10));
     });
+    await waitForRender(renderOnce, () => fixture.getExecuted().length > 0, "the open-file command");
     expect(fixture.getExecuted()).toEqual([{ id: OPEN_FILE_COMMAND_ID, args: [nodes[0]?.id] }]);
     // A filename result carries no position, so no cursor move.
     expect(fixture.getSelections()).toEqual([]);
@@ -307,21 +346,18 @@ describe("search activate (Issue #147)", () => {
       await fixture.runCommand(SEARCH_TOGGLE_MODE_COMMAND_ID);
       call(fixture.captured.input, "onChange", "needle");
       call(fixture.captured.input, "onSubmit", "needle");
-      await new Promise((r) => setTimeout(r, 50));
     });
-    await renderOnce();
+    await waitForRender(renderOnce, () => treeNodes(fixture).length > 0, "the full-text results");
 
-    const nodes =
-      (fixture.captured.tree?.["nodes"] as Array<{ id: string; label: string; children?: Array<{ id: string }> }>) ??
-      [];
+    const nodes = treeNodes(fixture);
     expect(nodes).toHaveLength(1);
     expect(nodes[0]?.label).toBe("a.ts (1)");
 
     const hitId = nodes[0]?.children?.[0]?.id ?? "";
     await act(async () => {
       call(fixture.captured.tree, "onActivate", hitId);
-      await new Promise((r) => setTimeout(r, 10));
     });
+    await waitForRender(renderOnce, () => fixture.getSelections().length > 0, "the cursor move");
 
     expect(fixture.getExecuted().map((e) => e.id)).toEqual([OPEN_FILE_COMMAND_ID]);
     const position = { line: 1, character: 7 };
@@ -340,20 +376,20 @@ describe("search activate (Issue #147)", () => {
       await fixture.runCommand(SEARCH_TOGGLE_MODE_COMMAND_ID);
       call(fixture.captured.input, "onChange", "needle");
       call(fixture.captured.input, "onSubmit", "needle");
-      await new Promise((r) => setTimeout(r, 50));
     });
-    await renderOnce();
-    expect((fixture.captured.tree?.["nodes"] as unknown[] | undefined) ?? []).toHaveLength(1);
+    await waitForRender(renderOnce, () => treeNodes(fixture).length === 1, "the case-insensitive hit");
 
     await act(async () => {
       fixture.setConfig(SEARCH_CASE_SENSITIVE_CONFIG_KEY, true);
-      await new Promise((r) => setTimeout(r, 50));
     });
-    await renderOnce();
     // With no results the view renders no `Tree` at all (`SearchView.tsx`),
     // so the STATUS row — not the last captured tree props, which are now
     // stale by design — is what reports the re-run's outcome.
-    expect(captureCharFrame()).toContain("No results");
+    await waitForRender(
+      renderOnce,
+      () => captureCharFrame().includes("No results"),
+      "the case-sensitive re-run to report no results",
+    );
     fixture.dispose();
   });
 
@@ -365,10 +401,9 @@ describe("search activate (Issue #147)", () => {
     await act(async () => {
       fixture.setConfig(SEARCH_MAX_RESULTS_CONFIG_KEY, 2);
       call(fixture.captured.input, "onChange", "a");
-      await new Promise((r) => setTimeout(r, 50));
     });
-    await renderOnce();
-    expect((fixture.captured.tree?.["nodes"] as unknown[] | undefined) ?? []).toHaveLength(2);
+    await waitForRender(renderOnce, () => treeNodes(fixture).length > 0, "the capped results");
+    expect(treeNodes(fixture)).toHaveLength(2);
     fixture.dispose();
   });
 
@@ -379,27 +414,25 @@ describe("search activate (Issue #147)", () => {
 
     await act(async () => {
       call(fixture.captured.input, "onChange", "a");
-      await new Promise((r) => setTimeout(r, 50));
     });
-    await renderOnce();
-    expect((fixture.captured.tree?.["nodes"] as unknown[] | undefined) ?? []).toHaveLength(1);
+    await waitForRender(renderOnce, () => treeNodes(fixture).length === 1, "the first search's single result");
 
     await writeFile(join(fileURLToPath(root), "a2.ts"), "");
     await act(async () => {
       await fixture.runCommand(SEARCH_REFRESH_COMMAND_ID);
-      await new Promise((r) => setTimeout(r, 50));
     });
-    await renderOnce();
-    expect((fixture.captured.tree?.["nodes"] as unknown[] | undefined) ?? []).toHaveLength(2);
+    await waitForRender(renderOnce, () => treeNodes(fixture).length === 2, "the refreshed results");
     fixture.dispose();
   });
 
   test("no workspace root degrades to an empty, never-throwing view", async () => {
     const fixture = createFixture(undefined);
     const { renderOnce } = await mountView(fixture);
+    // No polling needed here, unlike every search above: with no workspace
+    // root the store clears synchronously and never starts any async work
+    // at all (`store.ts`'s `startSearch`), so there is nothing to wait for.
     await act(async () => {
       call(fixture.captured.input, "onChange", "anything");
-      await new Promise((r) => setTimeout(r, 20));
     });
     await renderOnce();
     expect(fixture.captured.tree).toBeUndefined();
