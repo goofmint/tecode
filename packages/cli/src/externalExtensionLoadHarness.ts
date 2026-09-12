@@ -102,19 +102,24 @@ async function main(): Promise<void> {
 
   const log = createHostLog();
   const sink = createNoopStatusSink();
-  const commands = createCommandRegistry({ log, sink });
+
+  // Forward-reference box (matches `main.ts`'s own `hostRef` pattern, and
+  // that module's TSDoc on why): both `commands` and the slot registry's
+  // `activateExtension` need to reach the extension host, but the host
+  // isn't built until every extension is discovered/registered — which
+  // itself needs `commands`/`slotRegistry` to already exist.
+  const hostRef: { current?: ExtensionHost } = {};
+  const commands = createCommandRegistry({
+    log,
+    sink,
+    activateExtension: (id) => hostRef.current?.activateExtension(id) ?? Promise.resolve(),
+  });
   const documents = createDocumentManager({ log, sink });
   const fs = createFileSystem({ log });
   const context = createContextService();
   const config = createConfigService({ log, sink });
   await config.ready;
 
-  // Forward-reference box (matches `main.ts`'s own `hostRef` pattern, and
-  // that module's TSDoc on why): the slot registry's `activateExtension`
-  // needs to reach the extension host, but the host isn't built until
-  // every extension is discovered/registered — which itself needs
-  // `slotRegistry` to already exist.
-  const hostRef: { current?: ExtensionHost } = {};
   const slotRegistry = createSlotRegistry({
     log,
     activateExtension: (id) => hostRef.current?.activateExtension(id) ?? Promise.resolve(),

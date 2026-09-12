@@ -12,6 +12,9 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "paths": {
+      "@tecode/api": ["./packages/api/src/index.ts"]
+    }
   }
 }

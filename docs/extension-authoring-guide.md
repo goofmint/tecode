@@ -62,6 +62,12 @@ places `packages/core/src/host/paths.ts`'s `getUserExtensionsDir`/
 Create the directory now — `word-count/` — under whichever of those two
 paths fits how you're working, and follow along.
 
+**Want to see something run first?** `samples/extensions/hello-world/`
+(in this repository) is the minimal case — a manifest and an `index.ts`
+contributing a single command, nothing else. Copy it into either
+directory above to confirm the pipeline works before following this
+walkthrough.
+
 ### Step 1 — the manifest skeleton
 
 `manifest.ts` is read and validated by the host **without executing your
