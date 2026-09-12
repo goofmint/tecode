@@ -10,6 +10,8 @@ import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 import type { Disposable, Listener, PtySession } from "@tecode/api";
 import { createBaseTheme } from "../api/stubs";
+import { createContextService } from "../keymap/context";
+import { ContextFocusTracker } from "./focus";
 import { ThemeProvider } from "./theme";
 import { buildTerminalRowRuns, TerminalGridView, type TerminalRowRun } from "./terminalGridView";
 import type { TerminalCell } from "../terminal/vtEmulator";
@@ -216,6 +218,40 @@ describe("TerminalGridView (Issue #98 Phase 4, @opentui/react/test-utils)", () =
     });
 
     expect((renderer as unknown as { currentFocusedRenderable?: unknown }).currentFocusedRenderable).not.toBeNull();
+  });
+
+  test("Issue #145: while terminalFocus is true (via ContextFocusTracker), the Ctrl+O escape hint is shown", async () => {
+    const context = createContextService();
+    const session = createFakeSession();
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ContextFocusTracker context={context}>
+        <ThemeProvider theme={baseTheme}>
+          <TerminalGridView session={session} cols={10} rows={2} autoFocus />
+        </ThemeProvider>
+      </ContextFocusTracker>,
+      { width: 30, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(context.get<boolean>("terminalFocus")).toBe(true);
+    expect(captureCharFrame()).toContain("Ctrl+O: back to editor");
+  });
+
+  test("Issue #145: without focus, no ContextFocusTracker at all, the escape hint never renders", async () => {
+    const session = createFakeSession();
+    const { renderOnce, captureCharFrame } = await testRender(
+      <ThemeProvider theme={baseTheme}>
+        <TerminalGridView session={session} cols={10} rows={2} />
+      </ThemeProvider>,
+      { width: 30, height: 4 },
+    );
+    await act(async () => {
+      await renderOnce();
+    });
+
+    expect(captureCharFrame()).not.toContain("Ctrl+O");
   });
 
   test("renders with no session at all — a blank grid, never throws", async () => {

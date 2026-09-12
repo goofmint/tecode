@@ -65,8 +65,18 @@ import type { PtySession, RGB } from "@tecode/api";
 import type { HostLog } from "../host/errors";
 import { createVtEmulator, type TerminalCell, type TerminalCellColor, type VtEmulator } from "../terminal/vtEmulator";
 import type { FocusableNode, FocusEmitter } from "./focus";
-import { useFocusTracking } from "./focus";
+import { useFocusContextService, useFocusTracking } from "./focus";
 import { toColorInput, useTheme } from "./theme";
+
+/** The escape-key hint shown while the terminal panel has real focus
+ * (Issue #145) — must read exactly as `packages/cli/src/keyRouting.ts`'s
+ * `TERMINAL_ESCAPE_STROKE` ("ctrl+o") displays to a user. Hardcoded here,
+ * not imported, because `@tecode/core` (this package) cannot depend on
+ * `packages/cli` (`packages/cli`'s own package.json is the only one
+ * depending on `@tecode/core`, never the reverse) — see that constant's
+ * own TSDoc for why `ctrl+o` is the one reserved escape stroke this hint
+ * must match. */
+const TERMINAL_ESCAPE_HINT = "Ctrl+O: back to editor";
 
 /** One rendered run of consecutive same-colored cells on one terminal row
  * — the unit {@link buildTerminalRowRuns} produces and `TerminalGridView`
@@ -220,6 +230,26 @@ export function TerminalGridView(rawProps: Record<string, unknown>): ReactNode {
     [contextFocusRef],
   );
 
+  // Reads back the SAME `"terminalFocus"` key `contextFocusRef` above
+  // writes into (Issue #145) — `useFocusTracking` itself only returns a
+  // write-only ref callback, so a component that wants to know its OWN
+  // reported focus state (to render the escape-key hint below) reads it
+  // back through the shared `ContextService`, exactly like `shell.tsx`'s
+  // `EditorArea` reads OTHER regions' focus keys via the same
+  // `useFocusContextService` hook (`focus.tsx`'s own TSDoc). Re-renders
+  // only on an ACTUAL `"terminalFocus"` change, not on every unrelated
+  // context key (`onDidChange`'s own `key` argument filters this).
+  const focusContextService = useFocusContextService();
+  const [, forceHintRerender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    if (!focusContextService) return undefined;
+    const sub = focusContextService.onDidChange((key) => {
+      if (key === "terminalFocus") forceHintRerender();
+    });
+    return () => sub.dispose();
+  }, [focusContextService]);
+  const isTerminalFocused = focusContextService?.get<boolean>("terminalFocus") === true;
+
   // `autoFocus` (this module's TSDoc's "Grabbing real focus is
   // imperative"): fires once, strictly after this component's own ref has
   // attached — deliberately NOT re-run on every `autoFocus` value change
@@ -335,6 +365,24 @@ export function TerminalGridView(rawProps: Record<string, unknown>): ReactNode {
       backgroundColor={toColorInput(defaultBackground)}
     >
       {rowNodes}
+      {isTerminalFocused && (
+        // Escape-key hint (Issue #145) — an ABSOLUTELY positioned overlay
+        // (`modalOverlay.tsx`'s own TSDoc verifies OpenTUI's Yoga layout
+        // supports genuine `position: "absolute"`) rather than an extra
+        // flex row, so it never changes this box's own row count/height —
+        // `rows` above still sizes the emulator AND the pty exactly as
+        // before (this module's TSDoc's "Sizing the pty AND the emulator
+        // together"); the hint simply paints on top of the grid's own
+        // bottom-right corner while focused, and disappears the instant
+        // focus leaves (re-rendered by the `"terminalFocus"` read above),
+        // never consuming any of the terminal's own rows/columns.
+        <box
+          style={{ position: "absolute", bottom: 0, right: 0 }}
+          backgroundColor={toColorInput(defaultBackground)}
+        >
+          <text fg={toColorInput(theme.colors["input.placeholderForeground"])}>{` ${TERMINAL_ESCAPE_HINT} `}</text>
+        </box>
+      )}
     </box>
   );
 }

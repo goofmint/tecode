@@ -338,6 +338,22 @@ Create/rename/delete have no default keybinding — reachable via the
 command palette only (`explorer/manifest.ts`'s own TSDoc: Req 11.2 asks
 for the capability, not a specific shortcut per action).
 
+### Integrated terminal panel (`tecode.terminal`, Issue #98)
+
+`terminal.focus`/`terminal.new` (command palette only — no default
+keybinding, see `packages/builtin/terminal/manifest.ts`'s own TSDoc for
+why) show and focus the integrated terminal panel. Once it has focus,
+**every other key is forwarded to the shell/program running inside it**
+— exactly like a real terminal emulator — with exactly one reserved
+exception:
+
+| Key | When | Command |
+|---|---|---|
+| `ctrl+o` | terminal panel focused | Return focus to the editor |
+
+A hint (`Ctrl+O: back to editor`) is shown in the terminal panel's own
+bottom-right corner while it has focus, as a reminder (Issue #145).
+
 ### Sidebar visibility (core, Issue #135)
 
 The sidebar is collapsed/expanded through a dedicated toggle at the bottom
