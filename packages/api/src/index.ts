@@ -9,6 +9,7 @@
 export type {
   Position,
   Range,
+  FoldRange,
   Selection,
   TextEdit,
   Uri,
@@ -67,6 +68,7 @@ export type {
   Editor,
   WindowNamespace,
   FindNamespace,
+  FoldNamespace,
   EditorNamespace,
   SlotId,
   ComponentType,
@@ -121,5 +123,16 @@ export type {
  * `SaveOutcome` values must not be allowed to register against a host that
  * still resolves `void` — hence the minor bump, gating on the requested
  * minor exactly like 1.0 -> 1.1 above.
+ *
+ * **1.2 -> 1.3** (Issue #150): code folding added {@link FoldRange},
+ * {@link FoldNamespace}, `EditorNamespace.folds`, and
+ * `LanguageContribution.folds`. Purely additive in exactly the same shape
+ * as 1.0 -> 1.1 — every existing extension keeps compiling and behaving
+ * identically, and nothing that used to resolve one way now resolves
+ * another. The bump exists for the OPPOSITE direction: an extension that
+ * calls `tecode.editor.folds.*` must not be allowed to register against a
+ * 1.2 host, where that namespace simply does not exist and every call
+ * would throw. Hence a minor bump, gating on the requested minor exactly
+ * like 1.0 -> 1.1.
  */
-export const API_VERSION = "1.2";
+export const API_VERSION = "1.3";

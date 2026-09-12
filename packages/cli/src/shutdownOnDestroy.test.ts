@@ -102,6 +102,7 @@ function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {})
     chordPendingIndicator: disposable(),
     chordMachine: disposable(),
     findService: disposable(),
+    foldController: disposable(),
     editorSession: disposable(),
     editorLangIdSync: disposable(),
     themeConfigSync: disposable(),
@@ -122,6 +123,7 @@ function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {})
     windowMessageService: disposable(),
     hostErrorSink: disposable(),
     highlightService: disposable(),
+    foldService: disposable(),
     languageRegistry: disposable(),
     documents: disposable(),
     hostRef: {
@@ -384,7 +386,7 @@ test("createShutdown's returned function is idempotent: destroy-then-signal runs
 
   expect(calls.flush).toBe(1);
   expect(calls.sidebarWidthFlush).toBe(1);
-  expect(calls.dispose).toBe(26); // one per disposable field in ShutdownRoot
+  expect(calls.dispose).toBe(28); // one per disposable field in ShutdownRoot
   expect(calls.disposeAll).toBe(1);
 });
 
@@ -401,7 +403,7 @@ test("createShutdown's returned function is idempotent: signal-then-destroy runs
 
   expect(calls.flush).toBe(1);
   expect(calls.sidebarWidthFlush).toBe(1);
-  expect(calls.dispose).toBe(26);
+  expect(calls.dispose).toBe(28);
   expect(calls.disposeAll).toBe(1);
 
   // A THIRD call, after the sequence has already fully settled, is still
@@ -410,7 +412,7 @@ test("createShutdown's returned function is idempotent: signal-then-destroy runs
   await shutdown();
   expect(calls.flush).toBe(1);
   expect(calls.sidebarWidthFlush).toBe(1);
-  expect(calls.dispose).toBe(26);
+  expect(calls.dispose).toBe(28);
   expect(calls.disposeAll).toBe(1);
 });
 

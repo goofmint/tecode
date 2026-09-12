@@ -85,6 +85,7 @@ export default {
         extensions: [".ts", ".tsx", ".mts", ".cts"],
         grammar: "grammars/typescript.wasm",
         highlights: "queries/typescript.scm",
+        folds: "queries/typescript.folds.scm",
         comments: { line: "//", block: ["/*", "*/"] },
         brackets: [...CURLY_PAREN_SQUARE],
       },
@@ -93,6 +94,7 @@ export default {
         extensions: [".js", ".jsx", ".mjs", ".cjs"],
         grammar: "grammars/javascript.wasm",
         highlights: "queries/javascript.scm",
+        folds: "queries/javascript.folds.scm",
         comments: { line: "//", block: ["/*", "*/"] },
         brackets: [...CURLY_PAREN_SQUARE],
       },
@@ -101,6 +103,7 @@ export default {
         extensions: [".json"],
         grammar: "grammars/json.wasm",
         highlights: "queries/json.scm",
+        folds: "queries/json.folds.scm",
         // Standard JSON has no comment syntax at all (unlike JSONC, which
         // `config/jsonc.ts` parses separately) — no `comments` entry.
         brackets: [...CURLY_SQUARE],
@@ -110,6 +113,7 @@ export default {
         extensions: [".md", ".markdown"],
         grammar: "grammars/markdown.wasm",
         highlights: "queries/markdown.scm",
+        folds: "queries/markdown.folds.scm",
         // Markdown has no native line-comment syntax; an HTML comment is
         // the closest widely-supported equivalent, block-only.
         comments: { block: ["<!--", "-->"] },
@@ -120,6 +124,7 @@ export default {
         extensions: [".py", ".pyi"],
         grammar: "grammars/python.wasm",
         highlights: "queries/python.scm",
+        folds: "queries/python.folds.scm",
         // Python has no real block-comment syntax (a triple-quoted string
         // is a string literal, not a comment) — line only.
         comments: { line: "#" },
@@ -130,6 +135,7 @@ export default {
         extensions: [".rs"],
         grammar: "grammars/rust.wasm",
         highlights: "queries/rust.scm",
+        folds: "queries/rust.folds.scm",
         comments: { line: "//", block: ["/*", "*/"] },
         brackets: [...CURLY_PAREN_SQUARE],
       },
@@ -138,6 +144,7 @@ export default {
         extensions: [".go"],
         grammar: "grammars/go.wasm",
         highlights: "queries/go.scm",
+        folds: "queries/go.folds.scm",
         comments: { line: "//", block: ["/*", "*/"] },
         brackets: [...CURLY_PAREN_SQUARE],
       },
@@ -146,6 +153,7 @@ export default {
         extensions: [".html", ".htm"],
         grammar: "grammars/html.wasm",
         highlights: "queries/html.scm",
+        folds: "queries/html.folds.scm",
         // HTML has only the SGML comment form — block only.
         comments: { block: ["<!--", "-->"] },
         brackets: [
@@ -159,6 +167,7 @@ export default {
         extensions: [".css"],
         grammar: "grammars/css.wasm",
         highlights: "queries/css.scm",
+        folds: "queries/css.folds.scm",
         // CSS has only `/* ... */` — no line-comment form.
         comments: { block: ["/*", "*/"] },
         brackets: [...CURLY_PAREN_SQUARE],
@@ -168,6 +177,7 @@ export default {
         extensions: [".yaml", ".yml"],
         grammar: "grammars/yaml.wasm",
         highlights: "queries/yaml.scm",
+        folds: "queries/yaml.folds.scm",
         comments: { line: "#" },
         brackets: [...CURLY_SQUARE],
       },
@@ -176,6 +186,7 @@ export default {
         extensions: [".toml"],
         grammar: "grammars/toml.wasm",
         highlights: "queries/toml.scm",
+        folds: "queries/toml.folds.scm",
         comments: { line: "#" },
         brackets: [...CURLY_SQUARE],
       },
@@ -184,6 +195,7 @@ export default {
         extensions: [".sh", ".bash"],
         grammar: "grammars/bash.wasm",
         highlights: "queries/bash.scm",
+        folds: "queries/bash.folds.scm",
         comments: { line: "#" },
         brackets: [...CURLY_PAREN_SQUARE],
       },

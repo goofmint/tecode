@@ -64,6 +64,19 @@ import yamlHighlights from "./queries/yaml.scm" with { type: "text" };
 import tomlHighlights from "./queries/toml.scm" with { type: "text" };
 import bashHighlights from "./queries/bash.scm" with { type: "text" };
 
+import typescriptFolds from "./queries/typescript.folds.scm" with { type: "text" };
+import javascriptFolds from "./queries/javascript.folds.scm" with { type: "text" };
+import jsonFolds from "./queries/json.folds.scm" with { type: "text" };
+import markdownFolds from "./queries/markdown.folds.scm" with { type: "text" };
+import pythonFolds from "./queries/python.folds.scm" with { type: "text" };
+import rustFolds from "./queries/rust.folds.scm" with { type: "text" };
+import goFolds from "./queries/go.folds.scm" with { type: "text" };
+import htmlFolds from "./queries/html.folds.scm" with { type: "text" };
+import cssFolds from "./queries/css.folds.scm" with { type: "text" };
+import yamlFolds from "./queries/yaml.folds.scm" with { type: "text" };
+import tomlFolds from "./queries/toml.folds.scm" with { type: "text" };
+import bashFolds from "./queries/bash.folds.scm" with { type: "text" };
+
 /** This extension's synthetic built-in directory (`themes-default/
  * assets.ts`'s TSDoc) — matches `discovery.ts`'s
  * `sourcePath: \`<builtin>/${extensionId}\`` for `extensionId === manifest.id`. */
@@ -108,4 +121,27 @@ export const builtinLanguageQueryAssets: Record<string, string> = {
   [join(EXTENSION_DIR, "queries/yaml.scm")]: yamlHighlights,
   [join(EXTENSION_DIR, "queries/toml.scm")]: tomlHighlights,
   [join(EXTENSION_DIR, "queries/bash.scm")]: bashHighlights,
+};
+
+/** `<builtin>/tecode.languages-basic/queries/<lang>.folds.scm` -> that
+ * language's raw FOLD-query text (Issue #150) — same Bun `"text"` loader,
+ * same key convention, and same synchronously-available-at-module-eval
+ * shape as {@link builtinLanguageQueryAssets} above; kept as its own map
+ * purely so a caller can see (and a test can substitute) the folding
+ * assets independently of the highlighting ones. The two maps' keys never
+ * collide (`<lang>.scm` vs `<lang>.folds.scm`), so
+ * `cli/languageAssetsFs.ts` serves both through one merged lookup. */
+export const builtinLanguageFoldQueryAssets: Record<string, string> = {
+  [join(EXTENSION_DIR, "queries/typescript.folds.scm")]: typescriptFolds,
+  [join(EXTENSION_DIR, "queries/javascript.folds.scm")]: javascriptFolds,
+  [join(EXTENSION_DIR, "queries/json.folds.scm")]: jsonFolds,
+  [join(EXTENSION_DIR, "queries/markdown.folds.scm")]: markdownFolds,
+  [join(EXTENSION_DIR, "queries/python.folds.scm")]: pythonFolds,
+  [join(EXTENSION_DIR, "queries/rust.folds.scm")]: rustFolds,
+  [join(EXTENSION_DIR, "queries/go.folds.scm")]: goFolds,
+  [join(EXTENSION_DIR, "queries/html.folds.scm")]: htmlFolds,
+  [join(EXTENSION_DIR, "queries/css.folds.scm")]: cssFolds,
+  [join(EXTENSION_DIR, "queries/yaml.folds.scm")]: yamlFolds,
+  [join(EXTENSION_DIR, "queries/toml.folds.scm")]: tomlFolds,
+  [join(EXTENSION_DIR, "queries/bash.folds.scm")]: bashFolds,
 };

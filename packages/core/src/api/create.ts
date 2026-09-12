@@ -37,6 +37,7 @@ import type {
   EditorNamespace,
   FileSystem,
   FindNamespace,
+  FoldNamespace,
   LanguageContribution,
   LanguagesNamespace,
   Tecode,
@@ -55,6 +56,7 @@ import type { ContextService } from "../keymap/context";
 import type { StatusSink } from "../host/errors";
 import type { EditorSessionService } from "../ui/editorSession";
 import type { FindService } from "../ui/findService";
+import type { FoldController } from "../ui/foldController";
 import { Input, List, Tabs, Tree } from "../ui/components";
 import type { ModalService } from "../ui/modalService";
 import { createSlotRegistry, type SlotRegistry } from "../ui/slotRegistry";
@@ -64,6 +66,7 @@ import type { ThemeService } from "../ui/themeService";
 import type { WindowMessageService } from "../ui/windowMessageService";
 import type { LanguageRegistry } from "../languages/languageRegistry";
 import { cloneSelection, createEditorNamespace } from "./editorNamespace";
+import { createFoldNamespace } from "./foldNamespace";
 import {
   createClipboardStub,
   createEditorStub,
@@ -169,6 +172,31 @@ export interface CreateTecodeApiDeps {
    * `register` with no consumer behind it, and `current` always the
    * hardcoded base palette.
    */
+  /**
+   * Backs the REAL `tecode.editor.folds` (Issue #150, `ui/foldController.ts`).
+   * Optional, and — exactly like {@link CreateTecodeApiDeps.findService} —
+   * only takes effect when {@link CreateTecodeApiDeps.editorSession} is ALSO
+   * supplied AND is the very same instance the controller writes through
+   * (`FoldController.session` exists for that check, mirroring
+   * `FindService.session`): a controller wired to a DIFFERENT session
+   * would let `tecode.editor.folds` collapse regions in a tab
+   * `tecode.editor`/`window.activeEditor` don't consider active. On any
+   * mismatch the namespace falls back to `stubs.ts`'s fully inert
+   * `createFoldStub()`, which is what every caller that predates this
+   * issue already gets.
+   */
+  foldController?: Pick<
+    FoldController,
+    | "session"
+    | "getFoldRanges"
+    | "getCollapsedFolds"
+    | "foldAt"
+    | "unfoldAt"
+    | "toggleAt"
+    | "foldAll"
+    | "unfoldAll"
+    | "isLineVisible"
+  >;
   themeRegistry?: Pick<ThemeRegistry, "register" | "get">;
   /** Backs `tecode.themes.current`/`currentLabel`/`onDidChange` (Task 2.6,
    * 3.4, `ui/themeService.ts`) — see {@link CreateTecodeApiDeps.themeRegistry}'s
@@ -406,10 +434,33 @@ export function createTecodeApi(deps: CreateTecodeApiDeps): Tecode {
   // Real backing (Task 2.3's `editorNamespace.ts`) when an `editorSession`
   // was supplied; otherwise the exact same stub as before (this module's
   // TSDoc, `CreateTecodeApiDeps.editorSession`'s TSDoc).
+  // `tecode.editor.folds` (Issue #150): built on exactly the same three
+  // conditions as `findNamespace` above — an `editorSession`, a
+  // `foldController`, and the two agreeing on WHICH session (see
+  // `CreateTecodeApiDeps.foldController`'s TSDoc). `undefined` otherwise,
+  // which both `createEditorNamespace`/`createEditorStub` default to
+  // `createFoldStub()`'s inert surface. Frozen here, like `findNamespace`,
+  // because a nested namespace object is not covered by the freeze
+  // `editorNamespace` itself gets below.
+  const foldNamespace: FoldNamespace | undefined =
+    deps.editorSession && deps.foldController && deps.foldController.session === deps.editorSession
+      ? Object.freeze(
+          createFoldNamespace({
+            editorSession: deps.editorSession,
+            foldController: deps.foldController,
+          }),
+        )
+      : undefined;
+
   const editorNamespace: EditorNamespace = Object.freeze(
     deps.editorSession
-      ? createEditorNamespace({ sink: deps.sink, editorSession: deps.editorSession, find: findNamespace })
-      : createEditorStub({ sink: deps.sink, find: findNamespace }),
+      ? createEditorNamespace({
+          sink: deps.sink,
+          editorSession: deps.editorSession,
+          find: findNamespace,
+          folds: foldNamespace,
+        })
+      : createEditorStub({ sink: deps.sink, find: findNamespace, folds: foldNamespace }),
   );
 
   // No slot registry injected (see CreateTecodeApiDeps.slotRegistry's

@@ -19,6 +19,7 @@ import type {
   LanguageContribution,
   QuickPickItem,
   QuickPickOptions,
+  FoldRange,
   Range,
   SaveOutcome,
   Selection,
@@ -164,6 +165,14 @@ function createFakeApi(initialLines: string[]) {
     onDidChange: () => ({ dispose() {} }),
   };
 
+  // Issue #150: the fake fold backing. `foldRanges` is what the document's
+  // language would report as foldable (seeded per test through
+  // `setFoldRanges`); `collapsedFolds` is what this "tab" currently has
+  // collapsed. Empty by default, so every test that predates folding sees
+  // the exact pre-folding behavior.
+  let foldRanges: FoldRange[] = [];
+  let collapsedFolds: FoldRange[] = [];
+
   const editor: Editor = { document, selections };
 
   const api = {
@@ -246,6 +255,44 @@ function createFakeApi(initialLines: string[]) {
           return true;
         },
       },
+      // Issue #150: the fold namespace this fake api exposes tracks a
+      // real collapsed set, so the fold command tests below can assert on
+      // it and so `reader()`'s `isLineVisible` (which `moveLineUp`/
+      // `moveLineDown` consult) answers truthfully. `ranges` is whatever
+      // the test seeded via `setFoldRanges`; with none seeded, folding is
+      // inert and vertical movement behaves exactly as it did before.
+      folds: {
+        ranges: () => foldRanges,
+        collapsed: () => collapsedFolds,
+        fold: (line?: number) => {
+          const at = line ?? selections[0]!.active.line;
+          const range = foldRanges.find((r) => r.startLine === at) ??
+            foldRanges.filter((r) => at >= r.startLine && at <= r.endLine).at(-1);
+          if (!range) return;
+          if (collapsedFolds.some((r) => r.startLine === range.startLine && r.endLine === range.endLine)) return;
+          collapsedFolds = [...collapsedFolds, range];
+        },
+        unfold: (line?: number) => {
+          const at = line ?? selections[0]!.active.line;
+          const range = collapsedFolds.filter((r) => at >= r.startLine && at <= r.endLine).at(-1);
+          if (!range) return;
+          collapsedFolds = collapsedFolds.filter((r) => r !== range);
+        },
+        toggle: (line?: number) => {
+          const at = line ?? selections[0]!.active.line;
+          const collapsed = collapsedFolds.some((r) => at >= r.startLine && at <= r.endLine);
+          if (collapsed) api.editor.folds.unfold(line);
+          else api.editor.folds.fold(line);
+        },
+        foldAll: () => {
+          collapsedFolds = [...foldRanges];
+        },
+        unfoldAll: () => {
+          collapsedFolds = [];
+        },
+        isLineVisible: (line: number) =>
+          !collapsedFolds.some((r) => line > r.startLine && line <= r.endLine),
+      },
     },
     ui: undefined as never,
     config: {
@@ -306,6 +353,12 @@ function createFakeApi(initialLines: string[]) {
     setFindActiveMatch: (match: Range | undefined) => {
       findActiveMatch = match;
     },
+    /** Issue #150: seed what this document's language reports as foldable. */
+    setFoldRanges: (ranges: FoldRange[]) => {
+      foldRanges = ranges;
+      collapsedFolds = [];
+    },
+    getCollapsedFolds: (): readonly FoldRange[] => collapsedFolds,
   };
 }
 
@@ -855,5 +908,85 @@ describe("editor-core activate() — editor.action.findAccept (Issue #117)", () 
 
     expect(isFindOpen()).toBe(true);
     expect(getSelections()).toEqual(selectionsBefore);
+  });
+});
+
+describe("editor-core activate() — code folding (Issue #150)", () => {
+  const RANGES = [
+    { startLine: 0, endLine: 8 },
+    { startLine: 2, endLine: 5 },
+  ];
+
+  function foldFixture() {
+    const fixture = activateFixture(["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8"]);
+    fixture.setFoldRanges(RANGES);
+    return fixture;
+  }
+
+  test("editor.action.fold collapses the innermost region containing the cursor", async () => {
+    const { api, getCollapsedFolds } = foldFixture();
+    api.editor.setSelections([cursorAt(3, 0)]);
+
+    await api.commands.execute("editor.action.fold");
+
+    expect(getCollapsedFolds()).toEqual([{ startLine: 2, endLine: 5 }]);
+  });
+
+  test("editor.action.unfold expands it again", async () => {
+    const { api, getCollapsedFolds } = foldFixture();
+    api.editor.setSelections([cursorAt(3, 0)]);
+
+    await api.commands.execute("editor.action.fold");
+    await api.commands.execute("editor.action.unfold");
+
+    expect(getCollapsedFolds()).toEqual([]);
+  });
+
+  test("editor.action.toggleFold folds, then unfolds", async () => {
+    const { api, getCollapsedFolds } = foldFixture();
+    api.editor.setSelections([cursorAt(2, 0)]);
+
+    await api.commands.execute("editor.action.toggleFold");
+    expect(getCollapsedFolds()).toEqual([{ startLine: 2, endLine: 5 }]);
+
+    await api.commands.execute("editor.action.toggleFold");
+    expect(getCollapsedFolds()).toEqual([]);
+  });
+
+  test("editor.action.foldAll / unfoldAll act on every region", async () => {
+    const { api, getCollapsedFolds } = foldFixture();
+
+    await api.commands.execute("editor.action.foldAll");
+    expect(getCollapsedFolds()).toEqual(RANGES);
+
+    await api.commands.execute("editor.action.unfoldAll");
+    expect(getCollapsedFolds()).toEqual([]);
+  });
+
+  test("folding where nothing is foldable is a no-op", async () => {
+    const { api, getCollapsedFolds } = activateFixture(["a", "b"]);
+    await api.commands.execute("editor.action.fold");
+    expect(getCollapsedFolds()).toEqual([]);
+  });
+
+  test("cursorDown steps OVER a collapsed region instead of landing inside it", async () => {
+    const { api, getSelections } = foldFixture();
+    api.editor.setSelections([cursorAt(2, 0)]);
+    await api.commands.execute("editor.action.fold");
+
+    await api.commands.execute("editor.action.cursorDown");
+
+    expect(getSelections()[0]!.active).toEqual(pos(6, 0));
+  });
+
+  test("cursorDown moves by one line again once the region is expanded", async () => {
+    const { api, getSelections } = foldFixture();
+    api.editor.setSelections([cursorAt(2, 0)]);
+    await api.commands.execute("editor.action.toggleFold");
+    await api.commands.execute("editor.action.toggleFold");
+
+    await api.commands.execute("editor.action.cursorDown");
+
+    expect(getSelections()[0]!.active).toEqual(pos(3, 0));
   });
 });

@@ -67,6 +67,7 @@ import { createInitialEditorState, type EditorState } from "./editorState";
 import { EditorView } from "./editorView";
 import type { FindService } from "./findService";
 import type { HighlightService } from "../languages/highlightService";
+import type { FoldController } from "./foldController";
 import { FindWidget } from "./findWidget";
 import type { FocusableNode } from "./focus";
 import { useFocusContextService, useFocusTracking } from "./focus";
@@ -702,6 +703,10 @@ export interface EditorAreaProps {
    * `findService`/`config` above: a caller/test that omits it gets
    * `EditorView`'s current (unhighlighted) rendering unchanged. */
   highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
+  /** Threaded straight through to `EditorView` for code folding (Issue
+   * #150) — see `EditorViewProps.foldController`'s TSDoc. Optional and
+   * absent-safe on the exact same terms as `highlightService` above. */
+  foldController?: Pick<FoldController, "getFoldRanges" | "onDidChange" | "toggleAt">;
   /** Whether `Shell`'s bottom `Panel` is currently visible, and its height
    * when it is (`layoutState.ts`'s `LayoutState.panelVisible`/
    * `panelHeight`) — Issue #92. `Panel` is `EditorArea`'s SIBLING at the
@@ -1023,6 +1028,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
             viewportHeight={viewportHeight}
             config={props.config}
             highlightService={props.highlightService}
+            foldController={props.foldController}
             onTextPlaneNode={handleTextPlaneNode}
           />
         ) : (
@@ -1203,6 +1209,10 @@ export interface ShellProps {
    * highlighting (Req 8.1, design.md §10) — see
    * `EditorAreaProps.highlightService`'s TSDoc. */
   highlightService?: Pick<HighlightService, "getSpansForLine" | "onDidChange">;
+  /** Threaded straight through to `EditorView` for code folding (Issue
+   * #150) — see `EditorViewProps.foldController`'s TSDoc. Optional and
+   * absent-safe on the exact same terms as `highlightService` above. */
+  foldController?: Pick<FoldController, "getFoldRanges" | "onDidChange" | "toggleAt">;
   /** Threaded straight through to `EditorArea` (Issue #98 Phase 3) — see
    * `EditorAreaProps.onEditorFocusHandleChange`'s TSDoc. */
   onEditorFocusHandleChange?: (focus: () => void) => void;
@@ -1489,6 +1499,7 @@ export function Shell(props: ShellProps): ReactNode {
           config={props.config}
           findService={props.findService}
           highlightService={props.highlightService}
+          foldController={props.foldController}
           panelVisible={layout.panelVisible}
           panelHeight={renderedPanelHeight}
           onEditorFocusHandleChange={props.onEditorFocusHandleChange}

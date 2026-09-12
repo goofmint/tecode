@@ -71,6 +71,24 @@ export interface Disposable {
 export type Listener<T> = (e: T) => void;
 
 /**
+ * One foldable region of a document, as whole lines (Issue #150): the
+ * region's header line and the last line it covers. `startLine` stays
+ * visible when the region is collapsed — only `startLine + 1 ..= endLine`
+ * are hidden — which is why a range whose two ends are the same line is
+ * never foldable (nothing would be hidden) and is dropped at the source
+ * (`@tecode/core`'s `languages/foldService.ts`).
+ *
+ * Line numbers are 0-based document lines, matching {@link Position.line}.
+ */
+export interface FoldRange {
+  /** The region's first (header) line — stays visible when collapsed. */
+  startLine: number;
+  /** The region's last line, inclusive. Always greater than
+   * {@link startLine}. */
+  endLine: number;
+}
+
+/**
  * A subscribable event. Calling the event with a {@link Listener} registers
  * it and returns a {@link Disposable} that removes it again — the same
  * pattern used throughout the API for `onDidChange`, `onDidOpen`, and

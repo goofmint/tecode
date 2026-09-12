@@ -140,6 +140,41 @@ describe("moveLineUp / moveLineDown (Req 11.1, preserves visual column across ta
   });
 });
 
+describe("moveLineUp / moveLineDown — collapsed folds (Issue #150)", () => {
+  /** A reader whose lines `hidden` are inside a collapsed fold. */
+  function foldedReader(lines: string[], hidden: number[]): LineReader {
+    return {
+      getLine: (n) => lines[n] ?? "",
+      lineCount: lines.length,
+      isLineVisible: (n) => !hidden.includes(n),
+    };
+  }
+
+  const lines = ["l0", "l1", "l2", "l3", "l4"];
+
+  test("moving down over a collapsed region lands on the first line after it", () => {
+    const r = foldedReader(lines, [2, 3]);
+    expect(moveLineDown(r, pos(1, 1), 4)).toEqual(pos(4, 1));
+  });
+
+  test("moving up over a collapsed region lands on the first line before it", () => {
+    const r = foldedReader(lines, [2, 3]);
+    expect(moveLineUp(r, pos(4, 1), 4)).toEqual(pos(1, 1));
+  });
+
+  test("with every remaining line hidden, the caret stays put", () => {
+    const r = foldedReader(lines, [3, 4]);
+    expect(moveLineDown(r, pos(2, 1), 4)).toEqual(pos(2, 1));
+  });
+
+  test("a reader with `isLineVisible` but nothing hidden behaves exactly like one without it", () => {
+    const folded = foldedReader(lines, []);
+    const plain = reader(lines);
+    expect(moveLineDown(folded, pos(1, 1), 4)).toEqual(moveLineDown(plain, pos(1, 1), 4));
+    expect(moveLineUp(folded, pos(1, 1), 4)).toEqual(moveLineUp(plain, pos(1, 1), 4));
+  });
+});
+
 describe("moveDocumentStart / moveDocumentEnd (Req 11.1)", () => {
   test("document start is always (0, 0)", () => {
     expect(moveDocumentStart()).toEqual(pos(0, 0));

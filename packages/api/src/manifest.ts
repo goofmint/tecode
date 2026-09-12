@@ -118,6 +118,20 @@ export interface LanguageContribution {
   grammar: string;
   /** Path to the tree-sitter highlight query (`.scm`) file. */
   highlights: string;
+  /**
+   * Path to this language's tree-sitter FOLD query (`.scm`) file (Issue
+   * #150) — same path-string form as {@link highlights}, resolved through
+   * the same `AssetResolver` rule (relative to the owning extension's
+   * directory). Optional: a language that declares no fold query simply
+   * has no foldable regions (`@tecode/core`'s `languages/foldService.ts`
+   * bypasses it entirely), exactly as every language did before folding
+   * existed.
+   *
+   * The query's captures name the foldable nodes; the capture NAME itself
+   * is not interpreted (nvim-treesitter's `@fold` is the convention this
+   * repo's built-in queries follow), only each capture's start/end row.
+   */
+  folds?: string;
   comments?: LanguageComments;
   brackets?: BracketPair[];
 }

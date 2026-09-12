@@ -89,6 +89,7 @@ import languagesBasicManifest, { LANGUAGES_BASIC_EXTENSION_ID } from "./language
 import {
   builtinLanguageGrammarAssets as languagesBasicGrammarAssets,
   builtinLanguageQueryAssets as languagesBasicQueryAssets,
+  builtinLanguageFoldQueryAssets as languagesBasicFoldQueryAssets,
 } from "./languages-basic/assets";
 
 // Re-exported so callers outside this package (`packages/cli`'s tests,
@@ -167,4 +168,14 @@ export const builtinLanguageGrammarAssets: Record<string, () => Promise<Uint8Arr
  * Only `languages-basic` contributes any today. */
 export const builtinLanguageQueryAssets: Record<string, string> = {
   ...languagesBasicQueryAssets,
+};
+
+/** Every built-in extension's embedded language FOLD-query (`.folds.scm`)
+ * assets (Issue #150), keyed exactly like {@link builtinLanguageQueryAssets}
+ * above. A separate export rather than extra entries in that map: a caller
+ * that wires only highlighting (every caller/test that predates folding)
+ * keeps serving exactly the same set of paths it always did. Only
+ * `languages-basic` contributes any today. */
+export const builtinLanguageFoldQueryAssets: Record<string, string> = {
+  ...languagesBasicFoldQueryAssets,
 };

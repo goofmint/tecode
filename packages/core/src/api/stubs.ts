@@ -40,6 +40,8 @@ import type {
   Disposable,
   EditorNamespace,
   FindNamespace,
+  FoldNamespace,
+  FoldRange,
   LanguageContribution,
   LanguagesNamespace,
   Listener,
@@ -305,6 +307,45 @@ export function createFindStub(): FindNamespace {
 }
 
 /**
+ * Build the inert `tecode.editor.folds` stub (Issue #150) — every action is
+ * a documented no-op, `ranges`/`collapsed` are always empty, and
+ * `isLineVisible` is always `true` (with nothing collapsed, every line IS
+ * visible, so a caller needs no folding-specific branch). Used whenever
+ * `create.ts` has no fold backing to wire: the no-`editorSession` case
+ * (`createEditorStub` below), and any caller of `createEditorNamespace`
+ * that omits `folds`. Never throws, matching every other stub here.
+ */
+export function createFoldStub(): FoldNamespace {
+  // Frozen for the same reason {@link createFindStub}'s result is — a
+  // nested namespace object needs the shallow freeze independently of the
+  // `tecode.editor` object that holds it.
+  return Object.freeze({
+    ranges(): readonly FoldRange[] {
+      return EMPTY_FOLD_RANGES;
+    },
+    collapsed(): readonly FoldRange[] {
+      return EMPTY_FOLD_RANGES;
+    },
+    fold() {},
+    unfold() {},
+    toggle() {},
+    foldAll() {},
+    unfoldAll() {},
+    isLineVisible() {
+      return true;
+    },
+  });
+}
+
+/** A shared, permanently-empty fold-range array — {@link createFoldStub}'s
+ * two reads hand back the same reference every call, so a caller may
+ * compare references without ever seeing a spurious change. Frozen for the
+ * same reason `api/foldNamespace.ts`'s own constant is (CodeRabbit, PR
+ * #155): it goes straight to extension code, and a shared array an
+ * extension could `push` into would corrupt every later read. */
+const EMPTY_FOLD_RANGES: readonly FoldRange[] = Object.freeze([]);
+
+/**
  * Build the `tecode.editor` stub (Req 10.1, design.md §12: "calls made with
  * no active editor no-op with a status-bar notice"). There is no
  * active-editor tracking yet, so this is *always* the no-active-editor
@@ -314,7 +355,11 @@ export function createFindStub(): FindNamespace {
  * `FindService` at all (there is no active editor here in the first place)
  * gets the same inert no-op surface as the rest of this namespace.
  */
-export function createEditorStub(deps: { sink: StatusSink; find?: FindNamespace }): EditorNamespace {
+export function createEditorStub(deps: {
+  sink: StatusSink;
+  find?: FindNamespace;
+  folds?: FoldNamespace;
+}): EditorNamespace {
   const { sink } = deps;
   const onDidChangeEvent = createInertEvent<void>();
 
@@ -361,6 +406,7 @@ export function createEditorStub(deps: { sink: StatusSink; find?: FindNamespace 
       // is not itself an action that failed, so it does not notify.
     },
     find: deps.find ?? createFindStub(),
+    folds: deps.folds ?? createFoldStub(),
     // No active editor ever exists here (this function's TSDoc) — nothing
     // this stub owns can change, so `onDidChange` is a real, inert
     // Event<void> (`createInertEvent`'s TSDoc), never fired.
