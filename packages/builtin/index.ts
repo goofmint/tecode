@@ -29,7 +29,12 @@
  * visibility, and `ctrl+shift+e`. `statusbar` (Task 3.4, Req 11.6) is the
  * sixth — language/EOL/read-only/dirty on the left, cursor line/column and
  * the active theme name on the right, all via `tecode.window.
- * setStatusBarItem`. `keybindings-editor` (Task 4.3, Req 11.7) is the
+ * setStatusBarItem`. `search` (Issue #147) is the ninth — the SECOND
+ * `slot: "sidebar"` view in the codebase, which is what finally makes the
+ * activity bar list more than one entry: a sidebar-resident filename
+ * (`fuzzyMatch`) and full-text (`search/lineMatch.ts`) search over the same
+ * `shared/walkFiles.ts` + `shared/ignore.ts` pair `explorer`/
+ * `command-palette` already use. `keybindings-editor` (Task 4.3, Req 11.7) is the
  * seventh — `keybindings.open` (default chord `ctrl+k ctrl+s`, creating a
  * commented JSONC template on first use) and `keybindings.showResolved`
  * (a quick pick over the keymap service's fully resolved binding table,
@@ -68,6 +73,8 @@ import * as editorCoreModule from "./editor-core/index";
 import editorCoreManifest from "./editor-core/manifest";
 import * as explorerModule from "./explorer/index";
 import explorerManifest from "./explorer/manifest";
+import * as searchModule from "./search/index";
+import searchManifest from "./search/manifest";
 import * as statusbarModule from "./statusbar/index";
 import statusbarManifest from "./statusbar/manifest";
 import * as keybindingsEditorModule from "./keybindings-editor/index";
@@ -111,6 +118,7 @@ export const builtinManifests: Manifest[] = [
   languagesBasicManifest,
   commandPaletteManifest,
   explorerManifest,
+  searchManifest,
   statusbarManifest,
   keybindingsEditorManifest,
   terminalManifest,
@@ -126,6 +134,7 @@ export const builtinModules: Record<string, BuiltinExtensionModule> = {
   [languagesBasicManifest.id]: languagesBasicModule,
   [commandPaletteManifest.id]: commandPaletteModule,
   [explorerManifest.id]: explorerModule,
+  [searchManifest.id]: searchModule,
   [statusbarManifest.id]: statusbarModule,
   [keybindingsEditorManifest.id]: keybindingsEditorModule,
   [terminalManifest.id]: terminalModule,

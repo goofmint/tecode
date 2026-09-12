@@ -28,6 +28,11 @@ test("the bundled asset covers exactly the three genuinely-ambiguous defaults pl
     [
       "editor.action.deleteLine",
       "explorer.focus",
+      // Issue #147: `search.focus`'s own default (`ctrl+shift+f`) is the
+      // same `ctrl+shift+<letter>` hazard shape `explorer.focus` has, and
+      // gets the same remedy — a plain, unclaimed key (`ctrl+t`) bound
+      // directly in this bundled file.
+      "search.focus",
       "workbench.action.showCommands",
       // Issue #135: `workbench.action.toggleSidebarVisibility` has no
       // Kitty-ambiguity hazard of its own — its fallback entry (`ctrl+b`)

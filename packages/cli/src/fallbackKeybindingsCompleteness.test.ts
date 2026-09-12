@@ -129,6 +129,10 @@ test("the enumerated hazard set matches Fact 4's expected list exactly (a change
   expect(sorted).toEqual(
     [
       "ctrl+shift+e -> explorer.focus",
+      // Issue #147's `search.focus` — the same `ctrl+shift+<letter>`
+      // hazard shape as `ctrl+shift+e` above, remedied the same way
+      // (`keybindings.fallback.json`'s `ctrl+t` entry).
+      "ctrl+shift+f -> search.focus",
       "ctrl+shift+k -> editor.action.deleteLine",
       "ctrl+shift+p -> workbench.action.showCommands",
       "ctrl+shift+tab -> tab.previous",
