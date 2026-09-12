@@ -145,6 +145,26 @@ export interface ConfigServiceDeps {
    * the keymap's own `cli` layer (`keymap/bindingTable.ts`'s
    * `KeymapLayers.cli`), not the `user` layer. */
   cliKeybindingsPath?: string;
+  /** Pre-validated initial content for the CLI settings layer (Req 9.7,
+   * Issue #149, CodeRabbit PR #154 review) — when given, `initialLoad()`
+   * uses this value directly for {@link cliSettingsPath}'s FIRST load
+   * instead of reading the file a second time. Closes a TOCTOU race: the
+   * caller (`cli/main.ts`'s `runTecode`, via `verifyExplicitFileOverrides`)
+   * already read and validated the file once before this service was even
+   * constructed; without this, a file deleted/replaced in the narrow
+   * window between that check and this service's own first read would
+   * silently degrade to an empty CLI layer (`loadSettingsLayer`'s ordinary
+   * keep-last-good-on-failure policy) instead of the fatal startup error
+   * an explicitly-named file is supposed to get. Every LATER live reload
+   * (this service's own `fs.watch` on {@link cliSettingsPath}) still reads
+   * the file from disk and keeps its existing last-good-layer-on-failure
+   * behavior — this only ever affects the very first load. `undefined`
+   * (the default) preserves the original "always read `cliSettingsPath`
+   * from disk, including for the first load" behavior. */
+  initialCliSettings?: Record<string, unknown>;
+  /** Same "skip only the first re-read, live reload unchanged" contract as
+   * {@link initialCliSettings}, for {@link cliKeybindingsPath}'s layer. */
+  initialCliKeybindings?: unknown[];
   /** Filesystem seam — see {@link ConfigServiceFs}. Defaults to
    * `node:fs/promises` + `node:fs.watch`. */
   fs?: ConfigServiceFs;
@@ -686,6 +706,26 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
   }
 
   async function initialLoad(): Promise<void> {
+    // The CLI layer's FIRST load prefers `deps.initialCliSettings`/
+    // `initialCliKeybindings` over re-reading `cliSettingsPath`/
+    // `cliKeybindingsPath` when given (this field's own TSDoc: closes a
+    // TOCTOU race against the caller's own prior validation read) — every
+    // later live reload still goes through `loadSettingsLayer`/
+    // `loadKeybindingsLayer` exactly as before, via `scheduleCliSettingsReload`/
+    // `scheduleCliKeybindingsReload`, unaffected by this branch.
+    const cliSettingsInitialLoad: Promise<Record<string, unknown> | undefined> =
+      deps.initialCliSettings !== undefined
+        ? Promise.resolve(deps.initialCliSettings)
+        : cliSettingsPath
+          ? loadSettingsLayer(cliSettingsPath, "CLI settings")
+          : Promise.resolve<Record<string, unknown>>({});
+    const cliKeybindingsInitialLoad: Promise<unknown[] | undefined> =
+      deps.initialCliKeybindings !== undefined
+        ? Promise.resolve(deps.initialCliKeybindings)
+        : cliKeybindingsPath
+          ? loadKeybindingsLayer(cliKeybindingsPath, "CLI keybindings")
+          : Promise.resolve<unknown[]>([]);
+
     const [userResult, workspaceResult, keybindingsResult, cliSettingsResult, cliKeybindingsResult] =
       await Promise.all([
         loadSettingsLayer(userSettingsPath, "user settings"),
@@ -693,12 +733,8 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
           ? loadSettingsLayer(workspaceSettingsPath, "workspace settings")
           : Promise.resolve<Record<string, unknown>>({}),
         loadKeybindingsLayer(keybindingsPath, "user keybindings"),
-        cliSettingsPath
-          ? loadSettingsLayer(cliSettingsPath, "CLI settings")
-          : Promise.resolve<Record<string, unknown>>({}),
-        cliKeybindingsPath
-          ? loadKeybindingsLayer(cliKeybindingsPath, "CLI keybindings")
-          : Promise.resolve<unknown[]>([]),
+        cliSettingsInitialLoad,
+        cliKeybindingsInitialLoad,
       ]);
     if (disposed) return;
     userLayer = userResult ?? {};
@@ -706,6 +742,13 @@ export function createConfigService(deps: ConfigServiceDeps): ConfigService {
     keybindingEntries = keybindingsResult ?? [];
     cliLayer = cliSettingsResult ?? {};
     cliKeybindingEntries = cliKeybindingsResult ?? [];
+    // `deps.initialCliSettings` bypassed `loadSettingsLayer` (and thus its
+    // own internal `validateLayerTypes` call) above — revalidate here so a
+    // type mismatch in a `--settings <file>` value is still warned about,
+    // exactly as it would be had this gone through the ordinary read path.
+    if (deps.initialCliSettings !== undefined) {
+      validateLayerTypes(cliLayer, "CLI settings");
+    }
     // Initial build: set directly rather than going through rebuildMerged
     // — there is no meaningful "previous" state to diff against yet, and
     // no listener could have subscribed before this promise was even

@@ -703,6 +703,19 @@ export function buildAssemblyRoot(
      * (`keymap/bindingTable.ts`'s `KeymapLayers.cli`) — the single
      * highest-precedence layer of all. */
     keybindingsFile?: string;
+    /** Pre-validated content for {@link settingsFile} (Req 9.7, Issue #149,
+     * CodeRabbit PR #154 review) — `runTecode` threads
+     * `verifyExplicitFileOverrides`'s own already-parsed result straight
+     * through to `createConfigService`'s `initialCliSettings`, instead of
+     * letting it re-read `settingsFile` a second time. See that
+     * `ConfigServiceDeps` field's own TSDoc for the TOCTOU race this
+     * closes. `undefined` (the default — every test that predates this
+     * field) preserves the original "always read `settingsFile` from disk"
+     * behavior. */
+    initialCliSettings?: Record<string, unknown>;
+    /** Same "skip only the first re-read" contract as
+     * {@link initialCliSettings}, for {@link keybindingsFile}. */
+    initialCliKeybindings?: unknown[];
   } = {},
 ): AssemblyRoot {
   const log = deps.log ?? createHostLog();
@@ -952,6 +965,8 @@ export function buildAssemblyRoot(
     // above — see `deps.settingsFile`/`deps.keybindingsFile`'s own TSDoc.
     cliSettingsPath: deps.settingsFile,
     cliKeybindingsPath: deps.keybindingsFile,
+    initialCliSettings: deps.initialCliSettings,
+    initialCliKeybindings: deps.initialCliKeybindings,
     onKeybindingsChange: (entries) => keymap.setUserEntries(entries),
     onCliKeybindingsChange: (entries) => keymap.setCliEntries(entries),
   });
@@ -2042,11 +2057,62 @@ interface ExplicitFileOverride {
  * `process.exit` directly — keeps this function safely callable from a
  * test that must never risk killing the test runner itself.
  */
+/** What {@link verifyExplicitFileOverrides} hands back on success: the
+ * ALREADY-parsed content for whichever of `--settings`/`--keybindings` was
+ * given (Req 9.7, Issue #149, CodeRabbit PR #154 review) — `runTecode`
+ * feeds these straight into `createConfigService`'s `initialCliSettings`/
+ * `initialCliKeybindings` instead of letting the service re-read the same
+ * file a second time (see those fields' own TSDoc for the TOCTOU race this
+ * closes). `undefined` for a flag that was never given. */
+interface VerifiedExplicitFileOverrides {
+  settings?: Record<string, unknown>;
+  keybindings?: unknown[];
+}
+
+/**
+ * Verify every given `--settings`/`--keybindings`/`--theme <file>` override
+ * is not just readable but genuinely well-formed (Req 9.7/7.6, Issue #149).
+ * A stat-only check (this function's earlier shape) let a MALFORMED
+ * explicit file through: `ConfigService`'s own loaders would then silently
+ * degrade it to an empty layer with just a logged warning — exactly the
+ * "typo silently ignored" outcome an explicit flag is supposed to avoid
+ * (CodeRabbit PR #154 review). So this actually reads and, for
+ * `--settings`/`--keybindings`, JSONC-parses each file, requiring the same
+ * top-level shape `config/service.ts`'s loaders require (object / array
+ * respectively) — and returns that already-parsed content
+ * ({@link VerifiedExplicitFileOverrides}) so the caller can hand it
+ * straight to `createConfigService` instead of reading the file again,
+ * closing a TOCTOU race a second CodeRabbit pass on this same PR found: a
+ * file deleted/replaced in the window between this check and
+ * `ConfigService`'s OWN first read used to silently degrade to an empty
+ * CLI layer instead of failing startup, the exact "typo silently ignored"
+ * outcome this function otherwise exists to prevent. `--theme` only needs
+ * to be READABLE here — its JSON structure is validated, and gracefully
+ * degraded per-key to the base palette on a malformed file, by
+ * `ThemeRegistry.loadContributions` itself once `runTecode` loads it
+ * (`ui/themeLoader.ts`'s existing policy, shared by every OTHER theme
+ * source: built-in, extension-declared, and user-themes-directory) —
+ * enforcing full theme-schema validity here would make `--theme` stricter
+ * than every other theme source, which is not this flag's job.
+ *
+ * Unlike `--config <dir>`'s tolerant "missing file is an empty layer"
+ * policy (`config/service.ts`'s own TSDoc), an EXPLICITLY named file with
+ * a genuine problem — missing, unreadable, or (for `--settings`/
+ * `--keybindings`) malformed/wrong-shaped — is a typo the user would
+ * otherwise never learn about, so this throws rather than degrading.
+ * Every problem found is still reported through `log` first (design.md
+ * §14's "report, then decide how to fail" discipline) before the combined
+ * error is thrown; `runTecode`'s caller (`main()`) already exits the
+ * process on any rejected promise, so throwing here — rather than calling
+ * `process.exit` directly — keeps this function safely callable from a
+ * test that must never risk killing the test runner itself.
+ */
 async function verifyExplicitFileOverrides(
   overrides: readonly ExplicitFileOverride[],
   log: HostLog,
-): Promise<void> {
+): Promise<VerifiedExplicitFileOverrides> {
   const problems: string[] = [];
+  const verified: VerifiedExplicitFileOverrides = {};
   for (const { flag, path } of overrides) {
     if (!path) continue;
     try {
@@ -2064,8 +2130,12 @@ async function verifyExplicitFileOverrides(
           ) {
             throw new Error("must be a JSON object at the top level");
           }
-        } else if (!Array.isArray(parsed.value)) {
-          throw new Error("must be a JSON array at the top level");
+          verified.settings = parsed.value as Record<string, unknown>;
+        } else {
+          if (!Array.isArray(parsed.value)) {
+            throw new Error("must be a JSON array at the top level");
+          }
+          verified.keybindings = parsed.value;
         }
       }
       // --theme: readability alone is verified here — see this function's
@@ -2079,6 +2149,7 @@ async function verifyExplicitFileOverrides(
   if (problems.length > 0) {
     throw new Error(`tecode: invalid startup file override(s):\n${problems.join("\n")}`);
   }
+  return verified;
 }
 
 export async function runTecode(
@@ -2102,7 +2173,7 @@ export async function runTecode(
     ? resolvePath(cwd, options.keybindingsFile)
     : undefined;
   const themeFile = options.themeFile ? resolvePath(cwd, options.themeFile) : undefined;
-  await verifyExplicitFileOverrides(
+  const verifiedFileOverrides = await verifyExplicitFileOverrides(
     [
       { flag: "--settings", path: settingsFile },
       { flag: "--keybindings", path: keybindingsFile },
@@ -2124,6 +2195,12 @@ export async function runTecode(
     configDir: options.configDir,
     settingsFile,
     keybindingsFile,
+    // Already read+validated above (`verifiedFileOverrides`) — handed
+    // straight to `createConfigService` instead of letting it re-read the
+    // same file a second time (closes the TOCTOU race
+    // `ConfigServiceDeps.initialCliSettings`'s own TSDoc describes).
+    initialCliSettings: verifiedFileOverrides.settings,
+    initialCliKeybindings: verifiedFileOverrides.keybindings,
   });
   await root.config.ready;
   emitVerboseStep(startedAt, "config-ready");

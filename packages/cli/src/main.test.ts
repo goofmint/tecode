@@ -10,11 +10,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   BASE_THEME_ID,
   createHostLog,
   EXTENSIONS_RELOAD_COMMAND_ID,
+  getUserConfigDir,
   getUserExtensionsDir,
   KEYBINDINGS_ENSURE_FILE_COMMAND_ID,
   KEYBINDINGS_RESOLVE_TABLE_COMMAND_ID,
@@ -399,6 +400,59 @@ test("buildAssemblyRoot's settingsFile overrides the user layer but still loses 
   }
 });
 
+test("buildAssemblyRoot's initialCliSettings/initialCliKeybindings are used even when settingsFile/keybindingsFile no longer exist on disk — the TOCTOU race the caller's own prior read closes (CodeRabbit PR #154 review)", async () => {
+  // Regression test: `verifyExplicitFileOverrides` (main.ts's `runTecode`)
+  // reads and validates the file ONCE, before `buildAssemblyRoot` is even
+  // called. Without threading that already-parsed content through as
+  // `initialCliSettings`/`initialCliKeybindings`, `ConfigService`'s own
+  // first load would re-read the same path — and if it had been deleted
+  // in between (simulated here by simply never creating it), silently
+  // degrade to an empty CLI layer instead of the fatal startup error an
+  // explicitly-named file is supposed to get.
+  const workspaceDir = await mkdtemp(join(tmpdir(), "tecode-cli-ws-"));
+  const homeDir = await mkdtemp(join(tmpdir(), "tecode-cli-home-"));
+  // Deliberately never created on disk.
+  const settingsFile = join(workspaceDir, "never-written-settings.json");
+  const keybindingsFile = join(workspaceDir, "never-written-keybindings.json");
+
+  const savedHome = process.env["HOME"];
+  const savedAppData = process.env["APPDATA"];
+  process.env["HOME"] = homeDir;
+  process.env["APPDATA"] = homeDir;
+
+  let root: ReturnType<typeof buildAssemblyRoot>;
+  try {
+    root = buildAssemblyRoot(workspaceDir, {
+      settingsFile,
+      keybindingsFile,
+      initialCliSettings: { "editor.tabSize": 3 },
+      initialCliKeybindings: [{ key: "ctrl+alt+r", command: "fixture.fromRace" }],
+    });
+    await root.config.ready;
+
+    expect(root.config.get<number>("editor.tabSize")).toBe(3);
+    expect(root.config.isSetByCliLayer("editor.tabSize")).toBe(true);
+    const resolved = root.keymap.getTable().lookup("ctrl+alt+r", () => undefined);
+    expect(resolved?.command).toBe("fixture.fromRace");
+    expect(resolved?.layer).toBe("cli");
+    // No spurious error logged over the (nonexistent) files.
+    expect(root.log.entries().filter((e) => e.level === "error")).toHaveLength(0);
+  } finally {
+    if (savedHome === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = savedHome;
+    if (savedAppData === undefined) delete process.env["APPDATA"];
+    else process.env["APPDATA"] = savedAppData;
+    root!.config.dispose();
+    root!.chordMachine.dispose();
+    root!.editorSession.dispose();
+    root!.editorLangIdSync.dispose();
+    root!.themeConfigSync.dispose();
+    root!.themeSelectCommand.dispose();
+    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("a theme.select commit does not persist workbench.colorTheme back when --settings ALONE (no --theme) already sets it (CodeRabbit PR #154 review)", async () => {
   // Regression test: the writer used to only suppress when a --theme
   // override was active; --settings setting workbench.colorTheme with no
@@ -419,6 +473,18 @@ test("a theme.select commit does not persist workbench.colorTheme back when --se
   process.env["HOME"] = homeDir;
   process.env["APPDATA"] = homeDir;
 
+  // The ACTUAL write target ThemeSettingsWriter defaults to
+  // (`getUserSettingsPath()`, since `buildAssemblyRoot` never passes it a
+  // `path:` override) — seeded with its own sentinel so a suppression
+  // regression is genuinely caught. Checking only `settingsFile` above
+  // proves nothing on its own: the writer never targets that file in the
+  // first place, so it would trivially stay unchanged even if suppression
+  // were completely broken (CodeRabbit PR #154 review).
+  const userSettingsPath = join(getUserConfigDir(), "settings.json");
+  await mkdir(dirname(userSettingsPath), { recursive: true });
+  const userSentinel = JSON.stringify({ sentinel: true });
+  await writeFile(userSettingsPath, userSentinel, "utf8");
+
   let root: ReturnType<typeof buildAssemblyRoot>;
   try {
     root = buildAssemblyRoot(workspaceDir, { settingsFile });
@@ -433,6 +499,10 @@ test("a theme.select commit does not persist workbench.colorTheme back when --se
     await new Promise((resolve) => setTimeout(resolve, 200));
     const onDisk = await readFile(settingsFile, "utf8");
     expect(onDisk).toBe(originalContent);
+    // The real target — the one that would actually receive a non-suppressed
+    // write — must also be untouched.
+    const userOnDisk = await readFile(userSettingsPath, "utf8");
+    expect(userOnDisk).toBe(userSentinel);
   } finally {
     if (savedHome === undefined) delete process.env["HOME"];
     else process.env["HOME"] = savedHome;

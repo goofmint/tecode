@@ -365,6 +365,100 @@ describe("ConfigService — cliSettingsPath/cliKeybindingsPath layer (Req 9.7, I
     service.dispose();
   });
 
+  test("initialCliSettings closes the TOCTOU race: the first load uses it instead of re-reading a file that has since become unreadable (CodeRabbit PR #154 review)", async () => {
+    const cliSettingsPath = "/override/cli-settings.json";
+    // Deliberately no file seeded at cliSettingsPath — simulates it having
+    // been deleted/replaced in the window between the caller's own
+    // validation read (`main.ts`'s `verifyExplicitFileOverrides`) and this
+    // service's construction. Without `initialCliSettings`, the ordinary
+    // `loadSettingsLayer` ENOENT path would silently degrade to `{}` here.
+    const fake = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({
+      log,
+      sink,
+      cliSettingsPath,
+      initialCliSettings: { "editor.tabSize": 2 },
+      fs: fake.fs,
+    });
+    await service.ready;
+
+    // The pre-validated content was used, NOT a fresh (failing) read.
+    expect(service.get<number>("editor.tabSize")).toBe(2);
+    expect(service.isSetByCliLayer("editor.tabSize")).toBe(true);
+    expect(log.entries()).toHaveLength(0);
+    service.dispose();
+  });
+
+  test("initialCliSettings is still revalidated against a schema registered before ready settles", async () => {
+    const cliSettingsPath = "/override/cli-settings.json";
+    const fake = createFakeFs();
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({
+      log,
+      sink,
+      cliSettingsPath,
+      initialCliSettings: { "editor.tabSize": "not-a-number" },
+      fs: fake.fs,
+    });
+    service.registerConfiguration({
+      properties: { "editor.tabSize": { type: "number", default: 4 } },
+    });
+    await service.ready;
+
+    const warnings = log.entries().filter((e) => e.level === "warning");
+    expect(warnings.some((w) => w.error.message.includes("editor.tabSize"))).toBe(true);
+    expect(warnings.some((w) => w.error.message.includes("CLI settings"))).toBe(true);
+    service.dispose();
+  });
+
+  test("a live reload AFTER initialCliSettings still re-reads the file from disk, keeping the ordinary last-good-on-failure policy", async () => {
+    const cliSettingsPath = "/override/cli-settings.json";
+    const fake = createFakeFs({ [cliSettingsPath]: JSON.stringify({ "editor.tabSize": 9 }) });
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const service = createConfigService({
+      log,
+      sink,
+      cliSettingsPath,
+      initialCliSettings: { "editor.tabSize": 2 },
+      fs: fake.fs,
+    });
+    await service.ready;
+    // The pre-validated initial value, not whatever the (unrelated) file
+    // on disk happens to say.
+    expect(service.get<number>("editor.tabSize")).toBe(2);
+
+    fake.setFile(cliSettingsPath, JSON.stringify({ "editor.tabSize": 6 }));
+    fake.triggerChange(cliSettingsPath);
+    await waitFor(() => service.get<number>("editor.tabSize") === 6);
+
+    service.dispose();
+  });
+
+  test("initialCliKeybindings closes the same TOCTOU race for the keybindings layer", async () => {
+    const cliKeybindingsPath = "/override/cli-keybindings.json";
+    const fake = createFakeFs(); // nothing seeded — simulates a since-deleted file
+    const log = createHostLog();
+    const { sink } = createRecordingSink();
+    const cliCalls: unknown[][] = [];
+    const service = createConfigService({
+      log,
+      sink,
+      cliKeybindingsPath,
+      initialCliKeybindings: [{ key: "ctrl+k", command: "cli.command" }],
+      fs: fake.fs,
+      onCliKeybindingsChange: (entries) => cliCalls.push(entries.slice()),
+    });
+    await service.ready;
+
+    expect(cliCalls.at(-1)).toEqual([{ key: "ctrl+k", command: "cli.command" }]);
+    expect(log.entries()).toHaveLength(0);
+    service.dispose();
+  });
+
   test("a live edit to the cliSettingsPath file reloads the CLI layer", async () => {
     const cliSettingsPath = "/override/cli-settings.json";
     const fake = createFakeFs({ [cliSettingsPath]: JSON.stringify({ "editor.tabSize": 2 }) });
