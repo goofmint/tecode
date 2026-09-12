@@ -33,6 +33,7 @@ import {
   createLanguageRegistry,
   createLayoutStateService,
   createModalService,
+  createPanelHeightSettingsWriter,
   createSidebarWidthSettingsWriter,
   createSlotRegistry,
   createTecodeApi,
@@ -44,12 +45,14 @@ import {
   loadExtensions,
   loadFallbackKeybindings,
   MODAL_DEFAULT_KEYBINDINGS,
+  PANEL_HEIGHT_DEFAULT_KEYBINDINGS,
   pathToUri,
   registerCoreConfiguration,
   registerExtensionsReloadCommand,
   registerKeybindingsCommands,
   registerModalCommands,
   registerOpenFileCommand,
+  registerPanelHeightCommands,
   registerShowPanelCommand,
   registerSidebarVisibilityCommand,
   registerSidebarWidthCommands,
@@ -85,6 +88,7 @@ import {
   type LayoutStateService,
   type LoadExtensionsResult,
   type ModalService,
+  type PanelHeightSettingsWriter,
   type PendingThemeContribution,
   type SidebarWidthSettingsWriter,
   type SlotRegistry,
@@ -242,6 +246,13 @@ export interface AssemblyRoot {
    * debounce is what makes it safe to call on every commit without
    * thrashing `settings.json` (that module's TSDoc). */
   sidebarWidthSettingsWriter: Pick<SidebarWidthSettingsWriter, "write" | "flush">;
+  /** Persists a panel-resize COMMIT to `workbench.panelHeight` in
+   * `settings.json` (Issue #146, `ui/panelHeightSettingsWriter.ts`) — fed to
+   * {@link panelHeightCommands}' two handlers (a keypress) below. Its own
+   * debounce is what makes it safe to call on every commit without
+   * thrashing `settings.json` (that module's TSDoc), matching
+   * {@link sidebarWidthSettingsWriter}'s identical shape. */
+  panelHeightSettingsWriter: Pick<PanelHeightSettingsWriter, "write" | "flush">;
   /** The sync-phase FIRST-FRAME theme (Req 7.4, design.md §3): a snapshot
    * of `themeRegistry`'s always-present base theme, already quantized for
    * the detected color depth — `renderShell.tsx`'s `ShellRenderDeps.theme`
@@ -348,6 +359,14 @@ export interface AssemblyRoot {
    * `TAB_DEFAULT_KEYBINDINGS`. Disposed alongside every other startup-owned
    * subscription in {@link wireProcessExit}. */
   sidebarWidthCommands: Disposable;
+  /** The `workbench.action.increase/decreasePanelHeight` commands'
+   * registration (Issue #146, `ui/panelHeightCommands.ts`) — registered
+   * directly on `commands` for the same privilege-boundary reason as
+   * {@link sidebarWidthCommands} above. Their default keybindings
+   * (`ctrl+k up`/`ctrl+k down`) were already fed into `keymap`'s `defaults`
+   * layer alongside `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS`. Disposed alongside
+   * every other startup-owned subscription in {@link wireProcessExit}. */
+  panelHeightCommands: Disposable;
   /** The resolved workspace root this root was built for. */
   workspaceRoot: string;
   /** The layered keybinding table, kept up to date across every startup
@@ -782,13 +801,16 @@ export function buildAssemblyRoot(
   // `MODAL_DEFAULT_KEYBINDINGS` (Task 3.1, `ui/modalCommands.ts`) is this
   // codebase's first real occupant of the `defaults` layer
   // (`keymapState.ts`'s TSDoc) — core-owned bindings, not an extension
-  // manifest's. `TAB_DEFAULT_KEYBINDINGS` (Task 3.5, `ui/tabCommands.ts`)
-  // and `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS` (Issue #105, `ui/
-  // sidebarWidthCommands.ts`) join it here, same layer, same reasoning.
+  // manifest's. `TAB_DEFAULT_KEYBINDINGS` (Task 3.5, `ui/tabCommands.ts`),
+  // `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS` (Issue #105, `ui/
+  // sidebarWidthCommands.ts`), and `PANEL_HEIGHT_DEFAULT_KEYBINDINGS`
+  // (Issue #146, `ui/panelHeightCommands.ts`) join it here, same layer,
+  // same reasoning.
   const keymap = createKeymapState(log, [
     ...MODAL_DEFAULT_KEYBINDINGS,
     ...TAB_DEFAULT_KEYBINDINGS,
     ...SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
+    ...PANEL_HEIGHT_DEFAULT_KEYBINDINGS,
   ]);
 
   // Task 4.2's fallback-keymap loader (Req 4.7, design.md §6.5): defaults
@@ -932,6 +954,12 @@ export function buildAssemblyRoot(
   // `getUserSettingsPath()` (this writer's own fallback), and the width
   // would never survive a restart.
   const sidebarWidthSettingsWriter = createSidebarWidthSettingsWriter({ log, sink, path: settingsPath });
+  // Persists a panel-resize COMMIT to `workbench.panelHeight` (Issue #146,
+  // `ui/panelHeightSettingsWriter.ts`'s TSDoc) — built here, alongside
+  // `sidebarWidthSettingsWriter`, for the identical "same `--config <dir>`
+  // must read/write the SAME `settings.json`" reasoning that writer's own
+  // comment gives.
+  const panelHeightSettingsWriter = createPanelHeightSettingsWriter({ log, sink, path: settingsPath });
 
   // `workbench.action.showPanel` (Issue #98 Phase 3, `ui/panelCommands.ts`'s
   // TSDoc): another PRIVILEGED registration straight on `commands`, same
@@ -956,6 +984,16 @@ export function buildAssemblyRoot(
   const sidebarWidthCommands = registerSidebarWidthCommands(commands, {
     layoutState,
     settingsWriter: sidebarWidthSettingsWriter,
+  });
+
+  // `workbench.action.increase/decreasePanelHeight` (Issue #146, `ui/
+  // panelHeightCommands.ts`'s TSDoc): another PRIVILEGED registration
+  // straight on `commands`, same privilege-boundary reasoning as
+  // `sidebarWidthCommands` above — their default keybindings were already
+  // fed into `keymap`'s `defaults` layer above.
+  const panelHeightCommands = registerPanelHeightCommands(commands, {
+    layoutState,
+    settingsWriter: panelHeightSettingsWriter,
   });
 
   // Sync-phase theme construction (Req 7.4, 11.4, design.md §3, §9):
@@ -1207,6 +1245,7 @@ export function buildAssemblyRoot(
     slotRegistry,
     layoutState,
     sidebarWidthSettingsWriter,
+    panelHeightSettingsWriter,
     theme,
     themeRegistry,
     themesReadyPromise,
@@ -1220,6 +1259,7 @@ export function buildAssemblyRoot(
     extensionsReloadCommand,
     keybindingsCommands,
     sidebarWidthCommands,
+    panelHeightCommands,
     workspaceRoot,
     keymap,
     applyKittyKeyboardVerdict,
@@ -1504,6 +1544,11 @@ export interface ShutdownRoot {
    * "cancel the pending timer, write now" shutdown reasoning as
    * `layoutState.flush()` above. */
   sidebarWidthSettingsWriter: Pick<SidebarWidthSettingsWriter, "flush">;
+  /** Flushes any still-pending debounced `workbench.panelHeight` write
+   * (Issue #146, `ui/panelHeightSettingsWriter.ts`'s `flush()`) — same
+   * "cancel the pending timer, write now" shutdown reasoning as
+   * {@link sidebarWidthSettingsWriter} above. */
+  panelHeightSettingsWriter: Pick<PanelHeightSettingsWriter, "flush">;
   config: Pick<Disposable, "dispose">;
   chordPendingIndicator: Pick<Disposable, "dispose">;
   chordMachine: Pick<Disposable, "dispose">;
@@ -1530,6 +1575,10 @@ export interface ShutdownRoot {
   extensionsReloadCommand: Pick<Disposable, "dispose">;
   keybindingsCommands: Pick<Disposable, "dispose">;
   sidebarWidthCommands: Pick<Disposable, "dispose">;
+  /** The `workbench.action.increase/decreasePanelHeight` commands'
+   * registration (Issue #146, `ui/panelHeightCommands.ts`) — disposed
+   * alongside {@link sidebarWidthCommands}, same reasoning. */
+  panelHeightCommands: Pick<Disposable, "dispose">;
   modalCommands: Pick<Disposable, "dispose">;
   modalService: Pick<Disposable, "dispose">;
   windowMessageService: Pick<Disposable, "dispose">;
@@ -1614,6 +1663,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
     try {
       await root.layoutState.flush();
       await root.sidebarWidthSettingsWriter.flush();
+      await root.panelHeightSettingsWriter.flush();
       root.config.dispose();
       root.chordPendingIndicator.dispose();
       root.chordMachine.dispose();
@@ -1641,6 +1691,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.extensionsReloadCommand.dispose();
       root.keybindingsCommands.dispose();
       root.sidebarWidthCommands.dispose();
+      root.panelHeightCommands.dispose();
       root.modalCommands.dispose();
       root.modalService.dispose();
       root.windowMessageService.dispose();

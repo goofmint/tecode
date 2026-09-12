@@ -23,6 +23,7 @@ import {
   createContextService,
   createHostLog,
   MODAL_DEFAULT_KEYBINDINGS,
+  PANEL_HEIGHT_DEFAULT_KEYBINDINGS,
   SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
   TAB_DEFAULT_KEYBINDINGS,
   type KeymapLayers,
@@ -36,17 +37,22 @@ import {
 /** The real four-layer composition `main.ts` feeds `createBindingTable`
  * (this module's TSDoc) — `defaults` mirrors `main.ts`'s own
  * `...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS, ...
- * SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS` exactly (the `SIDEBAR_WIDTH_
- * DEFAULT_KEYBINDINGS` inclusion is what makes this test meaningful: it is
- * the layer `explorer/manifest.ts`'s own TSDoc says these two new bindings
- * must not collide with), `extension` mirrors every built-in manifest's
- * `contributes.keybindings` flattened together (so `editor-core`'s own
- * plain `[`/`]` bindings are present too), and `fallback` is the real
- * bundled fallback keymap — `user` stays empty (no test in this suite
- * needs a user override layer). */
+ * SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS, ...PANEL_HEIGHT_DEFAULT_KEYBINDINGS`
+ * exactly (the `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS` inclusion is what makes
+ * this test meaningful: it is the layer `explorer/manifest.ts`'s own TSDoc
+ * says these two new bindings must not collide with), `extension` mirrors
+ * every built-in manifest's `contributes.keybindings` flattened together
+ * (so `editor-core`'s own plain `[`/`]` bindings are present too), and
+ * `fallback` is the real bundled fallback keymap — `user` stays empty (no
+ * test in this suite needs a user override layer). */
 function buildRealTable() {
   const layers: KeymapLayers = {
-    defaults: [...MODAL_DEFAULT_KEYBINDINGS, ...TAB_DEFAULT_KEYBINDINGS, ...SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS],
+    defaults: [
+      ...MODAL_DEFAULT_KEYBINDINGS,
+      ...TAB_DEFAULT_KEYBINDINGS,
+      ...SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
+      ...PANEL_HEIGHT_DEFAULT_KEYBINDINGS,
+    ],
     fallback: BUNDLED_FALLBACK_KEYBINDINGS,
     extension: builtinManifests.flatMap((manifest) => manifest.contributes.keybindings ?? []),
     user: [],
