@@ -8,6 +8,10 @@
     "command": "explorer.focus"
   },
   {
+    "key": "ctrl+t",
+    "command": "search.focus"
+  },
+  {
     "key": "ctrl+l",
     "command": "editor.action.deleteLine",
     "when": "editorTextFocus"

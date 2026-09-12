@@ -129,13 +129,15 @@ test("headless startup renders the shell before any extension's index.ts loads, 
     // (Task 2.7) AND `languages-basic` (Task 2.9) AND `command-palette`
     // (Task 3.2, `onStartup`) AND `explorer` (Task 3.3,
     // `onCommand:explorer.focus`) AND `statusbar` (Task 3.4, `onStartup`)
-    // AND `keybindings-editor` (Task 4.3, `onStartup`) —
-    // `themes-default`/`languages-basic`/`explorer` are never ACTIVATED by
-    // a headless run with no keystrokes (no `onStartup` for the first two;
-    // `explorer.focus` is never executed here), but every manifest still
-    // counts as LOADED/registered regardless of activation — all load
-    // during this real (no `builtins` override) subprocess run.
-    expect(headlessExit?.["loaded"]).toBe(9);
+    // AND `keybindings-editor` (Task 4.3, `onStartup`) AND `search`
+    // (Issue #147, `onCommand:search.focus`) —
+    // `themes-default`/`languages-basic`/`explorer`/`search` are never
+    // ACTIVATED by a headless run with no keystrokes (no `onStartup` for
+    // the first two; neither `explorer.focus` nor `search.focus` is ever
+    // executed here), but every manifest still counts as LOADED/registered
+    // regardless of activation — all load during this real (no `builtins`
+    // override) subprocess run.
+    expect(headlessExit?.["loaded"]).toBe(10);
     expect(headlessExit?.["skipped"]).toBe(0);
   } finally {
     await rm(homeDir, { recursive: true, force: true });

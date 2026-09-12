@@ -53,6 +53,16 @@ import type { Manifest } from "@tecode/api";
  * id. */
 export const EXPLORER_VIEW_ID = "explorer";
 
+/** The activity-bar glyph for this view (Issue #147's "アイコンを設定する").
+ * Until now no manifest set `ViewContribution.icon` at all, so `shell.tsx`'s
+ * `ActivityBar` fell back to `title.slice(0, 1)` — the SAME `"E"` this
+ * constant now states explicitly, so the activity bar renders exactly as
+ * before while no longer depending on a fallback for its appearance. Plain
+ * ASCII, deliberately not an emoji: `shell.tsx`'s `SIDEBAR_COLLAPSE_GLYPH`
+ * TSDoc and Issue #121 give the reasoning (font coverage, and a wide glyph
+ * breaking the fixed 4-column activity bar's monospace cell). */
+export const EXPLORER_VIEW_ICON = "E";
+
 /** `ctrl+shift+e` — focuses (and, VS Code-style, toggles) the explorer
  * sidebar (Req 11.2). */
 export const EXPLORER_FOCUS_COMMAND_ID = "explorer.focus";
@@ -106,7 +116,7 @@ export default {
   apiVersion: "1.0",
   activationEvents: [`onCommand:${EXPLORER_FOCUS_COMMAND_ID}`],
   contributes: {
-    views: [{ id: EXPLORER_VIEW_ID, title: "Explorer", slot: "sidebar" }],
+    views: [{ id: EXPLORER_VIEW_ID, title: "Explorer", slot: "sidebar", icon: EXPLORER_VIEW_ICON }],
     commands: [
       { id: EXPLORER_FOCUS_COMMAND_ID, title: "Focus on Explorer", category: "View" },
       { id: EXPLORER_NEW_FILE_COMMAND_ID, title: "New File", category: "File" },
