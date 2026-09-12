@@ -221,11 +221,11 @@
  * disambiguated anyway. The cost is that on a non-Kitty terminal these two
  * bindings are unreachable — which is exactly what
  * `keymap/keybindings.fallback.json`'s layer exists for (README's "Fallback
- * keymap"): it maps `ctrl+r`/`ctrl+t` onto the same two commands, both
+ * keymap"): it maps `ctrl+r`/`ctrl+u` onto the same two commands, both
  * verified unclaimed against this file's full `ctrl+<letter>` inventory,
  * against every other built-in manifest's, and against
  * `TERMINAL_ESCAPE_STROKE = "ctrl+o"`, and both parsing identically under
- * either mode (`ctrl+r` -> `"ctrl+r"`, `ctrl+t` -> `"ctrl+t"`) — unlike
+ * either mode (`ctrl+r` -> `"ctrl+r"`, `ctrl+u` -> `"ctrl+u"`) — unlike
  * `ctrl+j`, whose `0x0A` parses as `name: "linefeed"` and never yields a
  * `"ctrl+j"` stroke at all.
  *

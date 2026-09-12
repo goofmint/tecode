@@ -26,7 +26,7 @@
     "when": "editorTextFocus"
   },
   {
-    "key": "ctrl+t",
+    "key": "ctrl+u",
     "command": "editor.action.unfold",
     "when": "editorTextFocus"
   }

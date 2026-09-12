@@ -46,7 +46,7 @@ test("the bundled asset covers exactly the genuinely-ambiguous defaults plus the
       // a Kitty-capable terminal — `editor-core/manifest.ts`'s "Folding
       // keybindings (Issue #150)" section documents the `parseKeypress`
       // runs behind that — so every other terminal reaches folding through
-      // these two entries (`ctrl+r`/`ctrl+t`) instead. Hazard-driven
+      // these two entries (`ctrl+r`/`ctrl+u`) instead. Hazard-driven
       // remaps, like `deleteLine`/`showCommands` above.
       "editor.action.fold",
       "editor.action.unfold",
