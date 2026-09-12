@@ -26,6 +26,7 @@ import type {
 import type { CoreDocument } from "../buffer/document";
 import type { StatusSink } from "../host/errors";
 import type { EditorSessionService } from "../ui/editorSession";
+import { createFoldMapping } from "../ui/foldMapping";
 import { createFindStub, createFoldStub } from "./stubs";
 
 /** The primary cursor's placeholder position when there is no active
@@ -153,10 +154,22 @@ export function createEditorNamespace(deps: EditorNamespaceDeps): EditorNamespac
       // `editor-core` gets "scroll to keep the caret visible" for free via
       // `setSelections` alone — this method exists for an extension that
       // wants to reveal a line WITHOUT moving the cursor there.
+      //
+      // `line` is a DOCUMENT line (what an extension knows about), while
+      // `EditorState.scrollTop` is a DISPLAY row (`editorState.ts`'s own
+      // field TSDoc) — identical until something is folded, and not
+      // afterwards. So the requested line is mapped through the tab's
+      // current fold state before being stored (CodeRabbit, PR #155);
+      // without that, revealing document line 50 with 10 lines collapsed
+      // above it would scroll to display row 50, i.e. ten lines too far.
+      // `toDisplayLine` also resolves a line hidden INSIDE a collapsed
+      // region to that region's visible header, which is the closest thing
+      // to "reveal it" that exists while it stays folded.
       const maxLine = Math.max(0, document.lineCount - 1);
       const clamped = Math.max(0, Math.min(Math.trunc(line) || 0, maxLine));
       const state = editorSession.getState(document.uri);
-      editorSession.setState(document.uri, { ...state, scrollTop: clamped });
+      const mapping = createFoldMapping(state.collapsedFolds, document.lineCount);
+      editorSession.setState(document.uri, { ...state, scrollTop: mapping.toDisplayLine(clamped) });
     },
 
     insertSnippet(snippet: string): void {

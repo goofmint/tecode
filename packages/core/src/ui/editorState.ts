@@ -26,6 +26,18 @@ export interface EditorState {
   /** Always has at least one entry — a document with no selections is not
    * representable (there is always at least a collapsed cursor somewhere). */
   selections: Selection[];
+  /**
+   * The first row drawn, as a DISPLAY line — a row index into what the
+   * document currently RENDERS, not a document line index (Issue #150).
+   *
+   * The two are identical whenever {@link collapsedFolds} is empty, which
+   * is why every caller could treat this as a document line before folding
+   * existed. Once something is collapsed they diverge, and
+   * `ui/foldMapping.ts`'s `toDisplayLine` is the conversion every writer
+   * that starts from a document line must apply — `api/editorNamespace.ts`'s
+   * `revealLine` is the one such writer today. Readers
+   * (`ui/editorView.tsx`) already work in display rows throughout.
+   */
   scrollTop: number;
   /**
    * In-buffer find/replace state (Req 11.1, design.md §13) — `undefined`

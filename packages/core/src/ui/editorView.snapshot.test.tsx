@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { act, useState } from "react";
-import type { CapturedFrame } from "@opentui/core";
+import { MouseEvent as OpenTuiMouseEvent, type BoxRenderable, type CapturedFrame } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import type { Disposable, LanguageContribution, ResolvedTheme, Selection } from "@tecode/api";
 import { createBaseTheme } from "../api/stubs";
@@ -22,6 +22,7 @@ import type {
   ParserTree,
 } from "../languages/parserBackend";
 import type { ConfigService } from "../config/service";
+import type { FocusableNode } from "./focus";
 import { ThemeProvider, toColorInput } from "./theme";
 import { createInitialEditorState, createInitialFindState, type EditorState, type FindState } from "./editorState";
 import { EditorView } from "./editorView";
@@ -1252,16 +1253,51 @@ describe("EditorView — control-character sanitization (Issue #137: a binary/co
 });
 
 describe("EditorView — code folding (Issue #150)", () => {
-  /** A fold service slice serving one fixed region, plus an inert
-   * `toggleAt` — enough for the gutter marker, which is all these render
-   * assertions need (the toggle itself is covered by
-   * `foldController.test.ts`). */
+  /** A fold service slice serving one fixed region, plus a RECORDING
+   * `toggleAt` — the render assertions only need the ranges, but the
+   * gutter-click tests below assert on exactly which document line a click
+   * resolved to (CodeRabbit, PR #155). */
   function foldControllerFor(ranges: Array<{ startLine: number; endLine: number }>) {
+    const toggled: number[] = [];
     return {
       getFoldRanges: () => ranges,
       onDidChange: (): Disposable => ({ dispose() {} }),
-      toggleAt: () => {},
+      toggleAt: (_uri: string, line: number) => {
+        toggled.push(line);
+      },
+      toggled,
     };
+  }
+
+  /** The text plane's own renderable, as the gutter-click tests need it.
+   * `EditorView` already reports this exact node through `onTextPlaneNode`,
+   * so the tests capture it there rather than walking the rendered tree —
+   * and it is typed as an intersection of narrow structural views, the same
+   * convention `editorView.tsx`'s own `textPlaneRef` uses for this node. */
+  interface MouseTargetNode extends FocusableNode {
+    processMouseEvent(event: OpenTuiMouseEvent): void;
+    screenX: number;
+    screenY: number;
+  }
+
+  /** A real `@opentui/core` `MouseEvent`, built the same way
+   * `shell.sidebarResize.test.tsx` builds its own. Dispatching one through
+   * the renderable's `processMouseEvent` is what proves `EditorView`'s
+   * coordinate inversion and its button/column guards, without re-proving
+   * OpenTUI's own hit-testing. */
+  function mouseDownAt(
+    target: MouseTargetNode,
+    x: number,
+    y: number,
+    button = 0,
+  ): OpenTuiMouseEvent {
+    return new OpenTuiMouseEvent(target as unknown as BoxRenderable, {
+      type: "down",
+      button,
+      x,
+      y,
+      modifiers: { shift: false, alt: false, ctrl: false },
+    });
   }
 
   test("a collapsed region's lines are not rendered, and the rows below shift up", async () => {
@@ -1353,5 +1389,125 @@ describe("EditorView — code folding (Issue #150)", () => {
     const frame = captureCharFrame();
     expect(frame).toMatch(/1\u25b8L0/);
     expect(frame).not.toContain("L1");
+  });
+
+  /**
+   * The gutter click (CodeRabbit, PR #155). These drive a real
+   * `@opentui/core` `MouseEvent` through the text plane's own
+   * `processMouseEvent`, so they exercise `EditorView`'s actual coordinate
+   * inversion (`event.x/y` are GLOBAL terminal cells) and its two guards \u2014
+   * primary button only, marker column only \u2014 rather than the render
+   * output the tests above already cover.
+   */
+  describe("gutter click", () => {
+    /** Render `state` and hand back the live text-plane node plus the
+     * recording controller. 12 lines -> a 2-digit gutter, so `gutterWidth`
+     * is 3 and the marker column is local column 2. */
+    async function renderClickable(state: EditorState, ranges: Array<{ startLine: number; endLine: number }>) {
+      const document = createTestDocument(Array.from({ length: 12 }, (_, i) => `L${i}`).join("\n"));
+      const controller = foldControllerFor(ranges);
+      let plane: MouseTargetNode | undefined;
+      const { renderOnce } = await testRender(
+        <EditorView
+          document={document}
+          state={{ ...state, documentUri: document.uri }}
+          viewportHeight={12}
+          foldController={controller}
+          onTextPlaneNode={(node) => {
+            plane = (node as MouseTargetNode | null) ?? undefined;
+          }}
+        />,
+        { width: 30, height: 13 },
+      );
+      await act(async () => {
+        await renderOnce();
+      });
+      return { controller, plane: plane! };
+    }
+
+    const MARKER_COLUMN = 2; // gutterWidth (2 digits + 1) - 1
+
+    test("a left click on the marker column toggles that row's region", async () => {
+      const document = createTestDocument("unused");
+      const { controller, plane } = await renderClickable(createInitialEditorState(document.uri), [
+        { startLine: 3, endLine: 8 },
+      ]);
+
+      act(() => {
+        plane.processMouseEvent(
+          mouseDownAt(plane, plane.screenX + MARKER_COLUMN, plane.screenY + 3),
+        );
+      });
+
+      expect(controller.toggled).toEqual([3]);
+    });
+
+    test("with a region collapsed above it, a click resolves to the right DOCUMENT line", async () => {
+      const document = createTestDocument("unused");
+      // Rows 1..4 are hidden, so display row 2 is document line 6 \u2014 the
+      // regression a naive `clickedLine = scrollTop + dy` would miss.
+      const state: EditorState = {
+        ...createInitialEditorState(document.uri),
+        collapsedFolds: [{ startLine: 0, endLine: 4 }],
+      };
+      const { controller, plane } = await renderClickable(state, [
+        { startLine: 0, endLine: 4 },
+        { startLine: 6, endLine: 9 },
+      ]);
+
+      act(() => {
+        plane.processMouseEvent(
+          mouseDownAt(plane, plane.screenX + MARKER_COLUMN, plane.screenY + 2),
+        );
+      });
+
+      expect(controller.toggled).toEqual([6]);
+    });
+
+    test("a click on the line-number digits, or in the text, is ignored", async () => {
+      const document = createTestDocument("unused");
+      const { controller, plane } = await renderClickable(createInitialEditorState(document.uri), [
+        { startLine: 3, endLine: 8 },
+      ]);
+
+      act(() => {
+        plane.processMouseEvent(mouseDownAt(plane, plane.screenX, plane.screenY + 3));
+        plane.processMouseEvent(mouseDownAt(plane, plane.screenX + 10, plane.screenY + 3));
+      });
+
+      expect(controller.toggled).toEqual([]);
+    });
+
+    test("a click on a row with no marker is ignored, rather than folding its parent", async () => {
+      const document = createTestDocument("unused");
+      const { controller, plane } = await renderClickable(createInitialEditorState(document.uri), [
+        { startLine: 3, endLine: 8 },
+      ]);
+
+      // Row 5 sits INSIDE the region but starts none, so its marker column
+      // is blank \u2014 clicking blank space must do nothing.
+      act(() => {
+        plane.processMouseEvent(
+          mouseDownAt(plane, plane.screenX + MARKER_COLUMN, plane.screenY + 5),
+        );
+      });
+
+      expect(controller.toggled).toEqual([]);
+    });
+
+    test("a non-primary button is ignored", async () => {
+      const document = createTestDocument("unused");
+      const { controller, plane } = await renderClickable(createInitialEditorState(document.uri), [
+        { startLine: 3, endLine: 8 },
+      ]);
+
+      act(() => {
+        plane.processMouseEvent(
+          mouseDownAt(plane, plane.screenX + MARKER_COLUMN, plane.screenY + 3, 2),
+        );
+      });
+
+      expect(controller.toggled).toEqual([]);
+    });
   });
 });

@@ -35,7 +35,7 @@ import type { Disposable, Event, Listener, Selection, Uri } from "@tecode/api";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
 import { clampSelectionsToDocument, createInitialEditorState, type EditorState } from "./editorState";
-import { clampFoldsToDocument } from "./foldMapping";
+import { clampFoldsToDocument, createFoldMapping } from "./foldMapping";
 
 /** Whether `a` and `b` describe the exact same selection (all four
  * positions equal) — used only to decide whether a reload's clamp pass
@@ -176,19 +176,27 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
     const state = states.get(document.uri);
     if (!state) return;
     const clampedSelections = clampSelectionsToDocument(state.selections, document);
-    const maxScrollLine = Math.max(0, document.lineCount - 1);
-    const clampedScrollTop = Math.max(0, Math.min(Math.trunc(state.scrollTop) || 0, maxScrollLine));
     const selectionsChanged =
       clampedSelections.length !== state.selections.length ||
       clampedSelections.some((s, i) => !selectionEquals(s, state.selections[i]!));
     // Issue #150: the same shrink can strand a COLLAPSED fold past the
     // document's new end. `clampFoldsToDocument` returns the original
     // array when nothing needed changing, so this reference comparison is
-    // exactly the "did the clamp do anything" test the two above are.
+    // exactly the "did the clamp do anything" test the one above is.
     const clampedFolds = state.collapsedFolds
       ? clampFoldsToDocument(state.collapsedFolds, document.lineCount)
       : undefined;
     const foldsChanged = clampedFolds !== state.collapsedFolds;
+    // `scrollTop` is a DISPLAY row (`editorState.ts`'s field TSDoc), so its
+    // ceiling is the number of rows the document actually DRAWS after the
+    // fold clamp above — not its raw line count (CodeRabbit, PR #155).
+    // With nothing collapsed the two are identical, which is why this read
+    // the plain line count before folding existed.
+    const maxScrollLine = Math.max(
+      0,
+      createFoldMapping(clampedFolds, document.lineCount).visibleLineCount - 1,
+    );
+    const clampedScrollTop = Math.max(0, Math.min(Math.trunc(state.scrollTop) || 0, maxScrollLine));
     if (!selectionsChanged && !foldsChanged && clampedScrollTop === state.scrollTop) return;
     setState(document.uri, {
       ...state,

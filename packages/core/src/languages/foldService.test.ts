@@ -238,7 +238,7 @@ describe("createFoldService — fold ranges from the query (Issue #150)", () => 
     );
   });
 
-  test("a single-line region is dropped — collapsing it would hide nothing", async () => {
+  test("a two-line region survives, and a line with no block produces none", async () => {
     const fakeDocs = createFakeDocuments();
     const service = createFoldService(
       buildDeps({
@@ -246,15 +246,64 @@ describe("createFoldService — fold ranges from the query (Issue #150)", () => 
         languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }),
       }),
     );
-    // `{` and the matching `}` are on adjacent lines, so the region spans
-    // rows 0..1 — kept; the one-liner below it spans a single row and is
-    // never even produced by the mock. The assertion pins that only the
-    // multi-line region survives.
+    // `{` and the matching `}` sit on adjacent lines, so the region spans
+    // rows 0..1 — the narrowest span that still hides something. The
+    // trailing statement produces no capture at all.
     const document = createTestDocument("file:///b.ts", "typescript", ["a {", "}", "b;"].join("\n"));
     fakeDocs.open(document);
     await tick();
 
     expect(service.getFoldRanges(document.uri)).toEqual([{ startLine: 0, endLine: 1 }]);
+  });
+
+  // `braceBlocks` can produce neither a single-ROW capture nor one ending at
+  // column 0, so on its own it never reaches `recomputeRanges`' two
+  // normalizations (CodeRabbit, PR #155). Both are load-bearing for the
+  // `FoldRange` contract every consumer relies on — `endLine` strictly
+  // greater than `startLine` — so they are pinned here by feeding the
+  // service fixed captures directly.
+  test("normalizes captures: an equal-row capture is dropped, a column-0 end row is pulled back", async () => {
+    const fakeDocs = createFakeDocuments();
+    const backend = createMockBackend();
+    backend.compileQuery = () => ({
+      captures: (): ParserCapture[] => [
+        // Starts and ends on the same row: collapsing it would hide
+        // nothing, so it must not survive at all.
+        {
+          name: "fold",
+          startIndex: 0,
+          endIndex: 0,
+          startPosition: { row: 1, column: 0 },
+          endPosition: { row: 1, column: 5 },
+        },
+        // Ends at column 0 of row 3 — the node stops at the line break, so
+        // it does not actually occupy row 3 and is pulled back to row 2.
+        // This is the shape Markdown `(section)` and YAML `(block_mapping)`
+        // really produce.
+        {
+          name: "fold",
+          startIndex: 0,
+          endIndex: 0,
+          startPosition: { row: 0, column: 0 },
+          endPosition: { row: 3, column: 0 },
+        },
+      ],
+    });
+    const service = createFoldService(
+      buildDeps({
+        documents: fakeDocs,
+        backend,
+        languageRegistry: fakeLanguageRegistry({ typescript: tsContribution }),
+      }),
+    );
+    const document = createTestDocument("file:///c.ts", "typescript", SOURCE);
+    fakeDocs.open(document);
+    await tick();
+
+    const ranges = service.getFoldRanges(document.uri);
+    expect(ranges).toEqual([{ startLine: 0, endLine: 2 }]);
+    // The contract `ui/foldMapping.ts` depends on, asserted directly.
+    expect(ranges.every((range) => range.endLine > range.startLine)).toBe(true);
   });
 });
 

@@ -1515,6 +1515,7 @@ export interface ShutdownRoot {
   showPanelCommand: Pick<Disposable, "dispose">;
   sidebarVisibilityCommand: Pick<Disposable, "dispose">;
   findService: Pick<Disposable, "dispose">;
+  foldController: Pick<Disposable, "dispose">;
   editorSession: Pick<Disposable, "dispose">;
   editorLangIdSync: Pick<Disposable, "dispose">;
   themeConfigSync: Pick<Disposable, "dispose">;
@@ -1617,6 +1618,7 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.chordPendingIndicator.dispose();
       root.chordMachine.dispose();
       root.findService.dispose();
+      root.foldController.dispose();
       root.editorSession.dispose();
       root.editorLangIdSync.dispose();
       root.themeConfigSync.dispose();

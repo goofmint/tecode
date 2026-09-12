@@ -339,8 +339,11 @@ export function createFoldStub(): FoldNamespace {
 
 /** A shared, permanently-empty fold-range array — {@link createFoldStub}'s
  * two reads hand back the same reference every call, so a caller may
- * compare references without ever seeing a spurious change. */
-const EMPTY_FOLD_RANGES: readonly FoldRange[] = [];
+ * compare references without ever seeing a spurious change. Frozen for the
+ * same reason `api/foldNamespace.ts`'s own constant is (CodeRabbit, PR
+ * #155): it goes straight to extension code, and a shared array an
+ * extension could `push` into would corrupt every later read. */
+const EMPTY_FOLD_RANGES: readonly FoldRange[] = Object.freeze([]);
 
 /**
  * Build the `tecode.editor` stub (Req 10.1, design.md §12: "calls made with

@@ -22,8 +22,35 @@ import type { EditorSessionService } from "../ui/editorSession";
 import type { FoldController } from "../ui/foldController";
 
 /** A shared, permanently-empty result for the no-active-editor reads —
- * same reference every call, matching `stubs.ts`'s own constant. */
-const EMPTY_FOLD_RANGES: readonly FoldRange[] = [];
+ * same reference every call, matching `stubs.ts`'s own constant. Frozen:
+ * it is handed straight to extension code, and a shared array an extension
+ * could `push` into would corrupt every later read (CodeRabbit, PR #155). */
+const EMPTY_FOLD_RANGES: readonly FoldRange[] = Object.freeze([]);
+
+/**
+ * A frozen, independent copy of `ranges` — this API's mutability boundary
+ * (CodeRabbit, PR #155), the exact counterpart of `editorNamespace.ts`'s
+ * `cloneSelection` and its "Req 10.1's extensions must not be able to reach
+ * into host state" reasoning.
+ *
+ * `getFoldRanges` hands back `FoldService`'s OWN live array, and
+ * `getCollapsedFolds` hands back `EditorState.collapsedFolds` itself. A
+ * `readonly` type stops neither a `push` nor a `range.endLine = 0` at
+ * runtime, and `create.ts`'s `Object.freeze` only covers the namespace
+ * OBJECT, not what its methods return — so an extension could silently
+ * rewrite the host's fold state behind `setState`'s back, and every
+ * subsequent `fold`/`unfold`/`isLineVisible` would act on the mutated
+ * values with no change event ever having fired.
+ *
+ * Both the elements and the array itself are frozen: freezing only the
+ * array would still leave each `FoldRange`'s two number fields writable.
+ */
+function cloneFoldRanges(ranges: readonly FoldRange[]): readonly FoldRange[] {
+  if (ranges.length === 0) return EMPTY_FOLD_RANGES;
+  return Object.freeze(
+    ranges.map((range) => Object.freeze({ startLine: range.startLine, endLine: range.endLine })),
+  );
+}
 
 /** Dependencies for {@link createFoldNamespace}. */
 export interface FoldNamespaceDeps {
@@ -62,13 +89,13 @@ export function createFoldNamespace(deps: FoldNamespaceDeps): FoldNamespace {
     ranges(): readonly FoldRange[] {
       const document = activeDocument();
       if (!document) return EMPTY_FOLD_RANGES;
-      return foldController.getFoldRanges(document.uri);
+      return cloneFoldRanges(foldController.getFoldRanges(document.uri));
     },
 
     collapsed(): readonly FoldRange[] {
       const document = activeDocument();
       if (!document) return EMPTY_FOLD_RANGES;
-      return foldController.getCollapsedFolds(document.uri);
+      return cloneFoldRanges(foldController.getCollapsedFolds(document.uri));
     },
 
     fold(line?: number): void {
