@@ -634,4 +634,8 @@ walks through building a `tecode` extension end to end — manifest,
 activation, a command, a sidebar view, a configuration key, a
 keybinding — documents every `tecode.*` API namespace, and covers
 bundling extensions with npm dependencies and the API-version
-compatibility policy.
+compatibility policy. `samples/extensions/hello-world/` (in this
+repository) is a minimal, working extension — a manifest and an
+`index.ts` contributing a single command, nothing else — that you can
+copy straight into an extensions directory to see the pipeline run
+before working through the full guide.
