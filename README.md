@@ -689,9 +689,9 @@ starting up. The channel accepts exactly one kind of request — "open this
 file" — and can never carry a command to run.
 
 Everything about it fails safe: if the socket is gone or stale, if the
-connection is refused, or if the other instance does not answer within a
-couple of seconds, the invocation simply starts normally, which is what
-tecode always did. It is not used on Windows, for a launch with no file
+connection is refused, if the other instance does not answer within a
+couple of seconds, or if it answers that it could not open the file, the
+invocation simply starts normally, which is what tecode always did. It is not used on Windows, for a launch with no file
 argument (a bare `tecode` or a directory wants its own editor), or from a
 shell outside the integrated terminal.
 

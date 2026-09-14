@@ -63,9 +63,14 @@ function createFakeDocuments(): {
 }
 
 /** Build a live server on a fresh temp socket, plus the fakes a test
- * asserts against. `autoOpen` mirrors what the real
- * `workbench.action.files.openUri` does — it makes the requested document
- * actually open — so a `wait` request has something to wait for. */
+ * asserts against.
+ *
+ * `autoOpen` (default `true`) mirrors what the real
+ * `workbench.action.files.openUri` does on success: it makes the requested
+ * document actually open. `false` plays the FAILED open — the command
+ * swallows its own error and resolves anyway (`ui/openFileCommand.ts`'s
+ * never-throws contract), leaving the document manager untouched, which is
+ * exactly the case the server has to detect and report as `ok: false`. */
 function createHarness(options: { autoOpen?: boolean } = {}): {
   server: IpcServer;
   socketPath: string;
@@ -84,7 +89,7 @@ function createHarness(options: { autoOpen?: boolean } = {}): {
     commands: {
       execute(id, ...args) {
         executed.push({ id, args });
-        if (options.autoOpen === true && typeof args[0] === "string") documents.open(args[0]);
+        if (options.autoOpen !== false && typeof args[0] === "string") documents.open(args[0]);
         return Promise.resolve(undefined);
       },
     },
@@ -301,6 +306,33 @@ describe("createIpcServer — receive-buffer cap", () => {
   });
 });
 
+describe("createIpcServer — a failed open is reported as such", () => {
+  test("reports ok: false when the file did not actually open, so the client can fall back", async () => {
+    // `workbench.action.files.openUri` catches every failure (a bad uri,
+    // EACCES, a path that vanished) and resolves `undefined` regardless, so
+    // a fulfilled `commands.execute` proves nothing — the server checks the
+    // document manager instead (CodeRabbit review on PR #159). Without
+    // this, the client would exit 0 with the file neither opened here nor
+    // opened by the new instance it would otherwise have started.
+    const { socketPath, executed } = createHarness({ autoOpen: false });
+
+    expect(await delegateOpen({ socketPath, path: "/abs/file.ts", wait: false })).toBe(false);
+    // The command WAS executed — this is about the verdict, not about
+    // refusing to try.
+    expect(executed).toHaveLength(1);
+  });
+
+  test("the failure reason reaches the client rather than a bare ok: false", async () => {
+    const { socketPath } = createHarness({ autoOpen: false });
+    const answer = await sendRaw(
+      socketPath,
+      encodeIpcMessage({ v: IPC_PROTOCOL_VERSION, type: "open", path: "/abs/file.ts", cwd: "/abs" }),
+    );
+    expect(answer).toContain('"ok":false');
+    expect(answer).toContain("could not open");
+  });
+});
+
 describe("createIpcServer — wait: true", () => {
   test("holds the response until the opened document is closed again", async () => {
     const { socketPath, documents } = createHarness({ autoOpen: true });
@@ -339,11 +371,13 @@ describe("createIpcServer — wait: true", () => {
     expect(await pending).toBe(true);
   });
 
-  test("answers immediately when the document never actually opened — a client must never hang", async () => {
-    // `autoOpen` is off, so the (faked) open command changed nothing: there
-    // is no document whose close could ever arrive.
-    const { socketPath, documents } = createHarness();
-    expect(await delegateOpen({ socketPath, path: "/abs/file.ts", wait: true })).toBe(true);
+  test("a failed open answers ok: false immediately instead of waiting for a close that can never come", async () => {
+    // `autoOpen: false` plays a failed open: the command swallowed its own
+    // error and resolved anyway, leaving nothing open. Waiting would hang
+    // the client forever, and reporting success would make it exit 0
+    // having neither opened the file nor started its own editor.
+    const { socketPath, documents } = createHarness({ autoOpen: false });
+    expect(await delegateOpen({ socketPath, path: "/abs/file.ts", wait: true })).toBe(false);
     expect(documents.listenerCount()).toBe(0);
   });
 

@@ -193,18 +193,39 @@ export function createIpcServer(deps: IpcServerDeps): IpcServer {
   }
 
   /**
+   * Whether `uri` is currently among the open documents — this server's
+   * ONLY way to tell a successful open from a failed one.
+   *
+   * `workbench.action.files.openUri` deliberately swallows every failure
+   * (a bad uri, `EACCES`, a path that vanished) into its own log and
+   * resolves `undefined` either way — `ui/openFileCommand.ts`'s "never
+   * throws" contract, which exists for its original caller, the command
+   * palette, where there is a UI to show the error in. A delegated request
+   * has no such UI: the client is a CLI process that must decide between
+   * "done, exit 0" and "fall back to starting an editor myself", so
+   * `await commands.execute(...)` resolving tells it nothing and the state
+   * of the document manager afterwards is what actually answers the
+   * question (CodeRabbit review on PR #159).
+   *
+   * Checked from the state rather than from a return value on purpose:
+   * widening that command's own signature would change a command every
+   * other caller already depends on, for one new consumer.
+   */
+  function isDocumentOpen(uri: Uri): boolean {
+    return documents.documents.some((document) => document.uri === uri);
+  }
+
+  /**
    * Hold this request's response until the just-opened document is closed
    * again. Returns `true` when the response is now the subscription's
    * responsibility, `false` when the caller should answer immediately —
-   * which happens when the document is not actually open (the open failed;
-   * `workbench.action.files.openUri` reports its own failures through the
-   * log and cannot fail this call), since waiting for a close that can
-   * never come would hang the client forever.
+   * which happens only when the connection has since gone away; the caller
+   * has already established that the document really is open, so a close
+   * that can never come is no longer possible here.
    */
   function deferResponseUntilClosed(socket: Socket<ConnectionState>, uri: Uri): boolean {
     const state = connections.get(socket);
     if (!state) return false;
-    if (!documents.documents.some((document) => document.uri === uri)) return false;
     const subscription = documents.onDidClose((closed: CoreDocument) => {
       if (closed.uri !== uri) return;
       state.pending.delete(subscription);
@@ -223,6 +244,15 @@ export function createIpcServer(deps: IpcServerDeps): IpcServer {
       // `CommandRegistry.execute` is documented never-throwing; guarded
       // anyway so a surprise here still answers the client.
       respond(socket, false, describeError(cause));
+      return;
+    }
+    // A fulfilled `execute` does NOT mean the file opened ({@link
+    // isDocumentOpen}). Answering `ok: true` for a failed open would be the
+    // worst of both worlds: the client exits 0 believing it is done, so the
+    // file is neither open here nor opened by the fallback instance the
+    // client would otherwise have started.
+    if (!isDocumentOpen(uri)) {
+      respond(socket, false, "could not open the requested file");
       return;
     }
     if (request.wait === true && deferResponseUntilClosed(socket, uri)) return;
