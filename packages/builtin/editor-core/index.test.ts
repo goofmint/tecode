@@ -16,7 +16,9 @@ import type {
   Document,
   Editor,
   ExtensionContext,
+  InputBoxOptions,
   LanguageContribution,
+  MessageKind,
   QuickPickItem,
   QuickPickOptions,
   FoldRange,
@@ -74,6 +76,13 @@ function createFakeApi(initialLines: string[]) {
   // every test that never touches this.
   let quickPickResponse: QuickPickItem | undefined;
   const quickPickCalls: Array<{ items: QuickPickItem[]; options?: QuickPickOptions }> = [];
+  // Issue #162: `showInputBox`'s canned response for the NEXT call
+  // (`undefined`, the default, models Escape/cancel — matching every
+  // pre-#162 test, which never touches this) plus a record of every call's
+  // options, mirroring `quickPickResponse`/`quickPickCalls` just above.
+  let inputBoxResponse: string | undefined;
+  const inputBoxCalls: InputBoxOptions[] = [];
+  const showMessageCalls: Array<{ message: string; kind?: MessageKind }> = [];
   const languageContributions = new Map<string, LanguageContribution>();
   let clipboardBuffer = "";
 
@@ -208,12 +217,17 @@ function createFakeApi(initialLines: string[]) {
       get activeEditor() {
         return editor;
       },
-      showMessage: () => {},
+      showMessage: (message: string, kind?: MessageKind) => {
+        showMessageCalls.push({ message, kind });
+      },
       showQuickPick: async (items: QuickPickItem[], options?: QuickPickOptions) => {
         quickPickCalls.push({ items, options });
         return quickPickResponse;
       },
-      showInputBox: async () => undefined,
+      showInputBox: async (options?: InputBoxOptions) => {
+        inputBoxCalls.push(options ?? {});
+        return inputBoxResponse;
+      },
       setStatusBarItem: () => ({ dispose() {} }),
     },
     editor: {
@@ -343,6 +357,11 @@ function createFakeApi(initialLines: string[]) {
     setQuickPickResponse: (response: QuickPickItem | undefined) => {
       quickPickResponse = response;
     },
+    inputBoxCalls,
+    setInputBoxResponse: (response: string | undefined) => {
+      inputBoxResponse = response;
+    },
+    showMessageCalls,
     setConfig,
     getSelections: () => selections,
     languageContributions,
@@ -988,5 +1007,84 @@ describe("editor-core activate() — code folding (Issue #150)", () => {
     await api.commands.execute("editor.action.cursorDown");
 
     expect(getSelections()[0]!.active).toEqual(pos(3, 0));
+  });
+});
+
+describe("editor-core activate() — editor.action.gotoLine (Issue #162)", () => {
+  function tenLineFixture() {
+    return activateFixture(["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"]);
+  }
+
+  test("moves the cursor to the requested 1-based line, at character 0", async () => {
+    const { api, getSelections, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse("3");
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual([cursorAt(2, 0)]);
+  });
+
+  test("prompts with validateInput wired to the current line count", async () => {
+    const { api, inputBoxCalls, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse("1");
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(inputBoxCalls).toHaveLength(1);
+    const validateInput = inputBoxCalls[0]!.validateInput!;
+    expect(validateInput("3")).toBeUndefined();
+    expect(validateInput("abc")).toBe("Enter a valid line number.");
+    expect(validateInput("999")).toBe("Line number must be between 1 and 10.");
+  });
+
+  test("Escape/cancel (undefined) is a no-op", async () => {
+    const { api, getSelections, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse(undefined);
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+  });
+
+  test("a bypassed invalid value (direct commands.execute-style fake) shows an error and does not move the cursor", async () => {
+    const { api, getSelections, setInputBoxResponse, showMessageCalls } = tenLineFixture();
+    // Simulates a caller that bypasses the input box's own `validateInput`
+    // gate — the handler must re-validate the resolved value itself
+    // (explorer's "code review fix" precedent).
+    setInputBoxResponse("999");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls).toEqual([
+      { message: "Line number must be between 1 and 10.", kind: "error" },
+    ]);
+  });
+
+  test("does nothing without an active editor", async () => {
+    const fixture = tenLineFixture();
+    const { api, inputBoxCalls } = fixture;
+    Object.defineProperty(fixture.api.window, "activeEditor", { get: () => undefined });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(inputBoxCalls).toHaveLength(0);
+  });
+
+  test("unfolds the target line before revealing it (Issue #150)", async () => {
+    const { api, getSelections, getCollapsedFolds, setInputBoxResponse, setFoldRanges } =
+      tenLineFixture();
+    setFoldRanges([{ startLine: 2, endLine: 5 }]);
+    api.editor.setSelections([cursorAt(3, 0)]);
+    await api.commands.execute("editor.action.fold");
+    expect(getCollapsedFolds()).toEqual([{ startLine: 2, endLine: 5 }]);
+
+    setInputBoxResponse("4");
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getCollapsedFolds()).toEqual([]);
+    expect(getSelections()).toEqual([cursorAt(3, 0)]);
   });
 });

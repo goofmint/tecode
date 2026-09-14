@@ -269,6 +269,11 @@ export default {
       { id: "editor.action.cursorEnd", title: "Cursor Line End", category: "Editor" },
       { id: "editor.action.cursorTop", title: "Cursor Document Start", category: "Editor" },
       { id: "editor.action.cursorBottom", title: "Cursor Document End", category: "Editor" },
+      // Issue #162: goto-line. No default keybinding — see this file's
+      // TSDoc for why (`editor.action.toggleFold`'s precedent, #150):
+      // palette- and `keybindings.json`-reachable only, avoiding any
+      // change to the fallback keymap or its completeness test.
+      { id: "editor.action.gotoLine", title: "Go to Line...", category: "Editor" },
       { id: "editor.action.cursorLeftSelect", title: "Select Left", category: "Editor" },
       { id: "editor.action.cursorRightSelect", title: "Select Right", category: "Editor" },
       { id: "editor.action.cursorUpSelect", title: "Select Up", category: "Editor" },

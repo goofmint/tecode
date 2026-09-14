@@ -101,6 +101,7 @@ import type {
 import { buildBracketEditBatch } from "./brackets";
 import { buildClipboardText, buildCutResult, buildPasteResult } from "./clipboard";
 import { buildToggleLineCommentResult } from "./comments";
+import { resolveGotoLinePosition, validateGotoLineInput } from "./gotoLine";
 import {
   buildBackspaceEdit,
   buildDeleteEdit,
@@ -254,6 +255,42 @@ export function activate(ctx: ExtensionContext): void {
   registerMovement("editor.action.cursorEndSelect", moveLineEnd, true);
   registerMovement("editor.action.cursorTopSelect", () => moveDocumentStart(), true);
   registerMovement("editor.action.cursorBottomSelect", (r) => moveDocumentEnd(r), true);
+
+  // Issue #162: goto-line — the one movement-adjacent command that isn't a
+  // `registerMovement` (this module's TSDoc's shape for those): it prompts
+  // via `showInputBox` first, so it needs its own async handler. Follows
+  // `save`'s guard style (return with no active editor) and explorer's
+  // `registerCreateCommands`/`registerRenameCommand` precedent (`showInputBox`
+  // + `validateInput`, then re-validate the resolved value defensively —
+  // `validateInput` only gates the input box UI, not a programmatic
+  // `commands.execute` call).
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.gotoLine", async () => {
+      const editor = api.window.activeEditor;
+      if (!editor) return;
+      const lineCount = api.editor.lineCount;
+      const value = await api.window.showInputBox({
+        prompt: "Go to line",
+        validateInput: (v) => validateGotoLineInput(v, lineCount),
+      });
+      if (!value) return;
+      const error = validateGotoLineInput(value, lineCount);
+      if (error) {
+        api.window.showMessage(error, "error");
+        return;
+      }
+      const position = resolveGotoLinePosition(value, lineCount);
+      // Issue #150: reveal the target line even when it sits inside a
+      // collapsed fold — unfold BEFORE writing the selection, matching
+      // `folds.unfold`'s own contract (it reads/updates the live fold
+      // mapping, which `setSelections`' reveal derivation reads next
+      // render).
+      api.editor.folds.unfold(position.line);
+      api.editor.setSelections([
+        { start: position, end: position, anchor: position, active: position },
+      ]);
+    }),
+  );
 
   /** Register an editing command (Req 11.1): build the multi-cursor edit
    * batch (`editing.ts`'s `buildEditBatch`), apply it through the active
