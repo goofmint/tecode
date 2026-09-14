@@ -42,6 +42,37 @@ export interface KeyEventLike {
 }
 
 /**
+ * The Space key's canonical name in this pipeline (`"space"`), and the
+ * literal character `@opentui/core`'s Kitty-protocol branch reports for it
+ * in `name` instead (Issue #163).
+ *
+ * Space is the one key whose parsed `name` is NOT stable across the two
+ * parsing paths of `@opentui/core@0.1.107`'s `parseKeypress` — verified by
+ * running the vendored parser against real byte sequences (the same
+ * methodology `builtin/editor-core/manifest.ts`'s TSDoc documents), with
+ * `keyEventToStroke` applied to each result:
+ *
+ * - legacy Ctrl+Space (the raw NUL byte `0x00`), under
+ *   `useKittyKeyboard: false` AND `true` → `{ name: "space", ctrl: true }`
+ *   → `"ctrl+space"`.
+ * - Kitty's Ctrl+Space (`CSI 32;5u`), `useKittyKeyboard: true` →
+ *   `{ name: " ", ctrl: true }` → **`"ctrl++"`** before this mapping.
+ * - Kitty's plain Space (`CSI 32u`) → `{ name: " " }` → **`""`** before
+ *   this mapping.
+ *
+ * Both of those wrong answers come from {@link normalizeKey}'s documented
+ * (and correct) reading of a trailing `"+"` as naming the literal `+` KEY:
+ * `"ctrl+ "` collapses to `"ctrl++"` — which is also the genuine stroke
+ * for Ctrl+Plus (`CSI 43;5u`, verified) — and a bare `" "` normalizes to
+ * `""`. Mapping the name here, before the raw string is assembled, is
+ * therefore the only place the fix belongs: `normalize.ts` must keep
+ * treating `"ctrl++"` as Ctrl+Plus, since a hand-written
+ * `keybindings.json` entry may legitimately say exactly that.
+ */
+const SPACE_KEY_NAME = "space";
+const LITERAL_SPACE_NAME = " ";
+
+/**
  * Turn `event` into the canonical stroke string
  * {@link normalizeKey}/`BindingTable.lookup`/`ChordStateMachine.handleStroke`
  * expect (Req 4.1-4.4, design.md §6.1, §6.2): assemble a raw
@@ -53,13 +84,18 @@ export interface KeyEventLike {
  *
  * A bare key with no modifiers held (e.g. a plain letter while typing)
  * passes through as just `event.name`, normalized.
+ *
+ * The one name rewritten on the way in is a literal space (Issue #163) —
+ * see {@link SPACE_KEY_NAME}'s TSDoc for the measured parser behavior that
+ * makes it necessary.
  */
 export function keyEventToStroke(event: KeyEventLike): string {
+  const name = event.name === LITERAL_SPACE_NAME ? SPACE_KEY_NAME : event.name;
   const modifiers: string[] = [];
   if (event.ctrl) modifiers.push("ctrl");
   if (event.shift) modifiers.push("shift");
   if (event.option) modifiers.push("alt");
   if (event.meta) modifiers.push("meta");
-  const raw = modifiers.length > 0 ? `${modifiers.join("+")}+${event.name}` : event.name;
+  const raw = modifiers.length > 0 ? `${modifiers.join("+")}+${name}` : name;
   return normalizeKey(raw);
 }

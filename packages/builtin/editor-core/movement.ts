@@ -8,8 +8,7 @@
  */
 
 import type { Position, Selection } from "@tecode/api";
-import { comparePositions } from "./positionTransform";
-import { collapsedSelection, mergeSelections } from "./selectionMerge";
+import { collapsedSelection, mergeSelections, selectionFromAnchorActive } from "./selectionMerge";
 import { nextGraphemeEnd, previousGraphemeStart, wordBoundaryLeft, wordBoundaryRight } from "./wordBoundary";
 
 /** The slice of `tecode.editor` movement needs to read the active
@@ -235,14 +234,7 @@ export function applyMovement(
   const moved = selections.map((selection): Selection => {
     const newActive = moveOne(selection.active);
     if (!extend) return collapsedSelection(newActive);
-    const anchor = selection.anchor;
-    const forward = comparePositions(anchor, newActive) <= 0;
-    return {
-      start: forward ? anchor : newActive,
-      end: forward ? newActive : anchor,
-      anchor,
-      active: newActive,
-    };
+    return selectionFromAnchorActive(selection.anchor, newActive);
   });
   return mergeSelections(moved);
 }

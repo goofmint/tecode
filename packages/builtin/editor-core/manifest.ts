@@ -229,6 +229,49 @@
  * `ctrl+j`, whose `0x0A` parses as `name: "linefeed"` and never yields a
  * `"ctrl+j"` stroke at all.
  *
+ * **Mark/region keybindings (Issue #163)**: `editor.action.setMark` takes
+ * Emacs' own `Ctrl+Space`, verified by the same methodology as every
+ * stroke above — `@opentui/core@0.1.107`'s real `parseKeypress` plus this
+ * repo's `keymap/keyEvent.ts`'s `keyEventToStroke`:
+ *
+ * - legacy Ctrl+Space (the raw NUL byte `0x00`), under BOTH
+ *   `useKittyKeyboard: false` and `true` -> `{ name: "space", ctrl: true }`
+ *   -> `"ctrl+space"`.
+ * - Kitty's Ctrl+Space (`CSI 32;5u`, `useKittyKeyboard: true`) ->
+ *   `{ name: " ", ctrl: true }` — a LITERAL space as the key name, which
+ *   `normalizeKey` (correctly, per its own documented `"ctrl+"` -> the `+`
+ *   KEY rule) folded into `"ctrl++"`, i.e. Ctrl+Plus (`CSI 43;5u`, also
+ *   verified to produce exactly that stroke). `keyEvent.ts` now maps that
+ *   one literal-space name onto `"space"` before assembling the stroke
+ *   (`SPACE_KEY_NAME`'s TSDoc carries the measurements), so both terminals
+ *   agree on `"ctrl+space"` and Ctrl+Plus keeps `"ctrl++"` to itself.
+ *
+ * `ctrl+space` is claimed by nothing else in any manifest, and is not one
+ * of `fallbackKeybindingsCompleteness.test.ts`'s three legacy-hazard
+ * shapes (`ctrl+shift+<letter>`, `ctrl+tab`, `ctrl+shift+tab`) — it
+ * resolves identically on Kitty and legacy terminals, so it needs no
+ * fallback entry.
+ *
+ * `escape` clears the mark rather than Emacs' `ctrl+g`, which the fallback
+ * keymap layer needs for the command palette
+ * (`keymap/keybindings.fallback.json`). Its `when` is the full
+ * `editorTextFocus && markActive`, NOT `markActive` alone: `escape` is
+ * already bound under `findWidgetFocus` (find) and `anyModalFocus`
+ * (`@tecode/core`'s `ui/modalCommands.ts`), and `markActive` is a
+ * window-wide boolean that stays set while a modal or the find widget has
+ * focus. Since `lookup` resolves the HIGHEST-precedence when-passing entry
+ * (`keymap/bindingTable.ts`) and this entry is contributed after find's,
+ * a bare `markActive` guard would have stolen Escape from the find widget
+ * whenever a mark happened to be active. Adding `editorTextFocus` makes
+ * the three mutually exclusive, since opening find or a modal moves the
+ * OpenTUI focus pointer off the buffer.
+ *
+ * `editor.action.clearMark` and `editor.action.exchangePointAndMark`
+ * (Emacs' `C-x C-x`) are also palette-/`commands.execute`-reachable;
+ * `exchangePointAndMark` gets no default keybinding, for the same
+ * "don't spend more of the small pool of unclaimed strokes" reason
+ * `toggleFold`/`foldAll`/`unfoldAll` don't.
+ *
  * `toggleFold`/`foldAll`/`unfoldAll` are registered as commands with NO
  * default keybinding — palette- and `commands.execute`-reachable, and
  * user-bindable through `keybindings.json` — rather than spending more of
@@ -244,6 +287,27 @@ const WHEN_EDITOR_TEXT_FOCUS = "editorTextFocus";
  * `@tecode/core`'s `ui/findWidget.tsx` query input via `useFocusTracking`,
  * the exact same mechanism `WHEN_EDITOR_TEXT_FOCUS` uses for the buffer. */
 const WHEN_FIND_WIDGET_FOCUS = "findWidgetFocus";
+
+/**
+ * Issue #163's mark/region context key — set by `index.ts`'s
+ * `setMarkActive` via `tecode.context.set`, read only by the `when`
+ * clauses below.
+ *
+ * This is what makes Emacs-style marking work with NO change to any
+ * movement command: the plain `left`/`right`/`up`/`down`/`ctrl+left`/
+ * `ctrl+right`/`home`/`end`/`ctrl+home`/`ctrl+end` bindings gain
+ * `&& !markActive`, and a second entry for each of those same ten keys
+ * routes to the matching `...Select` command under `&& markActive`. The
+ * two are mutually exclusive by construction, so exactly one resolves for
+ * a given stroke (`keymap/bindingTable.ts`'s documented
+ * multi-binding-per-key contract, the same mechanism `return`'s
+ * `editorTextFocus`/`findWidgetFocus` pair already relies on). The
+ * existing `shift+`-prefixed Select bindings are untouched and keep
+ * working with or without a mark.
+ */
+export const MARK_ACTIVE_CONTEXT_KEY = "markActive";
+const WHEN_NO_MARK = `${WHEN_EDITOR_TEXT_FOCUS} && !${MARK_ACTIVE_CONTEXT_KEY}`;
+const WHEN_MARK_ACTIVE = `${WHEN_EDITOR_TEXT_FOCUS} && ${MARK_ACTIVE_CONTEXT_KEY}`;
 
 /** Issue #91's `clipboard.useSystemClipboard` setting's key — named,
  * exported constant, matching `explorer/manifest.ts`'s
@@ -338,18 +402,44 @@ export default {
       { id: "editor.action.clipboardCopy", title: "Copy", category: "Editor" },
       { id: "editor.action.clipboardCut", title: "Cut", category: "Editor" },
       { id: "editor.action.clipboardPaste", title: "Paste", category: "Editor" },
+      // Issue #163: Emacs-style mark/region. See
+      // `MARK_ACTIVE_CONTEXT_KEY`'s TSDoc above for how the `when`
+      // routing works, and this file's TSDoc's "Mark/region keybindings
+      // (Issue #163)" section for the `ctrl+space` stroke's verification.
+      { id: "editor.action.setMark", title: "Set Mark", category: "Editor" },
+      { id: "editor.action.clearMark", title: "Clear Mark", category: "Editor" },
+      {
+        id: "editor.action.exchangePointAndMark",
+        title: "Exchange Point and Mark",
+        category: "Editor",
+      },
     ],
     keybindings: [
-      { key: "left", command: "editor.action.cursorLeft", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "right", command: "editor.action.cursorRight", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "up", command: "editor.action.cursorUp", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "down", command: "editor.action.cursorDown", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "ctrl+left", command: "editor.action.cursorWordLeft", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "ctrl+right", command: "editor.action.cursorWordRight", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "home", command: "editor.action.cursorHome", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "end", command: "editor.action.cursorEnd", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "ctrl+home", command: "editor.action.cursorTop", when: WHEN_EDITOR_TEXT_FOCUS },
-      { key: "ctrl+end", command: "editor.action.cursorBottom", when: WHEN_EDITOR_TEXT_FOCUS },
+      // Issue #163: each of these ten plain movement keys is bound TWICE —
+      // once for "no mark" (a plain caret move, the behavior that always
+      // existed) and once for "mark active" (the same move, extending the
+      // region). `MARK_ACTIVE_CONTEXT_KEY`'s TSDoc explains why the pair
+      // can never both resolve for one stroke.
+      { key: "left", command: "editor.action.cursorLeft", when: WHEN_NO_MARK },
+      { key: "right", command: "editor.action.cursorRight", when: WHEN_NO_MARK },
+      { key: "up", command: "editor.action.cursorUp", when: WHEN_NO_MARK },
+      { key: "down", command: "editor.action.cursorDown", when: WHEN_NO_MARK },
+      { key: "ctrl+left", command: "editor.action.cursorWordLeft", when: WHEN_NO_MARK },
+      { key: "ctrl+right", command: "editor.action.cursorWordRight", when: WHEN_NO_MARK },
+      { key: "home", command: "editor.action.cursorHome", when: WHEN_NO_MARK },
+      { key: "end", command: "editor.action.cursorEnd", when: WHEN_NO_MARK },
+      { key: "ctrl+home", command: "editor.action.cursorTop", when: WHEN_NO_MARK },
+      { key: "ctrl+end", command: "editor.action.cursorBottom", when: WHEN_NO_MARK },
+      { key: "left", command: "editor.action.cursorLeftSelect", when: WHEN_MARK_ACTIVE },
+      { key: "right", command: "editor.action.cursorRightSelect", when: WHEN_MARK_ACTIVE },
+      { key: "up", command: "editor.action.cursorUpSelect", when: WHEN_MARK_ACTIVE },
+      { key: "down", command: "editor.action.cursorDownSelect", when: WHEN_MARK_ACTIVE },
+      { key: "ctrl+left", command: "editor.action.cursorWordLeftSelect", when: WHEN_MARK_ACTIVE },
+      { key: "ctrl+right", command: "editor.action.cursorWordRightSelect", when: WHEN_MARK_ACTIVE },
+      { key: "home", command: "editor.action.cursorHomeSelect", when: WHEN_MARK_ACTIVE },
+      { key: "end", command: "editor.action.cursorEndSelect", when: WHEN_MARK_ACTIVE },
+      { key: "ctrl+home", command: "editor.action.cursorTopSelect", when: WHEN_MARK_ACTIVE },
+      { key: "ctrl+end", command: "editor.action.cursorBottomSelect", when: WHEN_MARK_ACTIVE },
       { key: "shift+left", command: "editor.action.cursorLeftSelect", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: "shift+right", command: "editor.action.cursorRightSelect", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: "shift+up", command: "editor.action.cursorUpSelect", when: WHEN_EDITOR_TEXT_FOCUS },
@@ -422,6 +512,11 @@ export default {
       { key: "ctrl+shift+]", command: "editor.action.unfold", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: "ctrl+x", command: "editor.action.clipboardCut", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: "ctrl+v", command: "editor.action.clipboardPaste", when: WHEN_EDITOR_TEXT_FOCUS },
+      // Issue #163: mark/region. See this file's TSDoc's "Mark/region
+      // keybindings (Issue #163)" section for `ctrl+space`'s verification
+      // and for why `escape` (not Emacs' own `ctrl+g`) clears the mark.
+      { key: "ctrl+space", command: "editor.action.setMark", when: WHEN_EDITOR_TEXT_FOCUS },
+      { key: "escape", command: "editor.action.clearMark", when: WHEN_MARK_ACTIVE },
     ],
     configuration: {
       title: "Clipboard",

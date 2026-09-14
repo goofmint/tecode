@@ -87,10 +87,25 @@
  * documents its own no-op behavior with no active editor (`@tecode/api`'s
  * `FindNamespace` TSDoc), exactly like `tecode.editor.setSelections` does
  * for the commands above.
+ *
+ * **Issue #163 — Emacs-style mark/region**: `editor.action.setMark`/
+ * `clearMark`/`exchangePointAndMark` add the one piece of state this
+ * extension keeps beyond `tabSize`/`insertSpaces`: a single boolean, "is
+ * the mark active", published to the keymap layer as the `markActive`
+ * context key (`tecode.context.set`). No mark POSITION is stored — Emacs'
+ * mark is exactly `Selection.anchor`, which the existing `extend: true`
+ * movement path (`movement.ts`'s `applyMovement`) already holds fixed
+ * while `active` moves. So `manifest.ts` does the actual work: while
+ * `markActive` is set, the plain arrow/Home/End keys route to the
+ * `...Select` commands that were already registered here, and neither
+ * `applyMovement` nor any movement handler needed a change. Copy/cut,
+ * `escape`, and switching tabs deactivate the mark — see
+ * {@link MARK_ACTIVE_CONTEXT_KEY}.
  */
 
 import type {
   BracketPair,
+  Disposable,
   Document,
   ExtensionContext,
   Position,
@@ -131,6 +146,8 @@ import {
   type LineReader,
 } from "./movement";
 import { addSelectionToNextMatch } from "./multiCursor";
+import { collapsedSelection, selectionFromAnchorActive } from "./selectionMerge";
+import { MARK_ACTIVE_CONTEXT_KEY } from "./manifest";
 
 const DEFAULT_TAB_SIZE = 4;
 const DEFAULT_INSERT_SPACES = true;
@@ -151,6 +168,17 @@ const STANDARD_BRACKET_PAIRS: BracketPair[] = [
 /** The stub language id every document resolves to today (`@tecode/core`'s
  * `stubs.ts`'s `getLanguageId`) — see this module's TSDoc. */
 const STUB_LANGUAGE_ID = "plaintext";
+
+/** Issue #163: the always-visible-while-marking status bar indicator's id
+ * and priority. Left side, below every one of `statusbar`'s own left items
+ * (language 30, EOL 20, read-only 15, dirty 10 — `statusbar/index.ts`), so
+ * it appears at the end of that group rather than pushing them around. The
+ * indicator exists because a freshly-set mark selects nothing at all: the
+ * selection highlight (`@tecode/core`'s `ui/editorView.tsx`) is zero-width
+ * until the caret moves, so without this there is no on-screen evidence
+ * that the next arrow key will select. */
+const MARK_STATUS_ITEM_ID = "editorCore.mark";
+const MARK_STATUS_ITEM_PRIORITY = 5;
 
 /** Every bracket/quote character `editor-core` auto-closes, and the
  * command id `manifest.ts` binds each one to (this module's TSDoc's
@@ -183,6 +211,60 @@ export function activate(ctx: ExtensionContext): void {
       brackets: STANDARD_BRACKET_PAIRS,
     }),
   );
+
+  // Issue #163: the mark/region state (this module's TSDoc). One boolean,
+  // no stored position — `Selection.anchor` IS the mark.
+  let markActive = false;
+  /** The "MARK" status bar item's live registration while the mark is
+   * active, `undefined` while it isn't — the same dispose-then-register
+   * shape `statusbar`'s own `setItem` uses (`statusbar/index.ts`), since
+   * `setStatusBarItem` re-registration on a still-live id warns. */
+  let markStatusItem: Disposable | undefined;
+  /** The active document at the last `editor.onDidChange` firing, so
+   * {@link markActive} can be dropped on a tab SWITCH specifically —
+   * `onDidChange` also fires for a plain caret move, which must NOT
+   * deactivate the mark (moving the caret is the whole point of having
+   * one). */
+  let lastActiveUri = api.window.activeEditor?.document.uri;
+
+  /** Set (or clear) the mark and publish it to the keymap layer's context
+   * store, which is what `manifest.ts`'s `markActive`-gated keybindings
+   * read to route the plain arrow/Home/End keys to the `...Select`
+   * commands. */
+  function setMarkActive(next: boolean): void {
+    markActive = next;
+    api.context.set(MARK_ACTIVE_CONTEXT_KEY, next);
+    markStatusItem?.dispose();
+    markStatusItem = next
+      ? api.window.setStatusBarItem({
+          id: MARK_STATUS_ITEM_ID,
+          text: " Mark ",
+          tooltip: "Mark is active — movement extends the selection (Escape to clear)",
+          side: "left",
+          priority: MARK_STATUS_ITEM_PRIORITY,
+        })
+      : undefined;
+  }
+
+  /** Deactivate the mark and collapse every selection onto its own caret
+   * (`active`, Emacs' *point* — which never moves when a region is
+   * deactivated). A no-op on selections when there is no active editor
+   * (`[]`), exactly like every other handler's guard here. */
+  function deactivateMark(): void {
+    setMarkActive(false);
+    const selections = api.editor.selections;
+    if (selections.length === 0) return;
+    // Deliberately NOT through `mergeSelections`: it re-sorts, which would
+    // destroy the "index 0 is primary" invariant `multiCursor.ts` documents.
+    api.editor.setSelections(selections.map((selection) => collapsedSelection(selection.active)));
+  }
+
+  ctx.subscriptions.push({
+    dispose: () => {
+      markStatusItem?.dispose();
+      markStatusItem = undefined;
+    },
+  });
 
   let tabSize = api.config.get<number>("editor.tabSize") ?? DEFAULT_TAB_SIZE;
   let insertSpaces = api.config.get<boolean>("editor.insertSpaces") ?? DEFAULT_INSERT_SPACES;
@@ -254,6 +336,62 @@ export function activate(ctx: ExtensionContext): void {
   registerMovement("editor.action.cursorEndSelect", moveLineEnd, true);
   registerMovement("editor.action.cursorTopSelect", () => moveDocumentStart(), true);
   registerMovement("editor.action.cursorBottomSelect", (r) => moveDocumentEnd(r), true);
+
+  // Issue #163: Emacs-style mark/region (this module's TSDoc). Registered
+  // right after the movement commands because that is what they drive:
+  // while the mark is active, `manifest.ts` routes the plain movement keys
+  // to the `...Select` variants just registered above.
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.setMark", () => {
+      const selections = api.editor.selections;
+      if (selections.length === 0) return;
+      // Emacs' C-SPC on an already-active mark deactivates it
+      // (`set-mark-command`'s own toggle), which is also the only way to
+      // clear the mark without a dedicated key on a terminal where Escape
+      // is spoken for.
+      if (markActive) {
+        deactivateMark();
+        api.window.showMessage("Mark deactivated", "info");
+        return;
+      }
+      // The mark is set AT the caret, so every selection collapses onto its
+      // own `active` first — otherwise an anchor left over from an earlier
+      // shift-select (or ctrl+d) would silently become the mark instead of
+      // where the caret actually is.
+      api.editor.setSelections(selections.map((selection) => collapsedSelection(selection.active)));
+      setMarkActive(true);
+      api.window.showMessage("Mark set", "info");
+    }),
+  );
+
+  ctx.subscriptions.push(api.commands.register("editor.action.clearMark", () => deactivateMark()));
+
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.exchangePointAndMark", () => {
+      const selections = api.editor.selections;
+      if (selections.length === 0) return;
+      // Emacs' C-x C-x: point and mark trade places, the region itself is
+      // unchanged, and the mark stays active. Not through
+      // `mergeSelections`, for the same "index 0 is primary" reason
+      // `deactivateMark` documents.
+      api.editor.setSelections(
+        selections.map((selection) => selectionFromAnchorActive(selection.active, selection.anchor)),
+      );
+    }),
+  );
+
+  ctx.subscriptions.push(
+    api.editor.onDidChange(() => {
+      const uri = api.window.activeEditor?.document.uri;
+      if (uri === lastActiveUri) return;
+      lastActiveUri = uri;
+      // A tab switch (or closing the last editor) drops the mark: this
+      // extension keeps ONE boolean for the whole window, so carrying it
+      // across documents would leave the new document marked at whatever
+      // anchor its own selections happened to hold.
+      if (markActive) setMarkActive(false);
+    }),
+  );
 
   /** Register an editing command (Req 11.1): build the multi-cursor edit
    * batch (`editing.ts`'s `buildEditBatch`), apply it through the active
@@ -530,6 +668,10 @@ export function activate(ctx: ExtensionContext): void {
       const selections = api.editor.selections;
       if (selections.length === 0) return;
       await api.clipboard.write(buildClipboardText(reader(), selections));
+      // Issue #163: Emacs' M-w deactivates the region it just copied. Only
+      // when a mark was actually active — with no mark, copy leaves the
+      // selection exactly as it found it, as it always has.
+      if (markActive) deactivateMark();
     }),
   );
 
@@ -548,6 +690,10 @@ export function activate(ctx: ExtensionContext): void {
         document.transaction(() => document.applyEdits(edits));
       }
       api.editor.setSelections(newSelections);
+      // Issue #163: Emacs' C-w, like M-w, leaves no region behind.
+      // `buildCutResult` already collapsed the selections, so only the
+      // mark flag itself needs clearing here.
+      if (markActive) setMarkActive(false);
     }),
   );
 
