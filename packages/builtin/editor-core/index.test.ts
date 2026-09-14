@@ -1063,6 +1063,23 @@ describe("editor-core activate() — editor.action.gotoLine (Issue #162)", () =>
     ]);
   });
 
+  test("a bypassed empty-string value (CodeRabbit review, PR #165 2nd pass) is NOT treated as cancel — it shows an error, same as any other invalid bypassed value", async () => {
+    const { api, getSelections, setInputBoxResponse, showMessageCalls } = tenLineFixture();
+    // The real `ModalService.openInputBox` never itself resolves `""` — it
+    // only resolves `undefined` (cancel) or a value `validateGotoLineInput`
+    // already accepted — but a bypassed/fake caller could still hand one to
+    // this handler. Only `undefined` means cancelled; `""` must fall
+    // through to the same re-validation/`showMessage` path as `"999"`
+    // above, not be silently swallowed as if Escape had been pressed.
+    setInputBoxResponse("");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls).toEqual([{ message: "Enter a line number.", kind: "error" }]);
+  });
+
   test("does nothing without an active editor", async () => {
     const fixture = tenLineFixture();
     const { api, inputBoxCalls } = fixture;

@@ -277,7 +277,18 @@ export function activate(ctx: ExtensionContext): void {
         prompt: "Go to line",
         validateInput: (v) => validateGotoLineInput(v, lineCount),
       });
-      if (!value) return;
+      // CodeRabbit review (PR #165, 2nd pass): only `undefined` means
+      // cancelled (Escape, or a superseded modal — `ModalService`'s own
+      // "cancel() always resolves undefined" contract). An empty string is
+      // NOT a cancellation — the real `ModalService.openInputBox` never
+      // actually resolves one itself (`accept()` only resolves once
+      // `validateInput` reports no error, and `validateGotoLineInput`
+      // already rejects `""`), but a bypassed/fake caller could still hand
+      // one to this handler, and that case must fall through to the same
+      // re-validation/`showMessage` path as any other invalid bypassed
+      // value below, not be silently swallowed here as if the user had
+      // pressed Escape.
+      if (value === undefined) return;
       // CodeRabbit review (PR #165): `api.editor`/`api.editor.folds` always
       // read whatever is CURRENTLY active, not the editor this handler
       // started with. If the active document changed while `showInputBox`
