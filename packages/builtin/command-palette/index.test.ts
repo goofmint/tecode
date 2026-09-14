@@ -13,6 +13,7 @@ import type {
   CommandHandler,
   CommandMeta,
   DirEntry,
+  Document,
   ExtensionContext,
   MessageKind,
   QuickPickItem,
@@ -21,7 +22,7 @@ import type {
   Uri,
 } from "@tecode/api";
 import { activate } from "./index";
-import { QUICK_OPEN_COMMAND_ID, SHOW_COMMANDS_COMMAND_ID } from "./manifest";
+import { QUICK_OPEN_COMMAND_ID, SHOW_ALL_EDITORS_COMMAND_ID, SHOW_COMMANDS_COMMAND_ID } from "./manifest";
 
 const OPEN_FILE_COMMAND_ID = "workbench.action.files.openUri";
 
@@ -29,13 +30,39 @@ const OPEN_FILE_COMMAND_ID = "workbench.action.files.openUri";
  * directory value is a `Record<name, Entry>`; a file value is `null`. */
 type FakeTree = { [name: string]: FakeTree | null };
 
+/** A minimal fake open `Document`, for seeding `workspace.documents` in
+ * `workbench.action.showAllEditors` tests (Issue #161's plan, Phase 3) —
+ * only the fields `command-palette`'s handler actually reads (`uri`,
+ * `dirty`) are meaningful; the rest are filled in with harmless defaults
+ * so the shape matches `@tecode/api`'s real `Document`. */
+function fakeDocument(uri: Uri, overrides: Partial<Document> = {}): Document {
+  return {
+    uri,
+    languageId: "plaintext",
+    version: 1,
+    dirty: false,
+    readonly: false,
+    eol: "\n",
+    applyEdits: () => {},
+    transaction: (fn) => fn(),
+    undo: () => undefined,
+    redo: () => undefined,
+    onDidChange: () => ({ dispose() {} }),
+    ...overrides,
+  };
+}
+
 /** A minimal fake `Tecode`, backing exactly what `command-palette`'s
  * `activate` reads/writes: `commands` (with a real lazy-activation
  * simulation, so a picked lazy command's owning extension is proven to
  * activate before the command's own handler runs), `context.get`,
  * `window.showQuickPick`/`showMessage`, and `workspace.rootUri`/`fs.readdir`.
  * Everything else is left `undefined` — `activate` never touches it. */
-function createFakeApi(tree: FakeTree, rootUri: Uri | undefined = "file:///workspace/") {
+function createFakeApi(
+  tree: FakeTree,
+  rootUri: Uri | undefined = "file:///workspace/",
+  documents: Document[] = [],
+) {
   const commandHandlers = new Map<string, CommandHandler>();
   const commandMeta = new Map<string, CommandMeta>();
   const lazyOwners = new Map<string, string>();
@@ -44,6 +71,13 @@ function createFakeApi(tree: FakeTree, rootUri: Uri | undefined = "file:///works
   const contextValues = new Map<string, unknown>();
   const messages: { message: string; kind?: MessageKind }[] = [];
   let nextPick: QuickPickItem | undefined;
+  // Set instead of `nextPick` when a test needs to pick one of the items
+  // `showQuickPick` is actually called with, by position — required for
+  // `workbench.action.showAllEditors` (Issue #161), whose handler matches
+  // the picked item back to its document by object *reference* identity
+  // rather than by a `description`-encoded id, so a hand-authored literal
+  // (as the other suites' `setNextPick` uses) would never match.
+  let nextPickIndex: number | undefined;
   let lastQuickPick: { items: QuickPickItem[]; options?: QuickPickOptions } | undefined;
   let quickPickThrows: Error | undefined;
 
@@ -113,6 +147,7 @@ function createFakeApi(tree: FakeTree, rootUri: Uri | undefined = "file:///works
     commands,
     workspace: {
       rootUri,
+      documents,
       fs: { readdir } as unknown as Tecode["workspace"]["fs"],
     } as unknown as Tecode["workspace"],
     window: {
@@ -122,6 +157,7 @@ function createFakeApi(tree: FakeTree, rootUri: Uri | undefined = "file:///works
       async showQuickPick(items: QuickPickItem[], options?: QuickPickOptions) {
         lastQuickPick = { items, options };
         if (quickPickThrows) throw quickPickThrows;
+        if (nextPickIndex !== undefined) return items[nextPickIndex];
         return nextPick;
       },
       showInputBox: async () => undefined,
@@ -148,6 +184,9 @@ function createFakeApi(tree: FakeTree, rootUri: Uri | undefined = "file:///works
     setNextPick: (item: QuickPickItem | undefined) => {
       nextPick = item;
     },
+    setNextPickIndex: (index: number | undefined) => {
+      nextPickIndex = index;
+    },
     setQuickPickThrows: (err: Error | undefined) => {
       quickPickThrows = err;
     },
@@ -156,8 +195,12 @@ function createFakeApi(tree: FakeTree, rootUri: Uri | undefined = "file:///works
   };
 }
 
-function activateFixture(tree: FakeTree = {}, rootUri: Uri | undefined = "file:///workspace/") {
-  const fake = createFakeApi(tree, rootUri);
+function activateFixture(
+  tree: FakeTree = {},
+  rootUri: Uri | undefined = "file:///workspace/",
+  documents: Document[] = [],
+) {
+  const fake = createFakeApi(tree, rootUri, documents);
   const ctx: ExtensionContext = {
     api: fake.api,
     extensionUri: "<builtin>/tecode.command-palette",
@@ -387,5 +430,104 @@ describe("command-palette activate() — workbench.action.quickOpen (Task 3.2, R
     expect(items.length).toBe(5000);
     const messages = fake.getMessages();
     expect(messages.some((m) => /more/i.test(m.message) && m.kind === "info")).toBe(true);
+  });
+});
+
+describe("command-palette activate() — workbench.action.showAllEditors (Issue #161)", () => {
+  test("lists only open documents (no filesystem walk), label=basename, description=relative path", async () => {
+    const docs = [
+      fakeDocument("file:///workspace/src/a.ts"),
+      fakeDocument("file:///workspace/b.ts"),
+    ];
+    const fake = activateFixture({}, "file:///workspace/", docs);
+    fake.setNextPick(undefined);
+
+    await fake.api.commands.execute(SHOW_ALL_EDITORS_COMMAND_ID);
+
+    const items = fake.getLastQuickPick()!.items;
+    expect(items).toEqual([
+      { label: "a.ts", description: "src/a.ts" },
+      { label: "b.ts", description: "b.ts" },
+    ]);
+  });
+
+  test("a dirty document's label is prefixed with the dirty marker", async () => {
+    const docs = [fakeDocument("file:///workspace/dirty.ts", { dirty: true })];
+    const fake = activateFixture({}, "file:///workspace/", docs);
+    fake.setNextPick(undefined);
+
+    await fake.api.commands.execute(SHOW_ALL_EDITORS_COMMAND_ID);
+
+    const items = fake.getLastQuickPick()!.items;
+    expect(items[0]?.label).toBe("● dirty.ts");
+  });
+
+  test("same-named open files are distinguished by their relative-path description", async () => {
+    const docs = [
+      fakeDocument("file:///workspace/src/index.ts"),
+      fakeDocument("file:///workspace/lib/index.ts"),
+    ];
+    const fake = activateFixture({}, "file:///workspace/", docs);
+    fake.setNextPick(undefined);
+
+    await fake.api.commands.execute(SHOW_ALL_EDITORS_COMMAND_ID);
+
+    const items = fake.getLastQuickPick()!.items;
+    expect(items.map((i) => i.label)).toEqual(["index.ts", "index.ts"]);
+    expect(items.map((i) => i.description)).toEqual(["src/index.ts", "lib/index.ts"]);
+  });
+
+  test("picking an item switches to its document via workbench.action.files.openUri", async () => {
+    const docs = [
+      fakeDocument("file:///workspace/src/a.ts"),
+      fakeDocument("file:///workspace/b.ts"),
+    ];
+    const fake = activateFixture({}, "file:///workspace/", docs);
+    let openedUri: unknown;
+    fake.api.commands.register(OPEN_FILE_COMMAND_ID, (uri: unknown) => {
+      openedUri = uri;
+    });
+    // Pick by position, not a hand-authored literal: the handler matches
+    // the picked `QuickPickItem` back to its `Document` by object
+    // reference, so the fake must return the very item instance
+    // `showQuickPick` was called with (see `setNextPickIndex`'s TSDoc).
+    fake.setNextPickIndex(1);
+
+    await fake.api.commands.execute(SHOW_ALL_EDITORS_COMMAND_ID);
+
+    expect(openedUri).toBe("file:///workspace/b.ts");
+  });
+
+  test("no open documents shows a message and never opens the picker", async () => {
+    const fake = activateFixture({}, "file:///workspace/", []);
+
+    await fake.api.commands.execute(SHOW_ALL_EDITORS_COMMAND_ID);
+
+    expect(fake.getLastQuickPick()).toBeUndefined();
+    expect(fake.getMessages().some((m) => m.kind === "info")).toBe(true);
+  });
+
+  test("cancelling the picker (undefined) is a no-op — no command is executed", async () => {
+    const docs = [fakeDocument("file:///workspace/a.ts")];
+    const fake = activateFixture({}, "file:///workspace/", docs);
+    let called = false;
+    fake.api.commands.register(OPEN_FILE_COMMAND_ID, () => {
+      called = true;
+    });
+    fake.setNextPick(undefined);
+
+    await fake.api.commands.execute(SHOW_ALL_EDITORS_COMMAND_ID);
+
+    expect(called).toBe(false);
+  });
+
+  test("a throwing showQuickPick rejects — no local catch swallows it", async () => {
+    const docs = [fakeDocument("file:///workspace/a.ts")];
+    const fake = activateFixture({}, "file:///workspace/", docs);
+    fake.setQuickPickThrows(new Error("picker exploded"));
+
+    await expect(fake.api.commands.execute(SHOW_ALL_EDITORS_COMMAND_ID)).rejects.toThrow(
+      "picker exploded",
+    );
   });
 });
