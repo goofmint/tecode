@@ -90,9 +90,9 @@
  * either way, never an error.
  */
 
-import type { CommandDescriptor, ExtensionContext, QuickPickItem } from "@tecode/api";
+import type { CommandDescriptor, Document, ExtensionContext, QuickPickItem, Uri } from "@tecode/api";
 import { createBunGitRunner, createIgnoreChecker, filterByWhen, fuzzyMatch, walkFiles } from "../shared";
-import { QUICK_OPEN_COMMAND_ID, SHOW_COMMANDS_COMMAND_ID } from "./manifest";
+import { QUICK_OPEN_COMMAND_ID, SHOW_ALL_EDITORS_COMMAND_ID, SHOW_COMMANDS_COMMAND_ID } from "./manifest";
 
 /** Cap on how many files {@link registerQuickOpen}'s workspace walk collects
  * before giving up on the rest of the tree (code review finding, "bounded
@@ -113,6 +113,48 @@ const QUICK_OPEN_MAX_RESULTS = 5000;
  * `@tecode/core`'s `OPEN_FILE_COMMAND_ID`.
  */
 const OPEN_FILE_COMMAND_ID = "workbench.action.files.openUri";
+
+/** Prefix marking a dirty (unsaved) document's label in {@link
+ * registerShowAllEditors}'s picker — the same glyph the tab bar itself uses
+ * for dirty tabs (`ui/shell.tsx`'s `basename` + dirty rendering, Issue
+ * #161's plan). Duplicated as a literal, not imported, because `@tecode/
+ * core`'s `TAB_DIRTY_MARKER` lives above the `packages/builtin` layering
+ * boundary (this module's TSDoc's existing "may never import `@tecode/
+ * core`" rule). */
+const DIRTY_LABEL_PREFIX = "● ";
+
+/** The last `/`-separated, decoded path segment of `uri` — this package's
+ * own local basename stand-in (no `node:path`, no `@tecode/core`; follows
+ * `explorer/rootTitle.ts`'s `rootFolderName` precedent for exactly why: a
+ * `Uri` is a percent-encoded `file://` href, not a filesystem path). Falls
+ * back to the raw `uri` when it has no non-empty segment or fails to parse
+ * — never throws. */
+function uriBasename(uri: Uri): string {
+  try {
+    const segments = new URL(uri).pathname.split("/").filter((segment) => segment.length > 0);
+    const last = segments.at(-1);
+    return last ? decodeURIComponent(last) : uri;
+  } catch {
+    return uri;
+  }
+}
+
+/** `uri`'s path relative to `rootUri`, decoded — mirrors `walkFiles.ts`'s
+ * `relativePath` shape so an open editor's entry in {@link
+ * registerShowAllEditors}'s picker reads the same way `ctrl+p`'s does, and
+ * disambiguates same-named open files (e.g. two open `index.ts`, Issue
+ * #161's 論点5). Falls back to {@link uriBasename} when `rootUri` is
+ * `undefined`, `uri` does not fall under it, or either fails to parse. */
+function relativeToRoot(uri: Uri, rootUri: Uri | undefined): string {
+  if (!rootUri) return uriBasename(uri);
+  try {
+    const prefix = rootUri.endsWith("/") ? rootUri : `${rootUri}/`;
+    if (!uri.startsWith(prefix)) return uriBasename(uri);
+    return decodeURIComponent(uri.slice(prefix.length));
+  } catch {
+    return uriBasename(uri);
+  }
+}
 
 /** Build a palette label for `command` (this module's TSDoc): `"Category:
  * Title"`, bare `Title` with no `category`, or the raw command id when
@@ -214,9 +256,52 @@ function registerQuickOpen(ctx: ExtensionContext): void {
   );
 }
 
+/** Registers `workbench.action.showAllEditors` (Issue #161's
+ * `switch-to-buffer` equivalent). Lists only the currently open documents
+ * (`api.workspace.documents`, an in-memory snapshot — no filesystem walk,
+ * unlike {@link registerQuickOpen}) and switches to whichever one is
+ * picked. */
+function registerShowAllEditors(ctx: ExtensionContext): void {
+  const { api } = ctx;
+  ctx.subscriptions.push(
+    api.commands.register(SHOW_ALL_EDITORS_COMMAND_ID, async () => {
+      const documents = api.workspace.documents;
+      if (documents.length === 0) {
+        api.window.showMessage("No editors are open.", "info");
+        return;
+      }
+
+      // { item, document } pairs, not `description`-encoded URIs (unlike
+      // `registerQuickOpen`): `description` is used here for the
+      // human-readable relative path (Issue #161's 論点1/5), so the picked
+      // item is instead matched back to its `Document` by reference
+      // identity, the same identity `showQuickPick` itself preserves.
+      const pairs: { item: QuickPickItem; document: Document }[] = documents.map((document) => {
+        const label = document.dirty
+          ? `${DIRTY_LABEL_PREFIX}${uriBasename(document.uri)}`
+          : uriBasename(document.uri);
+        return {
+          item: { label, description: relativeToRoot(document.uri, api.workspace.rootUri) },
+          document,
+        };
+      });
+
+      const picked = await api.window.showQuickPick(
+        pairs.map((pair) => pair.item),
+        { placeHolder: "Select an open editor..." },
+      );
+      if (!picked) return;
+      const match = pairs.find((pair) => pair.item === picked);
+      if (!match) return;
+      await api.commands.execute(OPEN_FILE_COMMAND_ID, match.document.uri);
+    }),
+  );
+}
+
 export function activate(ctx: ExtensionContext): void {
   registerShowCommands(ctx);
   registerQuickOpen(ctx);
+  registerShowAllEditors(ctx);
 }
 
 export function deactivate(): void {
