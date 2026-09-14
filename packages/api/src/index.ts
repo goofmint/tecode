@@ -134,5 +134,17 @@ export type {
  * 1.2 host, where that namespace simply does not exist and every call
  * would throw. Hence a minor bump, gating on the requested minor exactly
  * like 1.0 -> 1.1.
+ *
+ * **1.3 -> 1.4** (Issue #158): single-instance IPC added one optional
+ * property, `ExtensionContext.ipcSocketPath` — the path of the host's
+ * per-instance socket, which the integrated terminal exports to every
+ * shell it spawns so `tecode <file>` typed inside tecode opens the file in
+ * the running instance. Purely additive in exactly the same shape as 1.0 ->
+ * 1.1: nothing existing changed, and an extension that ignores the new
+ * property behaves identically. The bump exists for the opposite
+ * direction — an extension that READS `ctx.ipcSocketPath` must not register
+ * against a 1.3 host, where the host never sets it and the value would
+ * silently always be `undefined`. Hence a minor bump, gating on the
+ * requested minor exactly like 1.0 -> 1.1.
  */
-export const API_VERSION = "1.3";
+export const API_VERSION = "1.4";

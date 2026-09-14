@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { deliversSigwinch, supportsBunTerminal } from "./platform";
+import { deliversSigwinch, supportsBunTerminal, supportsTerminalIpc } from "./platform";
 
 test("non-win32 platforms always support Bun.Terminal, regardless of bunVersion", () => {
   expect(supportsBunTerminal("linux", "0.0.1")).toBe(true);
@@ -51,4 +51,23 @@ test("deliversSigwinch: win32 cannot — the signal has no Windows equivalent", 
 
 test("deliversSigwinch defaults to the real process.platform", () => {
   expect(deliversSigwinch()).toBe(process.platform !== "win32");
+});
+
+test("supportsTerminalIpc: every POSIX platform has the single-instance socket (Issue #158)", () => {
+  expect(supportsTerminalIpc("linux")).toBe(true);
+  expect(supportsTerminalIpc("darwin")).toBe(true);
+  expect(supportsTerminalIpc("freebsd")).toBe(true);
+});
+
+test("supportsTerminalIpc: win32 is excluded regardless of Bun version — unlike supportsBunTerminal", () => {
+  // A hard OS gate on purpose (that function's own TSDoc): the channel is
+  // an AF_UNIX path, and whether Bun maps that onto a named pipe is
+  // unverified, so Windows keeps the pre-Issue-#158 "just start a second
+  // instance" behaviour even on a Bun new enough for the terminal itself.
+  expect(supportsTerminalIpc("win32")).toBe(false);
+  expect(supportsBunTerminal("win32", "1.3.14")).toBe(true);
+});
+
+test("supportsTerminalIpc defaults to the real process.platform", () => {
+  expect(supportsTerminalIpc()).toBe(supportsTerminalIpc(process.platform));
 });

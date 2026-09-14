@@ -63,6 +63,39 @@ export const TERMINAL_UNSUPPORTED_MESSAGE =
 const INITIAL_COLS = 80;
 const INITIAL_ROWS = 24;
 
+/**
+ * Environment variables every shell this terminal spawns gets on top of
+ * the host's own (Issue #158): the socket of the instance that owns this
+ * terminal, plus that instance's pid.
+ *
+ * `TECODE_SOCK` is what makes a `tecode <file>` typed inside this terminal
+ * open the file in the SURROUNDING editor instead of starting a second
+ * full-screen TUI nested inside the pty — the CLI looks for exactly this
+ * variable (`packages/cli`'s `ipcClient.ts`) and, finding it, delegates
+ * and exits. `TECODE_PID` carries no behaviour; it is there so a user (or
+ * a shell prompt) can tell WHICH instance a terminal belongs to.
+ *
+ * **`TECODE_SOCK` is always SET, even to the empty string** when this host
+ * published no socket path (`ExtensionContext.ipcSocketPath`'s own TSDoc:
+ * Windows, headless, or a socket that failed to open). Leaving it out
+ * instead would let the variable be INHERITED: a `tecode --new-window`
+ * launched from another instance's terminal runs with that instance's
+ * `TECODE_SOCK` in its own environment, so its terminal's shells would
+ * receive it too — and a `tecode <file>` typed in this window's terminal
+ * would then open the file in the OTHER window, which is the exact
+ * opposite of what `--new-window` was asked for. An empty value is what
+ * `packages/cli`'s `resolveDelegateTarget` already treats as "no socket",
+ * so it reliably means "this terminal belongs to an instance you cannot
+ * delegate to" rather than "look at whatever the parent left behind".
+ */
+function ipcMarkerEnv(ctx: ExtensionContext): Record<string, string> {
+  const socketPath = ctx.ipcSocketPath;
+  return {
+    TECODE_SOCK: socketPath !== undefined && socketPath.length > 0 ? socketPath : "",
+    TECODE_PID: String(process.pid),
+  };
+}
+
 /** The default shell to spawn (this module's TSDoc). */
 function defaultShellCmd(): string[] {
   const shell = process.env["SHELL"];
@@ -126,6 +159,7 @@ export function activate(ctx: ExtensionContext): void {
     cmd: defaultShellCmd(),
     initialCols: INITIAL_COLS,
     initialRows: INITIAL_ROWS,
+    env: ipcMarkerEnv(ctx),
   });
   ctx.subscriptions.push({ dispose: () => store.dispose() });
 

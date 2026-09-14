@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHostLog, type HostLogEntry } from "@tecode/core";
 import {
+  hasNewWindowFlag,
+  hasWaitFlag,
   resolveConfigDirOverride,
   resolveKeybindingsFileOverride,
   resolveSettingsFileOverride,
@@ -336,4 +338,32 @@ test("a flag with no following positional opens nothing (falls back to cwd)", as
   const target = await resolveStartupTarget(["--settings", "./my-settings.json"], "/fallback-cwd", log);
   expect(target).toEqual({ workspaceRoot: "/fallback-cwd" });
   expect(log.entries()).toEqual([]);
+});
+
+// --- `--new-window` / `--wait` (Issue #158) ---
+
+test("hasNewWindowFlag/hasWaitFlag detect their flag anywhere in argv", () => {
+  expect(hasNewWindowFlag(["--new-window"])).toBe(true);
+  expect(hasNewWindowFlag(["foo.ts", "--new-window"])).toBe(true);
+  expect(hasNewWindowFlag(["foo.ts"])).toBe(false);
+  expect(hasNewWindowFlag([])).toBe(false);
+  expect(hasWaitFlag(["--wait", "foo.ts"])).toBe(true);
+  expect(hasWaitFlag(["foo.ts"])).toBe(false);
+  expect(hasWaitFlag([])).toBe(false);
+});
+
+test("neither flag swallows the positional argument", async () => {
+  // Both are value-less, so they must stay out of VALUE_FLAGS — otherwise
+  // `tecode --new-window foo.ts` would open nothing at all (those helpers'
+  // own TSDocs).
+  dir = await mkdtemp(join(tmpdir(), "tecode-argv-"));
+  const filePath = join(dir, "notes.txt");
+  await writeFile(filePath, "hello", "utf8");
+
+  const target = await resolveStartupTarget(
+    ["--new-window", "--wait", filePath],
+    "/irrelevant",
+    createHostLog(),
+  );
+  expect(target).toEqual({ workspaceRoot: dir, initialFilePath: filePath });
 });

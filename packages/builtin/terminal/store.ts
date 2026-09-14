@@ -29,6 +29,17 @@ export interface TerminalStoreDeps {
    * (80x24, `index.ts`'s own choice) is fine here. */
   initialCols: number;
   initialRows: number;
+  /** Extra environment variables for the spawned process, merged into
+   * `PtySpawnOptions.env` on every spawn/respawn (Issue #158) —
+   * `index.ts` passes `TECODE_SOCK`/`TECODE_PID` here so a `tecode <file>`
+   * typed INSIDE this terminal can hand the file to the instance that owns
+   * the terminal instead of nesting a second editor. `undefined` (the
+   * pre-Issue-#158 default) leaves `PtySpawnOptions.env` unset, so the
+   * child inherits the host's environment exactly as before
+   * (`@tecode/core`'s `ptyService.ts` merges `{ ...process.env,
+   * ...options.env, TERM }`). Fixed for this store's whole lifetime, like
+   * {@link cmd}. */
+  env?: Record<string, string>;
 }
 
 /** {@link createTerminalStore}'s return type. */
@@ -94,7 +105,13 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
   }
 
   function spawnOptions(): PtySpawnOptions {
-    return { cmd: deps.cmd, cwd: deps.cwd, cols: deps.initialCols, rows: deps.initialRows };
+    return {
+      cmd: deps.cmd,
+      cwd: deps.cwd,
+      cols: deps.initialCols,
+      rows: deps.initialRows,
+      env: deps.env,
+    };
   }
 
   function attachExitHandling(newSession: PtySession): void {

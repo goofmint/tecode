@@ -671,6 +671,54 @@ checklist") and in `docs/manual-release-verification.md` §3 (the
 interactive clean-machine check, which folds the same six-terminal
 requirement into its own procedure).
 
+## Opening files from the integrated terminal (Issue #158)
+
+Running `tecode <file>` **inside** tecode's own integrated terminal opens
+that file in the editor you are already in, instead of starting a second
+full-screen editor nested inside the terminal — the same behaviour as VS
+Code's `code <file>` or `emacsclient`.
+
+How it works: each running instance listens on a private Unix domain
+socket (`$XDG_RUNTIME_DIR/tecode/<pid>.sock`, or the same path under the
+system temp directory when `XDG_RUNTIME_DIR` is unset), created with mode
+`0600` inside a `0700` directory so no other account on the machine can
+reach it. The integrated terminal exports its path to every shell it
+spawns as `TECODE_SOCK` (alongside `TECODE_PID`), and a `tecode <file>`
+that finds that variable hands the path over and exits instead of
+starting up. The channel accepts exactly one kind of request — "open this
+file" — and can never carry a command to run.
+
+Everything about it fails safe: if the socket is gone or stale, if the
+connection is refused, if the other instance does not answer within a
+couple of seconds, or if it answers that it could not open the file, the
+invocation simply starts normally, which is what tecode always did. It is not used on Windows, for a launch with no file
+argument (a bare `tecode` or a directory wants its own editor), or from a
+shell outside the integrated terminal.
+
+`--wait` is the one exception to the answer timeout, by design: the answer
+it is waiting for is "the file was closed again", which is up to the
+person at the keyboard and has no time limit. A connection that is refused
+or that drops still falls back to starting normally, but as long as the
+other instance is alive and holding the file open, `tecode --wait <file>`
+keeps waiting rather than opening a second editor.
+
+Two flags control it:
+
+- `--new-window` — never delegate: start a separate instance even
+  inside the integrated terminal. (That instance's own terminal is then
+  wired to itself, never back to the window it was launched from.)
+- `--wait` — when delegating, block until the file is closed in the other
+  instance.
+
+`--wait` is what makes tecode usable as `$EDITOR`:
+
+```sh
+GIT_EDITOR="tecode --wait" git commit
+```
+
+Neither flag takes a value, and neither is ever mistaken for the file
+argument (`tecode --new-window foo.ts` still opens `foo.ts`).
+
 ## Fallback keymap
 
 When the attached terminal does not answer the Kitty Keyboard Protocol

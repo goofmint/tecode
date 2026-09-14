@@ -424,6 +424,7 @@ export {
   deliversSigwinch,
   resolveAnsi16,
   supportsBunTerminal,
+  supportsTerminalIpc,
   type TerminalCell,
   type TerminalCellColor,
   type TerminalService,

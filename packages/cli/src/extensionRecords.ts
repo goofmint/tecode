@@ -88,7 +88,10 @@ function resolveExtensionDir(extension: LoadedExtension): string {
   return extension.source === "builtin" ? extension.sourcePath : dirname(extension.sourcePath);
 }
 
-export function buildExtensionRecord(extension: LoadedExtension): ExtensionRecord {
+export function buildExtensionRecord(
+  extension: LoadedExtension,
+  ipcSocketPath?: string,
+): ExtensionRecord {
   const isBuiltin = extension.source === "builtin";
   const extensionDir = resolveExtensionDir(extension);
   const extensionUri = isBuiltin ? extension.sourcePath : pathToFileURL(extensionDir).href;
@@ -99,6 +102,7 @@ export function buildExtensionRecord(extension: LoadedExtension): ExtensionRecor
     manifest: extension.manifest,
     extensionUri,
     storagePath,
+    ipcSocketPath,
     loadModule: () => {
       if (!isBuiltin) return loadUserOrWorkspaceModule(extensionDir);
       const module = builtinModules[extension.extensionId];
@@ -115,9 +119,18 @@ export function buildExtensionRecord(extension: LoadedExtension): ExtensionRecor
 }
 
 /** Build every {@link ExtensionRecord} for {@link createExtensionHost}
- * (`@tecode/core`) from `loadExtensions`'s `LoadedExtension[]`. */
-export function buildExtensionRecords(loaded: readonly LoadedExtension[]): ExtensionRecord[] {
-  return loaded.map(buildExtensionRecord);
+ * (`@tecode/core`) from `loadExtensions`'s `LoadedExtension[]`.
+ *
+ * `ipcSocketPath` (Issue #158) is the HOST's single-instance socket path —
+ * the same value for every record, forwarded to each extension as
+ * `ExtensionContext.ipcSocketPath`. Omit it (or pass `undefined`) when the
+ * host has no such socket; `main.ts` passes `root.ipcServer.socketPath`,
+ * which is already `undefined` in exactly those cases. */
+export function buildExtensionRecords(
+  loaded: readonly LoadedExtension[],
+  ipcSocketPath?: string,
+): ExtensionRecord[] {
+  return loaded.map((extension) => buildExtensionRecord(extension, ipcSocketPath));
 }
 
 /**
