@@ -1073,6 +1073,33 @@ describe("editor-core activate() — editor.action.gotoLine (Issue #162)", () =>
     expect(inputBoxCalls).toHaveLength(0);
   });
 
+  test("does nothing if the active document changed while the input box was open (CodeRabbit review, PR #165)", async () => {
+    const { api, getSelections } = tenLineFixture();
+    const before = getSelections();
+    const originalEditor = api.window.activeEditor!;
+    // Flips to `true` from inside the (overridden) `showInputBox` below,
+    // simulating the user switching tabs while it was still open — the
+    // handler must re-read `api.window.activeEditor?.document` AFTER the
+    // `await` and compare it against the document it started with, not
+    // reuse the `editor`/`lineCount` it captured before awaiting.
+    let switchedTabs = false;
+    Object.defineProperty(api.window, "activeEditor", {
+      configurable: true,
+      get: () => (switchedTabs ? { document: {} as Document, selections: [] } : originalEditor),
+    });
+    Object.defineProperty(api.window, "showInputBox", {
+      configurable: true,
+      value: async () => {
+        switchedTabs = true;
+        return "3";
+      },
+    });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+  });
+
   test("unfolds the target line before revealing it (Issue #150)", async () => {
     const { api, getSelections, getCollapsedFolds, setInputBoxResponse, setFoldRanges } =
       tenLineFixture();

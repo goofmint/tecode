@@ -268,18 +268,39 @@ export function activate(ctx: ExtensionContext): void {
     api.commands.register("editor.action.gotoLine", async () => {
       const editor = api.window.activeEditor;
       if (!editor) return;
+      // Held across the `await` below, so the re-check after it can tell
+      // whether the user switched tabs while the input box was open — see
+      // this constant's use just after `showInputBox` resolves.
+      const document = editor.document;
       const lineCount = api.editor.lineCount;
       const value = await api.window.showInputBox({
         prompt: "Go to line",
         validateInput: (v) => validateGotoLineInput(v, lineCount),
       });
       if (!value) return;
-      const error = validateGotoLineInput(value, lineCount);
+      // CodeRabbit review (PR #165): `api.editor`/`api.editor.folds` always
+      // read whatever is CURRENTLY active, not the editor this handler
+      // started with. If the active document changed while `showInputBox`
+      // was awaited, the `lineCount` captured above belongs to a document
+      // that may no longer be active (or may have been edited, changing
+      // its own line count) — applying it as-is could hand `setSelections`
+      // an out-of-range position on the wrong document. `api.window.
+      // activeEditor !== editor` cannot detect this: `activeEditor` returns
+      // a freshly-cloned wrapper on every read (`create.ts`'s TSDoc), so
+      // that comparison is always `true`. Comparing the ORIGINAL `editor.
+      // document` reference against the current `activeEditor?.document`
+      // is the stable check instead — re-reading `api.editor.lineCount`
+      // and re-validating/re-resolving against it only when they still
+      // match keeps a stale-tab jump a documented no-op rather than a
+      // wrong-document (or out-of-range) selection write.
+      if (api.window.activeEditor?.document !== document) return;
+      const currentLineCount = api.editor.lineCount;
+      const error = validateGotoLineInput(value, currentLineCount);
       if (error) {
         api.window.showMessage(error, "error");
         return;
       }
-      const position = resolveGotoLinePosition(value, lineCount);
+      const position = resolveGotoLinePosition(value, currentLineCount);
       // Issue #150: reveal the target line even when it sits inside a
       // collapsed fold — unfold BEFORE writing the selection, matching
       // `folds.unfold`'s own contract (it reads/updates the live fold
