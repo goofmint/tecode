@@ -118,12 +118,13 @@ function createFakeApi(opts: { supported: boolean }) {
   return { api, commandHandlers, messages, registeredViews, spawnCalls, sessions, showPanelCalls };
 }
 
-function createCtx(api: Tecode): ExtensionContext {
+function createCtx(api: Tecode, ipcSocketPath?: string): ExtensionContext {
   return {
     api,
     extensionUri: "file:///builtin/tecode.terminal/",
     subscriptions: [],
     storagePath: "/tmp/tecode-test-terminal",
+    ipcSocketPath,
   };
 }
 
@@ -238,5 +239,33 @@ describe("tecode.terminal — supported platform (POSIX)", () => {
     deactivate();
 
     expect(sessions[0]?.disposed).toBe(true);
+  });
+});
+
+describe("tecode.terminal — IPC marker env (Issue #158)", () => {
+  test("ctx.ipcSocketPath is exported to the spawned shell as TECODE_SOCK, with TECODE_PID alongside", async () => {
+    const { api, spawnCalls } = createFakeApi({ supported: true });
+    activate(createCtx(api, "/run/user/1000/tecode/42.sock"));
+    await api.commands.execute(TERMINAL_FOCUS_COMMAND_ID);
+
+    expect(spawnCalls[0]?.env).toEqual({
+      TECODE_SOCK: "/run/user/1000/tecode/42.sock",
+      TECODE_PID: String(process.pid),
+    });
+  });
+
+  test("no socket path still SETS TECODE_SOCK — to empty — so an inherited one cannot leak through", async () => {
+    // A `tecode --new-window` started from another instance's terminal has
+    // that instance's TECODE_SOCK in its own environment. Omitting the
+    // variable here would let the pty inherit it, and a `tecode <file>`
+    // typed in THIS window's terminal would open the file in the other
+    // window — the exact opposite of `--new-window` (CodeRabbit review on
+    // PR #159). An empty value is what `packages/cli`'s
+    // `resolveDelegateTarget` already reads as "no socket".
+    const { api, spawnCalls } = createFakeApi({ supported: true });
+    activate(createCtx(api));
+    await api.commands.execute(TERMINAL_FOCUS_COMMAND_ID);
+
+    expect(spawnCalls[0]?.env).toEqual({ TECODE_SOCK: "", TECODE_PID: String(process.pid) });
   });
 });

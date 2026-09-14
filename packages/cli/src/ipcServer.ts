@@ -67,6 +67,20 @@ const SOCKET_DIR_MODE = 0o700;
 /** Mode the socket itself is chmod'ed to right after `listen`. */
 const SOCKET_MODE = 0o600;
 
+/**
+ * Most bytes one connection may accumulate without completing a line
+ * (`ipcProtocol.ts`'s framing) before it is answered with an error and
+ * dropped.
+ *
+ * Without a cap, a peer that simply never sends a newline grows
+ * `ConnectionState.buffer` without bound — and every program the user runs
+ * in the integrated terminal can reach this socket, so a buggy one could
+ * exhaust the EDITOR's memory. 64 KiB is orders of magnitude more than the
+ * only message this channel accepts (a JSON object holding two absolute
+ * paths), so no legitimate request can ever approach it.
+ */
+const MAX_REQUEST_BYTES = 64 * 1024;
+
 /** Dependencies for {@link createIpcServer} — narrowed with `Pick` per
  * house convention ("narrowing, not re-implementing") so a test can hand
  * over a two-field fake instead of a whole assembly root. */
@@ -164,6 +178,20 @@ export function createIpcServer(deps: IpcServerDeps): IpcServer {
     }
   }
 
+  /** Forget one connection and hang up on it — used when a peer breaks the
+   * protocol badly enough that there is nothing left to talk about
+   * ({@link MAX_REQUEST_BYTES}). Never throws: `end()` on a socket the peer
+   * already closed is not worth failing an editor over. */
+  function dropConnection(socket: Socket<ConnectionState>, state: ConnectionState): void {
+    releasePending(state);
+    connections.delete(socket);
+    try {
+      socket.end();
+    } catch {
+      // Already gone.
+    }
+  }
+
   /**
    * Hold this request's response until the just-opened document is closed
    * again. Returns `true` when the response is now the subscription's
@@ -214,7 +242,18 @@ export function createIpcServer(deps: IpcServerDeps): IpcServer {
   }
 
   try {
-    mkdirSync(dirname(socketPath), { recursive: true, mode: SOCKET_DIR_MODE });
+    const socketDir = dirname(socketPath);
+    mkdirSync(socketDir, { recursive: true, mode: SOCKET_DIR_MODE });
+    // `mkdirSync`'s `mode` applies only when it actually CREATES the
+    // directory (and is masked by the process umask even then), so an
+    // already-existing `.../tecode` left at 0755 by an earlier run under a
+    // different umask would stay world-traversable. `Bun.listen` then
+    // creates the socket under that same umask, leaving a window — before
+    // the `chmodSync(socketPath, ...)` below lands — in which another user
+    // could connect. chmod'ing the directory first closes that window. A
+    // directory that is not ours to chmod fails here and is caught below,
+    // which disables the channel rather than running it unprotected.
+    chmodSync(socketDir, SOCKET_DIR_MODE);
     // A leftover file at OUR OWN path (a previous process with this pid
     // that never got to unlink it) would make `listen` fail outright. Only
     // this exact path is ever removed — never a sweep of the directory,
@@ -231,6 +270,18 @@ export function createIpcServer(deps: IpcServerDeps): IpcServer {
         data(socket, chunk) {
           const state = connections.get(socket);
           if (!state) return;
+          // Checked BEFORE concatenating, so the over-limit string is
+          // never allocated at all ({@link MAX_REQUEST_BYTES}).
+          if (state.buffer.length + chunk.length > MAX_REQUEST_BYTES) {
+            logSafely(
+              log,
+              "warning",
+              `tecode ipc: dropped a connection that exceeded ${MAX_REQUEST_BYTES} bytes without completing a request.`,
+            );
+            respond(socket, false, "request too large");
+            dropConnection(socket, state);
+            return;
+          }
           const { lines, rest } = takeCompleteLines(state.buffer + chunk.toString());
           state.buffer = rest;
           for (const line of lines) handleLine(socket, line);

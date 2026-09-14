@@ -688,16 +688,25 @@ that finds that variable hands the path over and exits instead of
 starting up. The channel accepts exactly one kind of request — "open this
 file" — and can never carry a command to run.
 
-Everything about it fails safe: if the socket is gone, stale, or nobody
-answers, the invocation simply starts normally, which is what tecode
-always did. It is not used on Windows, for a launch with no file argument
-(a bare `tecode` or a directory wants its own editor), or from a shell
-outside the integrated terminal.
+Everything about it fails safe: if the socket is gone or stale, if the
+connection is refused, or if the other instance does not answer within a
+couple of seconds, the invocation simply starts normally, which is what
+tecode always did. It is not used on Windows, for a launch with no file
+argument (a bare `tecode` or a directory wants its own editor), or from a
+shell outside the integrated terminal.
+
+`--wait` is the one exception to the answer timeout, by design: the answer
+it is waiting for is "the file was closed again", which is up to the
+person at the keyboard and has no time limit. A connection that is refused
+or that drops still falls back to starting normally, but as long as the
+other instance is alive and holding the file open, `tecode --wait <file>`
+keeps waiting rather than opening a second editor.
 
 Two flags control it:
 
 - `--new-window` — never delegate: start a separate instance even
-  inside the integrated terminal.
+  inside the integrated terminal. (That instance's own terminal is then
+  wired to itself, never back to the window it was launched from.)
 - `--wait` — when delegating, block until the file is closed in the other
   instance.
 

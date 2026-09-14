@@ -75,16 +75,25 @@ const INITIAL_ROWS = 24;
  * and exits. `TECODE_PID` carries no behaviour; it is there so a user (or
  * a shell prompt) can tell WHICH instance a terminal belongs to.
  *
- * Returns `undefined` when the host published no socket path
- * (`ExtensionContext.ipcSocketPath`'s own TSDoc: Windows, headless, or a
- * socket that failed to open) — the store then spawns exactly as it did
- * before this issue, injecting nothing at all, and a `tecode <file>` in
- * that terminal keeps its old nested-instance behaviour.
+ * **`TECODE_SOCK` is always SET, even to the empty string** when this host
+ * published no socket path (`ExtensionContext.ipcSocketPath`'s own TSDoc:
+ * Windows, headless, or a socket that failed to open). Leaving it out
+ * instead would let the variable be INHERITED: a `tecode --new-window`
+ * launched from another instance's terminal runs with that instance's
+ * `TECODE_SOCK` in its own environment, so its terminal's shells would
+ * receive it too — and a `tecode <file>` typed in this window's terminal
+ * would then open the file in the OTHER window, which is the exact
+ * opposite of what `--new-window` was asked for. An empty value is what
+ * `packages/cli`'s `resolveDelegateTarget` already treats as "no socket",
+ * so it reliably means "this terminal belongs to an instance you cannot
+ * delegate to" rather than "look at whatever the parent left behind".
  */
-function ipcMarkerEnv(ctx: ExtensionContext): Record<string, string> | undefined {
+function ipcMarkerEnv(ctx: ExtensionContext): Record<string, string> {
   const socketPath = ctx.ipcSocketPath;
-  if (socketPath === undefined || socketPath.length === 0) return undefined;
-  return { TECODE_SOCK: socketPath, TECODE_PID: String(process.pid) };
+  return {
+    TECODE_SOCK: socketPath !== undefined && socketPath.length > 0 ? socketPath : "",
+    TECODE_PID: String(process.pid),
+  };
 }
 
 /** The default shell to spawn (this module's TSDoc). */

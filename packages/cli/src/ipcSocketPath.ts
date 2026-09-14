@@ -32,7 +32,8 @@ import { join } from "node:path";
 
 /** The one directory name both the `XDG_RUNTIME_DIR` and `os.tmpdir()`
  * branches nest under, so every instance's socket for a given user lands in
- * one place. */
+ * one place. The `os.tmpdir()` branch appends the current uid to it — see
+ * {@link resolveIpcSocketDir}. */
 const SOCKET_DIR_NAME = "tecode";
 
 /** Optional overrides for {@link resolveIpcSocketPath} — every field
@@ -46,16 +47,37 @@ export interface IpcSocketPathOptions {
   env?: Record<string, string | undefined>;
   /** Defaults to `node:os`'s `tmpdir()`. */
   tmpdir?: () => string;
+  /** The current user id, used ONLY by the `os.tmpdir()` fallback
+   * ({@link resolveIpcSocketDir}). Defaults to `process.getuid?.()`, which
+   * is `undefined` on Windows — where this whole channel is disabled
+   * anyway (`@tecode/core`'s `supportsTerminalIpc`), so the un-suffixed
+   * name is used there. */
+  uid?: number;
 }
 
-/** The directory {@link resolveIpcSocketPath} places sockets in (this
+/**
+ * The directory {@link resolveIpcSocketPath} places sockets in (this
  * module's TSDoc) — exported separately because `ipcServer.ts` has to
- * create it with mode 0700 before it can listen. */
+ * create it with mode 0700 before it can listen.
+ *
+ * **The `os.tmpdir()` fallback is per-user; the `XDG_RUNTIME_DIR` one is
+ * not.** `XDG_RUNTIME_DIR` is already a per-user directory, so a fixed
+ * `tecode` name inside it is unambiguous. `os.tmpdir()` usually is NOT —
+ * it is typically `/tmp`, shared by every account on the machine — and
+ * `ipcServer.ts` creates this directory 0700, so a fixed `/tmp/tecode`
+ * would let whichever user started tecode first lock every other user
+ * out of the feature entirely (their `listen` would fail inside a
+ * directory they cannot write, and `dispose` only unlinks the socket, not
+ * the directory, so the lockout would outlive that first instance).
+ * Appending the uid keeps each user in their own 0700 directory.
+ */
 export function resolveIpcSocketDir(options: IpcSocketPathOptions = {}): string {
   const env = options.env ?? process.env;
   const runtimeDir = env["XDG_RUNTIME_DIR"];
-  const base = runtimeDir !== undefined && runtimeDir.length > 0 ? runtimeDir : (options.tmpdir ?? osTmpdir)();
-  return join(base, SOCKET_DIR_NAME);
+  if (runtimeDir !== undefined && runtimeDir.length > 0) return join(runtimeDir, SOCKET_DIR_NAME);
+  const uid = options.uid ?? process.getuid?.();
+  const name = uid === undefined ? SOCKET_DIR_NAME : `${SOCKET_DIR_NAME}-${uid}`;
+  return join((options.tmpdir ?? osTmpdir)(), name);
 }
 
 /** This instance's socket path (this module's TSDoc). */

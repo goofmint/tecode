@@ -12,7 +12,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Disposable, Listener } from "@tecode/api";
@@ -106,7 +106,12 @@ function createHarness(options: { autoOpen?: boolean } = {}): {
  * covers the same quirk), and a raw probe that gave up the moment `close`
  * arrived would report "no answer" for an answer that had in fact already
  * been written. */
-async function sendRaw(socketPath: string, payload: string, graceMs = 300): Promise<string | undefined> {
+async function sendRaw(
+  socketPath: string,
+  payload: string,
+  options: { graceMs?: number; repeat?: number } = {},
+): Promise<string | undefined> {
+  const graceMs = options.graceMs ?? 300;
   let received = "";
   const socket = await Bun.connect({
     unix: socketPath,
@@ -125,7 +130,14 @@ async function sendRaw(socketPath: string, payload: string, graceMs = 300): Prom
       },
     },
   });
-  socket.write(payload);
+  // Written as separate awaited writes rather than one giant string: a
+  // single `write` is subject to backpressure and may send only part of a
+  // large payload, which would silently under-deliver the very thing a
+  // buffer-cap test is trying to send.
+  for (let i = 0; i < (options.repeat ?? 1); i++) {
+    socket.write(payload);
+    await Bun.sleep(5);
+  }
   await Bun.sleep(graceMs);
   socket.end();
   const trimmed = received.trim();
@@ -145,6 +157,31 @@ describe("createIpcServer — lifecycle and permissions", () => {
     const { socketPath } = createHarness();
     expect(statSync(socketPath).mode & 0o777).toBe(0o600);
     expect(statSync(join(socketPath, "..")).mode & 0o777).toBe(0o700);
+  });
+
+  test("an ALREADY-EXISTING socket directory is tightened to 0700 before listening", () => {
+    // `mkdirSync`'s own `mode` only applies when it creates the directory,
+    // so a directory left world-traversable by an earlier run has to be
+    // chmod'ed explicitly — otherwise the socket is created under the
+    // process umask inside it, reachable by other users until the
+    // socket's own chmod lands (CodeRabbit review on PR #159).
+    const dir = mkdtempSync(join(tmpdir(), "tecode-ipc-test-"));
+    tempDirs.push(dir);
+    const socketsDir = join(dir, "sockets");
+    mkdirSync(socketsDir, { recursive: true });
+    chmodSync(socketsDir, 0o755);
+
+    const documents = createFakeDocuments();
+    const server = createIpcServer({
+      socketPath: join(socketsDir, "1.sock"),
+      commands: { execute: () => Promise.resolve(undefined) },
+      documents,
+      log: createHostLog(),
+    });
+    openServers.push(server);
+
+    expect(server.socketPath).toBeDefined();
+    expect(statSync(socketsDir).mode & 0o777).toBe(0o700);
   });
 
   test("dispose() unlinks the socket and is idempotent", () => {
@@ -231,6 +268,35 @@ describe("createIpcServer — open requests", () => {
     expect(server.socketPath).toBe(socketPath);
     // Still usable afterwards — one bad peer must not take the channel down.
     expect(await delegateOpen({ socketPath, path: "/abs/file.ts", wait: false })).toBe(true);
+    expect(executed).toHaveLength(1);
+  });
+});
+
+describe("createIpcServer — receive-buffer cap", () => {
+  test("a peer that never completes a line is refused and hung up on, not buffered forever", async () => {
+    // Every program the user runs in the integrated terminal can reach this
+    // socket, so an unbounded buffer would let a buggy one exhaust the
+    // EDITOR's memory (`MAX_REQUEST_BYTES`'s TSDoc).
+    const { socketPath, executed, log, server } = createHarness();
+    const answer = await sendRaw(socketPath, "x".repeat(8 * 1024), { repeat: 12 });
+
+    expect(answer).toContain('"ok":false');
+    expect(answer).toContain("too large");
+    expect(executed).toEqual([]);
+    expect(log.entries().some((entry) => entry.error.message.includes("without completing a request"))).toBe(
+      true,
+    );
+    // One abusive peer must not take the channel down for the next one.
+    expect(server.socketPath).toBe(socketPath);
+    expect(await delegateOpen({ socketPath, path: "/abs/file.ts", wait: false })).toBe(true);
+    expect(executed).toHaveLength(1);
+  });
+
+  test("a request comfortably under the cap is still handled normally", async () => {
+    const { socketPath, executed } = createHarness();
+    // A long-but-legitimate path: nowhere near the cap, so nothing changes.
+    const path = `/abs/${"d".repeat(2_000)}/file.ts`;
+    expect(await delegateOpen({ socketPath, path, wait: false })).toBe(true);
     expect(executed).toHaveLength(1);
   });
 });
