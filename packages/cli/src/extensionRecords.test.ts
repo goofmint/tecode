@@ -149,3 +149,29 @@ test("buildExtensionDirMap resolves a user/workspace extension's real directory 
   expect(dirs["demo"]).toBe(extensionDir);
   expect(dirs["fake-builtin"]).toBe("<builtin>/fake-builtin");
 });
+
+test("the host's IPC socket path reaches every record — and is undefined when there is none (Issue #158)", async () => {
+  const extensionsDir = await makeTempDir();
+  const extensionDir = join(extensionsDir, "demo");
+  await mkdir(extensionDir, { recursive: true });
+  const manifestPath = join(extensionDir, "manifest.ts");
+  await writeFile(manifestPath, "export default {}\n", "utf8");
+
+  const loaded: LoadedExtension[] = [
+    { extensionId: "demo", manifest: fixtureManifest("demo"), source: "user", sourcePath: manifestPath },
+    { extensionId: "tecode.terminal", manifest: fixtureManifest("tecode.terminal"), source: "builtin", sourcePath: extensionDir },
+  ];
+
+  // Every record carries the SAME path: it describes the host, not the
+  // extension — that is what lets the terminal built-in read it off its own
+  // `ctx` and export it as TECODE_SOCK.
+  for (const record of buildExtensionRecords(loaded, "/run/user/1000/tecode/42.sock")) {
+    expect(record.ipcSocketPath).toBe("/run/user/1000/tecode/42.sock");
+  }
+
+  // No socket (Windows, headless, or a listener that failed to open) must
+  // reach extensions as `undefined`, not as an empty string.
+  for (const record of buildExtensionRecords(loaded)) {
+    expect(record.ipcSocketPath).toBeUndefined();
+  }
+});

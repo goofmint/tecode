@@ -52,6 +52,14 @@ export interface ExtensionRecord {
   extensionUri: string;
   /** A per-extension directory for `ExtensionContext.storagePath`. */
   storagePath: string;
+  /** The host instance's single-instance IPC socket path (Issue #158),
+   * forwarded verbatim to `ExtensionContext.ipcSocketPath`. `undefined`
+   * when the host has no such socket (Windows, headless, or a socket that
+   * failed to open) — see that property's own TSDoc. Identical for every
+   * record (it describes the HOST, not the extension), unlike
+   * {@link storagePath} above; it rides along here because
+   * `ExtensionContext` is assembled from this record and nothing else. */
+  ipcSocketPath?: string;
   /**
    * Loads the extension's implementation module. Production callers close
    * over a real `import()` of the resolved `index.ts`/`.js` (design.md
@@ -337,6 +345,7 @@ export function createExtensionHost(deps: ExtensionHostDeps): ExtensionHost {
       extensionUri: record.extensionUri,
       subscriptions: [],
       storagePath: record.storagePath,
+      ipcSocketPath: record.ipcSocketPath,
     };
     // Visible to markFailed immediately, so subscriptions pushed before a
     // throw/rejection below are still reachable for disposal.

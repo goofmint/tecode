@@ -121,6 +121,10 @@ function createFakeShutdownRoot(overrides: { flush?: () => Promise<void> } = {})
     panelHeightConfigSync: disposable(),
     clipboardConfigSync: disposable(),
     terminal: disposable(),
+    // Issue #158: the single-instance IPC listener, disposed alongside the
+    // pty service for the same "owns a real OS resource" reason
+    // (`ShutdownRoot.ipcServer`'s TSDoc).
+    ipcServer: disposable(),
     showPanelCommand: disposable(),
     sidebarVisibilityCommand: disposable(),
     themeSelectCommand: disposable(),
@@ -399,7 +403,7 @@ test("createShutdown's returned function is idempotent: destroy-then-signal runs
   expect(calls.flush).toBe(1);
   expect(calls.sidebarWidthFlush).toBe(1);
   expect(calls.panelHeightFlush).toBe(1);
-  expect(calls.dispose).toBe(29); // one per disposable field in ShutdownRoot
+  expect(calls.dispose).toBe(30); // one per disposable field in ShutdownRoot
   expect(calls.disposeAll).toBe(1);
 });
 
@@ -417,7 +421,7 @@ test("createShutdown's returned function is idempotent: signal-then-destroy runs
   expect(calls.flush).toBe(1);
   expect(calls.sidebarWidthFlush).toBe(1);
   expect(calls.panelHeightFlush).toBe(1);
-  expect(calls.dispose).toBe(29);
+  expect(calls.dispose).toBe(30);
   expect(calls.disposeAll).toBe(1);
 
   // A THIRD call, after the sequence has already fully settled, is still
@@ -427,7 +431,7 @@ test("createShutdown's returned function is idempotent: signal-then-destroy runs
   expect(calls.flush).toBe(1);
   expect(calls.sidebarWidthFlush).toBe(1);
   expect(calls.panelHeightFlush).toBe(1);
-  expect(calls.dispose).toBe(29);
+  expect(calls.dispose).toBe(30);
   expect(calls.disposeAll).toBe(1);
 });
 

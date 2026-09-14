@@ -80,6 +80,32 @@ export function deliversSigwinch(platform: NodeJS.Platform = process.platform): 
 }
 
 /**
+ * Whether `platform` (default: the real `process.platform`) supports the
+ * single-instance IPC channel (Issue #158): the per-instance Unix domain
+ * socket `cli`'s `ipcServer.ts` listens on and `ipcClient.ts` connects to,
+ * so `tecode <file>` run inside the integrated terminal opens the file in
+ * the ALREADY-RUNNING instance instead of nesting a second full-screen TUI
+ * inside the pty.
+ *
+ * `true` everywhere except `"win32"`. Unlike {@link supportsBunTerminal},
+ * this stays a hard OS gate with no version qualification: the channel is a
+ * real `AF_UNIX` socket path (`Bun.listen({ unix })`/`Bun.connect({ unix })`),
+ * and whether Bun maps that onto a Windows named pipe is unverified — so
+ * Windows deliberately falls back to the pre-Issue-#158 behavior (no socket
+ * is ever created, and a `tecode <file>` invocation there simply starts
+ * normally), which is also exactly what a failed connection degrades to on
+ * every other platform.
+ *
+ * Lives here, beside {@link supportsBunTerminal}/{@link deliversSigwinch},
+ * for the same "confine the one OS check to a single place" reason this
+ * module's own TSDoc gives — no other module branches on
+ * `process.platform` for this.
+ */
+export function supportsTerminalIpc(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "win32";
+}
+
+/**
  * Whether `platform` (default: the real `process.platform`) running
  * `bunVersion` (default: the real `Bun.version`) supports the native pty
  * primitive this feature is built on (Issue #98's "Bun.Terminal is

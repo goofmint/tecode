@@ -62,7 +62,9 @@ describe("createTerminalStore — session lifecycle", () => {
     const { store, spawnCalls } = createHarness();
     const session = store.ensureSession();
     expect(session).toBeDefined();
-    expect(spawnCalls).toEqual([{ cmd: ["/bin/sh"], cwd: undefined, cols: 80, rows: 24 }]);
+    expect(spawnCalls).toEqual([
+      { cmd: ["/bin/sh"], cwd: undefined, cols: 80, rows: 24, env: undefined },
+    ]);
   });
 
   test("ensureSession() is idempotent — a second call returns the SAME session without spawning again", () => {
@@ -216,5 +218,37 @@ describe("createTerminalStore — focus handle brokering", () => {
     store.registerFocusHandle(undefined);
     store.registerFocusHandle(() => calls++);
     expect(calls).toBe(1); // no NEW pending request — stays at 1
+  });
+});
+
+describe("createTerminalStore — IPC marker env (Issue #158)", () => {
+  test("deps.env is merged into every spawn's PtySpawnOptions", () => {
+    const spawnCalls: PtySpawnOptions[] = [];
+    const store = createTerminalStore({
+      spawn: (options) => {
+        spawnCalls.push(options);
+        return createFakeSession();
+      },
+      cmd: ["/bin/sh"],
+      initialCols: 80,
+      initialRows: 24,
+      env: { TECODE_SOCK: "/run/tecode/42.sock", TECODE_PID: "42" },
+    });
+
+    store.ensureSession();
+    // A respawn must carry the marker too — a "new terminal" is still a
+    // terminal belonging to this instance.
+    store.respawn();
+
+    expect(spawnCalls).toHaveLength(2);
+    for (const options of spawnCalls) {
+      expect(options.env).toEqual({ TECODE_SOCK: "/run/tecode/42.sock", TECODE_PID: "42" });
+    }
+  });
+
+  test("no deps.env leaves PtySpawnOptions.env unset — the pre-Issue-#158 behaviour", () => {
+    const { store, spawnCalls } = createHarness();
+    store.ensureSession();
+    expect(spawnCalls[0]?.env).toBeUndefined();
   });
 });

@@ -61,6 +61,7 @@ import {
   registerTecodeAlias,
   registerThemeSelectCommand,
   createTerminalService,
+  supportsTerminalIpc,
   SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
   TAB_DEFAULT_KEYBINDINGS,
   wireEditorLangIdContext,
@@ -114,9 +115,14 @@ import {
   resolveSettingsFileOverride,
   resolveStartupTarget,
   resolveThemeFileOverride,
+  hasNewWindowFlag,
+  hasWaitFlag,
   type StartupTarget,
 } from "./argv";
 import { buildExtensionDirMap, buildExtensionRecords } from "./extensionRecords";
+import { createIpcServer, type IpcServer } from "./ipcServer";
+import { resolveIpcSocketPath } from "./ipcSocketPath";
+import { delegateOpen, resolveDelegateTarget } from "./ipcClient";
 import { handlePasteEvent } from "./keyRouting";
 import { createKeymapState, type KeymapState } from "./keymapState";
 import { createBuiltinLanguageAssetsFs } from "./languageAssetsFs";
@@ -226,6 +232,23 @@ export interface AssemblyRoot {
    * `renderShell(...)` call reads to build `keyRouting.ts`'s
    * `TerminalKeyRoutingDeps.write`. */
   terminalSessionTracker: TerminalSessionTracker;
+  /**
+   * The single-instance IPC listener (Issue #158, `ipcServer.ts`) — the
+   * Unix domain socket a `tecode <file>` run inside THIS instance's
+   * integrated terminal connects to, so the file opens here instead of a
+   * second full-screen TUI nesting inside the pty.
+   *
+   * Always present as an object, but `socketPath` is `undefined` unless
+   * `buildAssemblyRoot` was given an `ipcSocketPath` AND the socket
+   * actually opened — so every consumer (the extension records'
+   * `ExtensionContext.ipcSocketPath`, and therefore the terminal built-in's
+   * `TECODE_SOCK` injection) reads one value and needs no separate
+   * "enabled" flag. Held here specifically so `performShutdown` can
+   * `dispose()` it: like {@link terminal}, this owns a REAL OS resource
+   * (an open listener, which by itself keeps the process alive, plus a
+   * file to unlink).
+   */
+  ipcServer: IpcServer;
   /** The `workbench.action.showPanel` command registration (Issue #98 Phase
    * 3, `ui/panelCommands.ts`) — registered directly on `commands` for the
    * same privilege-boundary reason as `openFileCommand`/`tabCommands`
@@ -658,6 +681,24 @@ function describeError(err: unknown): string {
   }
 }
 
+/**
+ * The do-nothing {@link IpcServer} `buildAssemblyRoot` uses when no
+ * `ipcSocketPath` was given (Issue #158) — Windows, a headless run, or any
+ * test that builds an assembly root without asking for the channel. Keeping
+ * the FIELD always present (rather than making it optional) means
+ * `performShutdown` and the extension-record wiring each have exactly one
+ * shape to handle, and `socketPath: undefined` is already the value both
+ * treat as "no channel".
+ */
+function createInactiveIpcServer(): IpcServer {
+  return {
+    socketPath: undefined,
+    dispose() {
+      // Nothing was ever opened.
+    },
+  };
+}
+
 export function buildAssemblyRoot(
   workspaceRoot: string = process.cwd(),
   deps: {
@@ -716,6 +757,21 @@ export function buildAssemblyRoot(
     /** Same "skip only the first re-read" contract as
      * {@link initialCliSettings}, for {@link keybindingsFile}. */
     initialCliKeybindings?: unknown[];
+    /**
+     * Where to listen for single-instance IPC (Issue #158) — threaded
+     * through from `RunTecodeOptions.ipcSocketPath`, which `main()` (the
+     * real CLI entry point) fills in with `ipcSocketPath.ts`'s
+     * `resolveIpcSocketPath()` for an interactive run on a platform that
+     * supports the channel.
+     *
+     * `undefined` (the default) means NO socket is created at all and
+     * {@link AssemblyRoot.ipcServer}'s `socketPath` stays `undefined` —
+     * which is what keeps every test that builds an assembly root from
+     * leaving a live listener (and a socket file) behind, and doubles as
+     * the injection seam a test uses to exercise the channel against a
+     * temp path of its own choosing.
+     */
+    ipcSocketPath?: string;
   } = {},
 ): AssemblyRoot {
   const log = deps.log ?? createHostLog();
@@ -1324,6 +1380,17 @@ export function buildAssemblyRoot(
   const editorInputRouter = createEditorInputRouter({ context, editorSession });
   const editorLangIdSync = wireEditorLangIdContext({ editorSession, context });
 
+  // Single-instance IPC (Issue #158, `ipcServer.ts`): built last, since it
+  // needs both `commands` (the one privileged registry an accepted `open`
+  // request reaches `workbench.action.files.openUri` through) and
+  // `documents` (for `--wait`'s "answer once the document is closed
+  // again"). `createIpcServer` never throws — a socket that cannot be
+  // opened degrades to `socketPath === undefined`, i.e. exactly the
+  // no-`ipcSocketPath` case.
+  const ipcServer: IpcServer = deps.ipcSocketPath
+    ? createIpcServer({ socketPath: deps.ipcSocketPath, commands, documents, log })
+    : createInactiveIpcServer();
+
   return {
     log,
     sink,
@@ -1334,6 +1401,7 @@ export function buildAssemblyRoot(
     clipboard,
     terminal,
     terminalSessionTracker,
+    ipcServer,
     showPanelCommand,
     sidebarVisibilityCommand,
     config,
@@ -1526,7 +1594,11 @@ export async function runDeferredPhase(
   );
 
   const extensionHost = createExtensionHost({
-    extensions: buildExtensionRecords(loadResult.loaded),
+    // Issue #158: every record carries the HOST's socket path, which
+    // `performActivation` forwards as `ExtensionContext.ipcSocketPath` —
+    // already `undefined` when no socket is listening, which is exactly
+    // what the terminal built-in treats as "inject no `TECODE_SOCK`".
+    extensions: buildExtensionRecords(loadResult.loaded, root.ipcServer.socketPath),
     api: root.api,
     log: root.log,
     sink: root.sink,
@@ -1623,6 +1695,40 @@ export interface RunTecodeOptions {
    * `workbench.colorTheme` setting; same "resolved against `cwd`,
    * validated before use" treatment as {@link settingsFile}. */
   themeFile?: string;
+  /** `--new-window` (Issue #158), already parsed by `main()`'s
+   * `hasNewWindowFlag(argv)` call: start a separate instance instead of
+   * handing the file to the one whose integrated terminal this invocation
+   * was launched from. Defaults to `false`. */
+  newWindow?: boolean;
+  /** `--wait` (Issue #158), already parsed by `main()`'s `hasWaitFlag(argv)`
+   * call: when this invocation DOES delegate, block until the delegated
+   * document is closed again (the `$EDITOR` case) instead of exiting
+   * immediately. No effect on an invocation that starts its own editor.
+   * Defaults to `false`. */
+  wait?: boolean;
+  /**
+   * Where this instance LISTENS for single-instance IPC (Issue #158).
+   * `main()` — the real CLI entry point — passes
+   * `resolveIpcSocketPath()` for an interactive run on a platform that
+   * supports the channel, and nothing otherwise (a headless run has no
+   * integrated terminal for another invocation to be launched from in the
+   * first place).
+   *
+   * `undefined` (the default) means NO socket is opened. That is what
+   * keeps every test that calls `runTecode` directly from leaving a live
+   * listener — which would hold the event loop open and keep the process
+   * from ever exiting — behind it; such a test opts in explicitly by
+   * passing a temp path of its own.
+   */
+  ipcSocketPath?: string;
+  /**
+   * Overrides how this invocation DELEGATES to an already-running instance
+   * (Issue #158) — the client-side counterpart of {@link ipcSocketPath}.
+   * Defaults to `ipcClient.ts`'s real `delegateOpen`; a test substitutes a
+   * fake to prove both outcomes (`false` keeps startup going, which is
+   * fully observable in-process) without a real socket.
+   */
+  delegateOpen?: typeof delegateOpen;
 }
 
 /** The bounded wait {@link createShutdown} allows its teardown sequence
@@ -1682,6 +1788,13 @@ export interface ShutdownRoot {
    * inert-object disposal like `clipboardConfigSync`'s — a live pty owns a
    * real child process). */
   terminal: Pick<TerminalService, "dispose">;
+  /** The single-instance IPC listener's own `dispose()` (Issue #158,
+   * `AssemblyRoot.ipcServer`'s TSDoc) — in the same "owns a REAL OS
+   * resource" category as {@link terminal}, and not optional: an open Unix
+   * domain socket listener keeps the event loop alive all by itself, so
+   * skipping this would leave the process unable to exit, and the socket
+   * file behind for the next instance to trip over. */
+  ipcServer: Pick<IpcServer, "dispose">;
   showPanelCommand: Pick<Disposable, "dispose">;
   sidebarVisibilityCommand: Pick<Disposable, "dispose">;
   findService: Pick<Disposable, "dispose">;
@@ -1808,6 +1921,11 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       // own contract), so ordering relative to the rest of this sequence
       // is not load-bearing beyond "runs during shutdown at all".
       root.terminal.dispose();
+      // Issue #158: stops listening, answers every still-pending `--wait`
+      // client (so none is left hanging on a socket that is about to
+      // vanish) and unlinks the socket file. Must run for the process to
+      // be able to exit at all — `ShutdownRoot.ipcServer`'s own TSDoc.
+      root.ipcServer.dispose();
       root.showPanelCommand.dispose();
       root.sidebarVisibilityCommand.dispose();
       root.themeSelectCommand.dispose();
@@ -2147,16 +2265,54 @@ export async function verifyExplicitFileOverrides(
   return verified;
 }
 
+/**
+ * Whether this run is headless (this module's TSDoc's "Headless mode"
+ * paragraph): `forced` wins when given (`RunTecodeOptions.headless`, which
+ * tests set), otherwise `TECODE_HEADLESS=1` or the absence of a real TTY on
+ * stdout decides. Extracted verbatim from {@link runTecode}'s own
+ * long-standing expression so `main()` can ask the SAME question when
+ * deciding whether to open a single-instance socket (Issue #158) without
+ * restating it.
+ */
+function resolveHeadless(forced?: boolean): boolean {
+  return forced ?? (process.env["TECODE_HEADLESS"] === "1" || !process.stdout.isTTY);
+}
+
 export async function runTecode(
   argv: readonly string[],
   options: RunTecodeOptions = {},
 ): Promise<RunTecodeResult> {
   const startedAt = performance.now();
-  const headless = options.headless ?? (process.env["TECODE_HEADLESS"] === "1" || !process.stdout.isTTY);
+  const headless = resolveHeadless(options.headless);
 
   const log = createHostLog();
   const cwd = options.cwd ?? process.cwd();
   const target: StartupTarget = await resolveStartupTarget(argv, cwd, log);
+
+  // Single-instance delegation (Issue #158), deliberately the FIRST thing
+  // after argv resolution and strictly before `buildAssemblyRoot`: an
+  // invocation that hands its file to an already-running instance must not
+  // build a single service, open a document, or touch the terminal — it is
+  // a one-shot client, not an editor. `resolveDelegateTarget` (pure,
+  // `ipcClient.ts`) is what decides; `undefined` means "start normally",
+  // which is also every failure's answer (that module's "fail-safe in
+  // exactly one direction" TSDoc), so a dead socket, a stale path or a
+  // silent host all fall through to the ordinary startup below.
+  const delegateTarget = resolveDelegateTarget({
+    env: process.env,
+    platformSupportsIpc: supportsTerminalIpc(),
+    newWindow: options.newWindow === true,
+    wait: options.wait === true,
+    initialFilePath: target.initialFilePath,
+  });
+  if (delegateTarget) {
+    const delegate = options.delegateOpen ?? delegateOpen;
+    if (await delegate(delegateTarget, { cwd })) {
+      // The other instance has the file open (and, with `--wait`, has
+      // since had it closed again). Nothing left for this process to do.
+      process.exit(0);
+    }
+  }
 
   // `--settings`/`--keybindings`/`--theme <file>` (Req 9.7/7.6, Issue #149):
   // resolved against `cwd` (matching `resolveStartupTarget`'s own treatment
@@ -2196,6 +2352,12 @@ export async function runTecode(
     // `ConfigServiceDeps.initialCliSettings`'s own TSDoc describes).
     initialCliSettings: verifiedFileOverrides.settings,
     initialCliKeybindings: verifiedFileOverrides.keybindings,
+    // Issue #158: only ever what the CALLER asked for. `main()` (the real
+    // CLI entry point) derives the production path; every other caller —
+    // every test that builds a root, in particular — gets no socket at
+    // all, so nothing here can leave a live listener behind holding the
+    // event loop open.
+    ipcSocketPath: options.ipcSocketPath,
   });
   await root.config.ready;
   emitVerboseStep(startedAt, "config-ready");
@@ -2499,7 +2661,21 @@ async function main(argv: string[]): Promise<void> {
   const settingsFile = resolveSettingsFileOverride(argv);
   const keybindingsFile = resolveKeybindingsFileOverride(argv);
   const themeFile = resolveThemeFileOverride(argv);
-  await runTecode(argv, { configDir, settingsFile, keybindingsFile, themeFile });
+  const newWindow = hasNewWindowFlag(argv);
+  const wait = hasWaitFlag(argv);
+  // Issue #158: an interactive run on a platform with the channel listens
+  // for delegated `open` requests; a headless one (or Windows) does not.
+  const ipcSocketPath =
+    !resolveHeadless() && supportsTerminalIpc() ? resolveIpcSocketPath() : undefined;
+  await runTecode(argv, {
+    configDir,
+    settingsFile,
+    keybindingsFile,
+    themeFile,
+    newWindow,
+    wait,
+    ipcSocketPath,
+  });
 }
 
 // `import.meta.main` is Bun's "am I the entry point" check (true only when

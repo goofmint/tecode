@@ -50,7 +50,12 @@ export const TERMINAL_NEW_COMMAND_ID = "terminal.new";
 export default {
   id: "tecode.terminal",
   version: "0.1.0",
-  apiVersion: "1.0",
+  // 1.4, not 1.0 (Issue #158): `index.ts`'s `activate` READS
+  // `ctx.ipcSocketPath`, which only exists from API 1.4 onward — declaring
+  // 1.0 would let this extension register against a host where that
+  // property is silently always `undefined` and `TECODE_SOCK` would never
+  // reach the spawned shell (`@tecode/api`'s `API_VERSION` TSDoc).
+  apiVersion: "1.4",
   activationEvents: [`onCommand:${TERMINAL_FOCUS_COMMAND_ID}`, `onCommand:${TERMINAL_NEW_COMMAND_ID}`],
   contributes: {
     views: [{ id: TERMINAL_VIEW_ID, title: "Terminal", slot: "panel" }],

@@ -203,4 +203,22 @@ export interface ExtensionContext {
   subscriptions: Disposable[];
   /** A per-extension directory for persisting extension state. */
   storagePath: string;
+  /**
+   * The path of this instance's single-instance IPC socket (Issue #158),
+   * or `undefined` when the host has none — Windows, a headless run, or a
+   * socket that failed to open. Host-provided information, exactly like
+   * {@link storagePath}: the host owns the socket and its lifetime;
+   * extensions only ever pass the path along.
+   *
+   * Its purpose is to let a child process reach the instance that spawned
+   * it — the integrated terminal exports it to every shell it starts (as
+   * `TECODE_SOCK`), which is what makes `tecode <file>`, typed inside
+   * tecode, open the file in THAT editor instead of nesting a second one
+   * inside the terminal.
+   *
+   * An extension must not open, listen on, or delete this socket, and
+   * should treat `undefined` as "this host has no such channel" rather
+   * than as an error.
+   */
+  ipcSocketPath?: string;
 }

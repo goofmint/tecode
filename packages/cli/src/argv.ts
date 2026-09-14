@@ -249,6 +249,34 @@ export function resolveThemeFileOverride(argv: readonly string[]): string | unde
 }
 
 /**
+ * Whether `--new-window` was passed (Issue #158): opt OUT of handing the
+ * file to an already-running instance and start a separate one instead —
+ * the escape hatch for "I really do want a nested editor in this
+ * terminal", so nobody has to `unset TECODE_SOCK` by hand.
+ *
+ * A value-less boolean flag, matching `main.ts`'s own `argv.includes(
+ * "--version")` style — and deliberately NOT added to {@link VALUE_FLAGS},
+ * since nothing follows it: adding it there would make
+ * {@link resolveStartupTarget} skip the very next token, so `tecode
+ * --new-window foo.ts` would open nothing at all.
+ */
+export function hasNewWindowFlag(argv: readonly string[]): boolean {
+  return argv.includes("--new-window");
+}
+
+/**
+ * Whether `--wait` was passed (Issue #158): when this invocation delegates
+ * to an already-running instance, block until the opened document is
+ * closed there instead of exiting immediately — the `emacsclient --wait`
+ * shape that makes `tecode --wait` usable as `$EDITOR` for `git commit`.
+ * Same value-less boolean shape as {@link hasNewWindowFlag}; has no effect
+ * on an invocation that does not delegate.
+ */
+export function hasWaitFlag(argv: readonly string[]): boolean {
+  return argv.includes("--wait");
+}
+
+/**
  * Resolve the CLI's one positional argument (CodeRabbit's Phase 1 plan): a
  * directory becomes `workspaceRoot` with no initial document; a file's
  * parent directory becomes `workspaceRoot` and the file itself is opened
