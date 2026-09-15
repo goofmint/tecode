@@ -1252,6 +1252,12 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
     const { api, getContextValue, getSelections } = activateFixture(["abcdef"]);
     let tabNextCalled = false;
     api.commands.register("tab.next", async () => {
+      // Verify pre-navigation state: mark cleared and selections collapsed
+      // before the tab switch happens.
+      expect(getContextValue(MARK_KEY)).toBe(false);
+      const sels = getSelections();
+      expect(sels).toHaveLength(1);
+      expect(sels[0]!.anchor).toEqual(sels[0]!.active);
       tabNextCalled = true;
     });
     await api.commands.execute("editor.action.setMark");
@@ -1265,10 +1271,38 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
     expect(tabNextCalled).toBe(true);
   });
 
+  test("tabNextClearMark navigates to adjacent document in multi-document scenario", async () => {
+    const { api, getContextValue, getSelections, switchDocument } = activateFixture(["abcdef"]);
+    let navigatedToDoc = "";
+    api.commands.register("tab.next", async () => {
+      // Verify pre-navigation state inside the handler
+      expect(getContextValue(MARK_KEY)).toBe(false);
+      const sels = getSelections();
+      expect(sels[0]!.anchor).toEqual(sels[0]!.active);
+      // Simulate actual navigation to adjacent document
+      switchDocument("file:///other.txt");
+      navigatedToDoc = "file:///other.txt";
+    });
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.tabNextClearMark");
+
+    expect(navigatedToDoc).toBe("file:///other.txt");
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 1)]);
+  });
+
   test("tabPreviousClearMark deactivates the mark, collapses selections, then calls tab.previous", async () => {
     const { api, getContextValue, getSelections } = activateFixture(["abcdef"]);
     let tabPreviousCalled = false;
     api.commands.register("tab.previous", async () => {
+      // Verify pre-navigation state: mark cleared and selections collapsed
+      // before the tab switch happens.
+      expect(getContextValue(MARK_KEY)).toBe(false);
+      const sels = getSelections();
+      expect(sels).toHaveLength(1);
+      expect(sels[0]!.anchor).toEqual(sels[0]!.active);
       tabPreviousCalled = true;
     });
     await api.commands.execute("editor.action.setMark");
@@ -1279,6 +1313,28 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
     expect(getContextValue(MARK_KEY)).toBe(false);
     expect(getSelections()).toEqual([cursorAt(0, 1)]);
     expect(tabPreviousCalled).toBe(true);
+  });
+
+  test("tabPreviousClearMark navigates to adjacent document in multi-document scenario", async () => {
+    const { api, getContextValue, getSelections, switchDocument } = activateFixture(["abcdef"]);
+    let navigatedToDoc = "";
+    api.commands.register("tab.previous", async () => {
+      // Verify pre-navigation state inside the handler
+      expect(getContextValue(MARK_KEY)).toBe(false);
+      const sels = getSelections();
+      expect(sels[0]!.anchor).toEqual(sels[0]!.active);
+      // Simulate actual navigation to adjacent document
+      switchDocument("file:///other.txt");
+      navigatedToDoc = "file:///other.txt";
+    });
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.tabPreviousClearMark");
+
+    expect(navigatedToDoc).toBe("file:///other.txt");
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 1)]);
   });
 
   test("every command activate() registers for the mark is declared in the manifest", () => {
