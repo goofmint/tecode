@@ -282,6 +282,33 @@ under-document exactly the keys most used day to day.
 | `ctrl+shift+left` / `ctrl+shift+right` | Select word left / right |
 | `shift+home` / `shift+end` | Select to line start / end |
 | `ctrl+shift+home` / `ctrl+shift+end` | Select to document start / end |
+| `ctrl+space` | Set (or, pressed again, clear) the mark — see below |
+| `escape` | Clear the mark |
+
+### Emacs-style mark and region (editor-core)
+
+`ctrl+space` sets the **mark** at the caret. While the mark is active, the
+plain movement keys above extend the selection from the mark to the caret
+instead of collapsing it — so `ctrl+space` then `ctrl+end` selects to the
+end of the document without holding Shift — and a `Mark` indicator sits in
+the status bar (a just-set mark selects nothing yet, so the highlight
+alone would be invisible).
+
+Copy (`editor.action.clipboardCopy`) and cut (`ctrl+x`) act on the region
+and then clear the mark, like Emacs' `M-w`/`C-w`. `escape`, a second
+`ctrl+space`, or switching tabs also clears it, leaving the caret exactly
+where it was. Emacs' `C-g` is deliberately NOT used: the fallback keymap
+needs `ctrl+g` for the command palette.
+
+| Key | Command |
+|---|---|
+| `ctrl+space` | `editor.action.setMark` |
+| `escape` | `editor.action.clearMark` |
+| — (command palette / your own `keybindings.json`) | `editor.action.exchangePointAndMark` (Emacs' `C-x C-x`: swap caret and mark) |
+
+The mark is one window-wide flag, and the mark position itself is just the
+selection's anchor, so nothing about multiple cursors changes: with several
+cursors active, each one extends from its own anchor.
 
 ### Editing (editor-core, when editor text is focused)
 
