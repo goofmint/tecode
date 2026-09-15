@@ -225,12 +225,14 @@ export function createFindFileService(deps: FindFileServiceDeps): FindFileServic
 
   function close(): void {
     if (!state.isOpen) return;
+    generation += 1;
     writeState(createClosedState());
   }
 
   function setQuery(query: string): void {
     if (!state.isOpen) return;
     if (state.query === query) return;
+    generation += 1;
     // Candidates always describe the query they were computed for — a new
     // keystroke retires them (Emacs hides its `*Completions*` buffer the
     // same way).

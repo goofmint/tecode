@@ -934,22 +934,22 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
   const textPlaneNodeRef = useRef<FocusableNode | null>(null);
   const wasFindOpenRef = useRef(false);
   useEffect(() => {
-    if (wasFindOpenRef.current && !isFindOpen) {
+    if (wasFindOpenRef.current && !isFindOpen && !isFindFileOpen) {
       textPlaneNodeRef.current?.focus();
     }
     wasFindOpenRef.current = isFindOpen;
-  }, [isFindOpen]);
+  }, [isFindOpen, isFindFileOpen]);
   // The same edge-triggered "return focus to the text on close" effect for
   // the find-file minibuffer (Issue #164) — a separate ref/effect rather
   // than a combined condition, so closing one of the two widgets while the
   // other is open cannot steal focus from the one still open.
   const wasFindFileOpenRef = useRef(false);
   useEffect(() => {
-    if (wasFindFileOpenRef.current && !isFindFileOpen) {
+    if (wasFindFileOpenRef.current && !isFindFileOpen && !isFindOpen) {
       textPlaneNodeRef.current?.focus();
     }
     wasFindFileOpenRef.current = isFindFileOpen;
-  }, [isFindFileOpen]);
+  }, [isFindFileOpen, isFindOpen]);
 
   // Initial/re-focus of the text plane (Req 4.6, 6.7; Issue #82) — see this
   // component's own TSDoc above ("Initial/re-focus of the text plane" and
