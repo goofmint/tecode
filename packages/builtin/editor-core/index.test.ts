@@ -1117,6 +1117,28 @@ describe("editor-core activate() — editor.action.gotoLine (Issue #162)", () =>
     expect(getSelections()).toEqual(before);
   });
 
+  test("rejects a line value that exceeds the line count reduced during input (same-document case)", async () => {
+    const { api, getSelections, lines, showMessageCalls } = tenLineFixture();
+    const before = getSelections();
+    // Override showInputBox to simulate the same document being edited
+    // (lines deleted) while the modal is open. "8" is valid for 10 lines
+    // but not for 5. The handler re-reads api.editor.lineCount after
+    // awaiting and must reject the value.
+    Object.defineProperty(api.window, "showInputBox", {
+      configurable: true,
+      value: async () => {
+        lines.splice(5); // reduce from 10 to 5 lines
+        return "8";
+      },
+    });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    // Selections unchanged: "8" was rejected because lineCount is now 5
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls.some((m) => m.kind === "error")).toBe(true);
+  });
+
   test("unfolds the target line before revealing it (Issue #150)", async () => {
     const { api, getSelections, getCollapsedFolds, setInputBoxResponse, setFoldRanges } =
       tenLineFixture();
