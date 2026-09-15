@@ -16,6 +16,7 @@ import type {
   Document,
   Editor,
   ExtensionContext,
+  InputBoxOptions,
   LanguageContribution,
   MessageKind,
   QuickPickItem,
@@ -77,6 +78,13 @@ function createFakeApi(initialLines: string[]) {
   // every test that never touches this.
   let quickPickResponse: QuickPickItem | undefined;
   const quickPickCalls: Array<{ items: QuickPickItem[]; options?: QuickPickOptions }> = [];
+  // Issue #162: `showInputBox`'s canned response for the NEXT call
+  // (`undefined`, the default, models Escape/cancel — matching every
+  // pre-#162 test, which never touches this) plus a record of every call's
+  // options, mirroring `quickPickResponse`/`quickPickCalls` just above.
+  let inputBoxResponse: string | undefined;
+  const inputBoxCalls: InputBoxOptions[] = [];
+  const showMessageCalls: Array<{ message: string; kind?: MessageKind }> = [];
   const languageContributions = new Map<string, LanguageContribution>();
   let clipboardBuffer = "";
   // Issue #163: the mark feature's three new seams — the context-key store
@@ -87,7 +95,6 @@ function createFakeApi(initialLines: string[]) {
   let documentUri = "file:///fake.txt";
   const contextValues = new Map<string, unknown>();
   const statusBarItems = new Map<string, StatusBarItem>();
-  const messages: Array<{ message: string; kind?: MessageKind }> = [];
   const editorListeners = new Set<() => void>();
 
   function applyEditsToLines(edits: TextEdit[]): void {
@@ -224,13 +231,16 @@ function createFakeApi(initialLines: string[]) {
         return editor;
       },
       showMessage: (message: string, kind?: MessageKind) => {
-        messages.push({ message, kind });
+        showMessageCalls.push({ message, kind });
       },
       showQuickPick: async (items: QuickPickItem[], options?: QuickPickOptions) => {
         quickPickCalls.push({ items, options });
         return quickPickResponse;
       },
-      showInputBox: async () => undefined,
+      showInputBox: async (options?: InputBoxOptions) => {
+        inputBoxCalls.push(options ?? {});
+        return inputBoxResponse;
+      },
       setStatusBarItem: (item: StatusBarItem): Disposable => {
         statusBarItems.set(item.id, item);
         return { dispose: () => statusBarItems.delete(item.id) };
@@ -373,6 +383,11 @@ function createFakeApi(initialLines: string[]) {
     setQuickPickResponse: (response: QuickPickItem | undefined) => {
       quickPickResponse = response;
     },
+    inputBoxCalls,
+    setInputBoxResponse: (response: string | undefined) => {
+      inputBoxResponse = response;
+    },
+    showMessageCalls,
     setConfig,
     getSelections: () => selections,
     languageContributions,
@@ -392,7 +407,6 @@ function createFakeApi(initialLines: string[]) {
     /** Issue #163: what `tecode.context.set` has been told so far. */
     getContextValue: (key: string) => contextValues.get(key),
     getStatusBarItem: (id: string) => statusBarItems.get(id),
-    messages,
     /** Issue #163: model a tab switch — a different document becomes
      * active, then `editor.onDidChange` fires (exactly what the real
      * `EditorNamespace` does, `@tecode/api`'s own TSDoc). */
@@ -1061,10 +1075,10 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
   });
 
   test("setMark shows 'Mark set' and registers the status bar indicator", async () => {
-    const { api, messages, getStatusBarItem } = activateFixture(["abc"]);
+    const { api, showMessageCalls, getStatusBarItem } = activateFixture(["abc"]);
     await api.commands.execute("editor.action.setMark");
 
-    expect(messages).toEqual([{ message: "Mark set", kind: "info" }]);
+    expect(showMessageCalls).toEqual([{ message: "Mark set", kind: "info" }]);
     expect(getStatusBarItem(MARK_ITEM)?.side).toBe("left");
   });
 
@@ -1082,7 +1096,7 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
   });
 
   test("pressing setMark twice toggles the mark back off and collapses the region", async () => {
-    const { api, getContextValue, getSelections, getStatusBarItem, messages } =
+    const { api, getContextValue, getSelections, getStatusBarItem, showMessageCalls } =
       activateFixture(["abcdef"]);
     await api.commands.execute("editor.action.setMark");
     // While marked, movement goes through the `...Select` commands
@@ -1099,7 +1113,7 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
     expect(getStatusBarItem(MARK_ITEM)).toBeUndefined();
     // Point (`active`) never moves when the region is deactivated.
     expect(getSelections()).toEqual([cursorAt(0, 2)]);
-    expect(messages.at(-1)).toEqual({ message: "Mark deactivated", kind: "info" });
+    expect(showMessageCalls.at(-1)).toEqual({ message: "Mark deactivated", kind: "info" });
   });
 
   test("clearMark deactivates the mark and collapses onto the caret", async () => {
@@ -1366,5 +1380,150 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
       );
       expect(entry?.command).toBe("editor.action.tabPreviousClearMark");
     }
+  });
+});
+
+describe("editor-core activate() — editor.action.gotoLine (Issue #162)", () => {
+  function tenLineFixture() {
+    return activateFixture(["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"]);
+  }
+
+  test("moves the cursor to the requested 1-based line, at character 0", async () => {
+    const { api, getSelections, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse("3");
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual([cursorAt(2, 0)]);
+  });
+
+  test("prompts with validateInput wired to the current line count", async () => {
+    const { api, inputBoxCalls, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse("1");
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(inputBoxCalls).toHaveLength(1);
+    const validateInput = inputBoxCalls[0]!.validateInput!;
+    expect(validateInput("3")).toBeUndefined();
+    expect(validateInput("abc")).toBe("Enter a valid line number.");
+    expect(validateInput("999")).toBe("Line number must be between 1 and 10.");
+  });
+
+  test("Escape/cancel (undefined) is a no-op", async () => {
+    const { api, getSelections, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse(undefined);
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+  });
+
+  test("a bypassed invalid value (direct commands.execute-style fake) shows an error and does not move the cursor", async () => {
+    const { api, getSelections, setInputBoxResponse, showMessageCalls } = tenLineFixture();
+    // Simulates a caller that bypasses the input box's own `validateInput`
+    // gate — the handler must re-validate the resolved value itself
+    // (explorer's "code review fix" precedent).
+    setInputBoxResponse("999");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls).toEqual([
+      { message: "Line number must be between 1 and 10.", kind: "error" },
+    ]);
+  });
+
+  test("a bypassed empty-string value (CodeRabbit review, PR #165 2nd pass) is NOT treated as cancel — it shows an error, same as any other invalid bypassed value", async () => {
+    const { api, getSelections, setInputBoxResponse, showMessageCalls } = tenLineFixture();
+    // The real `ModalService.openInputBox` never itself resolves `""` — it
+    // only resolves `undefined` (cancel) or a value `validateGotoLineInput`
+    // already accepted — but a bypassed/fake caller could still hand one to
+    // this handler. Only `undefined` means cancelled; `""` must fall
+    // through to the same re-validation/`showMessage` path as `"999"`
+    // above, not be silently swallowed as if Escape had been pressed.
+    setInputBoxResponse("");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls).toEqual([{ message: "Enter a line number.", kind: "error" }]);
+  });
+
+  test("does nothing without an active editor", async () => {
+    const fixture = tenLineFixture();
+    const { api, inputBoxCalls } = fixture;
+    Object.defineProperty(fixture.api.window, "activeEditor", { get: () => undefined });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(inputBoxCalls).toHaveLength(0);
+  });
+
+  test("does nothing if the active document changed while the input box was open (CodeRabbit review, PR #165)", async () => {
+    const { api, getSelections } = tenLineFixture();
+    const before = getSelections();
+    const originalEditor = api.window.activeEditor!;
+    // Flips to `true` from inside the (overridden) `showInputBox` below,
+    // simulating the user switching tabs while it was still open — the
+    // handler must re-read `api.window.activeEditor?.document` AFTER the
+    // `await` and compare it against the document it started with, not
+    // reuse the `editor`/`lineCount` it captured before awaiting.
+    let switchedTabs = false;
+    Object.defineProperty(api.window, "activeEditor", {
+      configurable: true,
+      get: () => (switchedTabs ? { document: {} as Document, selections: [] } : originalEditor),
+    });
+    Object.defineProperty(api.window, "showInputBox", {
+      configurable: true,
+      value: async () => {
+        switchedTabs = true;
+        return "3";
+      },
+    });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+  });
+
+  test("rejects a line value that exceeds the line count reduced during input (same-document case)", async () => {
+    const { api, getSelections, lines, showMessageCalls } = tenLineFixture();
+    const before = getSelections();
+    // Override showInputBox to simulate the same document being edited
+    // (lines deleted) while the modal is open. "8" is valid for 10 lines
+    // but not for 5. The handler re-reads api.editor.lineCount after
+    // awaiting and must reject the value.
+    Object.defineProperty(api.window, "showInputBox", {
+      configurable: true,
+      value: async () => {
+        lines.splice(5); // reduce from 10 to 5 lines
+        return "8";
+      },
+    });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    // Selections unchanged: "8" was rejected because lineCount is now 5
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls.some((m) => m.kind === "error")).toBe(true);
+  });
+
+  test("unfolds the target line before revealing it (Issue #150)", async () => {
+    const { api, getSelections, getCollapsedFolds, setInputBoxResponse, setFoldRanges } =
+      tenLineFixture();
+    setFoldRanges([{ startLine: 2, endLine: 5 }]);
+    api.editor.setSelections([cursorAt(3, 0)]);
+    await api.commands.execute("editor.action.fold");
+    expect(getCollapsedFolds()).toEqual([{ startLine: 2, endLine: 5 }]);
+
+    setInputBoxResponse("4");
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getCollapsedFolds()).toEqual([]);
+    expect(getSelections()).toEqual([cursorAt(3, 0)]);
   });
 });

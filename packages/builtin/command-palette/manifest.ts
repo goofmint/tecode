@@ -61,6 +61,15 @@ export const SHOW_COMMANDS_COMMAND_ID = "workbench.action.showCommands";
 /** `workbench.action.quickOpen` — fuzzy file quick-open (`ctrl+p`, Req
  * 11.3). Exported so `index.ts` and tests reference the same id. */
 export const QUICK_OPEN_COMMAND_ID = "workbench.action.quickOpen";
+/** `workbench.action.showAllEditors` — lists only the currently OPEN
+ * documents and switches to the picked one (Issue #161, the
+ * `switch-to-buffer` equivalent). Unlike {@link QUICK_OPEN_COMMAND_ID} this
+ * never walks the filesystem: it reads `api.workspace.documents` directly
+ * (see `index.ts`'s `registerShowAllEditors`). No default keybinding is
+ * declared — see this constant's entry in `contributes.commands` below and
+ * the plan's "論点4" precedent (`keybindings.showResolved`, Issue #150):
+ * reachable via the palette and a user's own `keybindings.json` only. */
+export const SHOW_ALL_EDITORS_COMMAND_ID = "workbench.action.showAllEditors";
 
 export default {
   id: "tecode.command-palette",
@@ -71,6 +80,7 @@ export default {
     commands: [
       { id: SHOW_COMMANDS_COMMAND_ID, title: "Show All Commands", category: "View" },
       { id: QUICK_OPEN_COMMAND_ID, title: "Go to File...", category: "View" },
+      { id: SHOW_ALL_EDITORS_COMMAND_ID, title: "Show All Editors", category: "View" },
     ],
     keybindings: [
       { key: "ctrl+shift+p", command: SHOW_COMMANDS_COMMAND_ID },
