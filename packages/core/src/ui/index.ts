@@ -272,6 +272,46 @@ export {
 
 export { FindWidget, type FindWidgetProps } from "./findWidget";
 
+export {
+  createFindFileService,
+  FIND_FILE_MAX_CANDIDATES,
+  type FindFileService,
+  type FindFileServiceDeps,
+  type FindFileState,
+} from "./findFileService";
+
+export {
+  appendTrailingSeparator,
+  expandTilde,
+  longestCommonPrefix,
+  PATH_SEPARATOR,
+  resolvePathInput,
+  spliceCompletion,
+  splitPathInput,
+  type PathInputSplit,
+} from "./findFilePath";
+
+export {
+  createFindFileHandler,
+  FIND_FILE_ACCEPT_COMMAND,
+  FIND_FILE_CLOSE_COMMAND,
+  FIND_FILE_COMMAND_ID,
+  FIND_FILE_COMPLETE_COMMAND,
+  FIND_FILE_DEFAULT_KEYBINDINGS,
+  FIND_FILE_FOCUS_CONTEXT_KEY,
+  registerFindFileCommands,
+  type FindFileCommandDeps,
+  type FindFileCommandsRegistrar,
+} from "./findFileCommand";
+
+export {
+  FindFileWidget,
+  findFileCandidateRows,
+  findFileWidgetHeight,
+  FIND_FILE_MAX_CANDIDATE_ROWS,
+  type FindFileWidgetProps,
+} from "./findFileWidget";
+
 export { cursorCellColumn, EditorView, type EditorViewProps } from "./editorView";
 
 export {

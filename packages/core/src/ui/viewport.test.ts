@@ -15,7 +15,7 @@ import {
   type SidebarChrome,
 } from "./viewport";
 
-const NO_CHROME: EditorAreaChrome = { tabBar: 0, findWidget: 0, panel: 0, statusBar: 0 };
+const NO_CHROME: EditorAreaChrome = { tabBar: 0, findWidget: 0, findFileWidget: 0, panel: 0, statusBar: 0 };
 const NO_SIDEBAR_CHROME: SidebarChrome = { titleRow: 0, panel: 0, statusBar: 0 };
 
 describe("computeVisibleLineRange (design.md §8.3's virtualized text layer)", () => {
@@ -124,13 +124,13 @@ describe("computeEditorViewportHeight (Issue #92; design.md §8.1-§8.3)", () =>
     // old hardcoded 20-row default, with just a tab bar (3) and status bar
     // (1) drawn — the fix's whole point is that this stops being clamped
     // to 20.
-    const chrome: EditorAreaChrome = { tabBar: 3, findWidget: 0, panel: 0, statusBar: 1 };
+    const chrome: EditorAreaChrome = { tabBar: 3, findWidget: 0, findFileWidget: 0, panel: 0, statusBar: 1 };
     expect(computeEditorViewportHeight(50, chrome)).toBe(46);
     expect(computeEditorViewportHeight(50, chrome)).toBeGreaterThan(20);
   });
 
   test("every chrome region present at once subtracts all four", () => {
-    const chrome: EditorAreaChrome = { tabBar: 3, findWidget: 1, panel: 10, statusBar: 1 };
+    const chrome: EditorAreaChrome = { tabBar: 3, findWidget: 1, findFileWidget: 0, panel: 10, statusBar: 1 };
     expect(computeEditorViewportHeight(40, chrome)).toBe(25);
   });
 
@@ -140,7 +140,7 @@ describe("computeEditorViewportHeight (Issue #92; design.md §8.1-§8.3)", () =>
   });
 
   test("clamp: chrome consuming the entire terminal still yields at least 1 row, never 0 or negative", () => {
-    const chrome: EditorAreaChrome = { tabBar: 3, findWidget: 1, panel: 10, statusBar: 1 };
+    const chrome: EditorAreaChrome = { tabBar: 3, findWidget: 1, findFileWidget: 0, panel: 10, statusBar: 1 };
     // Exactly as much chrome as terminal height (15 == 3+1+10+1): a naive
     // `terminalHeight - consumed` would be 0.
     expect(computeEditorViewportHeight(15, chrome)).toBe(1);
@@ -154,7 +154,7 @@ describe("computeEditorViewportHeight (Issue #92; design.md §8.1-§8.3)", () =>
   });
 
   test("clamp at the very short terminals a real user's window could plausibly be", () => {
-    const chrome: EditorAreaChrome = { tabBar: 3, findWidget: 0, panel: 0, statusBar: 1 };
+    const chrome: EditorAreaChrome = { tabBar: 3, findWidget: 0, findFileWidget: 0, panel: 0, statusBar: 1 };
     // A 4-row terminal with just tab bar + status bar chrome (4 rows) has
     // nothing left over — still clamps to 1, not 0.
     expect(computeEditorViewportHeight(4, chrome)).toBe(1);
