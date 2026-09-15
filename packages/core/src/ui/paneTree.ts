@@ -104,6 +104,7 @@ export function splitPane(
   direction: "row" | "column",
   generateId: () => string,
 ): PaneTree {
+  if (!findLeaf(tree.root, targetId)) return tree;
   const newId = generateId();
 
   function split(node: PaneNode): PaneNode {
@@ -177,19 +178,20 @@ export function closePane(tree: PaneTree, targetId: string): PaneTree {
     if (node.kind === "leaf") return node.paneId === targetId ? null : node;
     const newChildren: PaneNode[] = [];
     const newSizes: number[] = [];
+    let leadingBonus = 0;
     for (let i = 0; i < node.children.length; i++) {
       const result = remove(node.children[i]!);
       if (result !== null) {
         newChildren.push(result);
-        newSizes.push(node.sizes[i]!);
+        newSizes.push(node.sizes[i]! + leadingBonus);
+        leadingBonus = 0;
       } else {
-        // Distribute removed size to previous sibling if any, else next
+        // Distribute removed size to previous sibling if any, else accumulate
         const bonus = node.sizes[i]!;
         if (newChildren.length > 0) {
           newSizes[newSizes.length - 1]! += bonus;
-        } else if (i + 1 < node.children.length) {
-          // Will be added to the next kept child — accumulate temporarily
-          newSizes.push(bonus);
+        } else {
+          leadingBonus += bonus;
         }
       }
     }
@@ -225,34 +227,88 @@ export function singlePane(tree: PaneTree): PaneTree {
 }
 
 // ---------------------------------------------------------------------------
+// focusDirection helpers
+// ---------------------------------------------------------------------------
+
+interface BoundingBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function computeLeafBounds(node: PaneNode, box: BoundingBox): Map<string, BoundingBox> {
+  if (node.kind === "leaf") {
+    return new Map([[node.paneId, box]]);
+  }
+  const result = new Map<string, BoundingBox>();
+  const norm = normalise(node.sizes);
+  let offset = 0;
+  for (let i = 0; i < node.children.length; i++) {
+    const frac = norm[i]!;
+    let childBox: BoundingBox;
+    if (node.direction === "row") {
+      childBox = { x: box.x + offset * box.w, y: box.y, w: frac * box.w, h: box.h };
+    } else {
+      childBox = { x: box.x, y: box.y + offset * box.h, w: box.w, h: frac * box.h };
+    }
+    offset += frac;
+    for (const [id, b] of computeLeafBounds(node.children[i]!, childBox)) {
+      result.set(id, b);
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // focusDirection
 // ---------------------------------------------------------------------------
 
 /**
  * Move focus to the nearest pane in `direction` relative to the active pane.
- * Uses a spatial heuristic: collect all leaves with their positions from a
- * bounding-box layout pass, then pick the closest in the requested axis.
+ * Computes each leaf's bounding rectangle from the split tree, then picks the
+ * geometrically nearest candidate in the requested direction.
  * If no pane exists in that direction, returns the tree unchanged.
  */
 export function focusDirection(
   tree: PaneTree,
   direction: "up" | "down" | "left" | "right",
 ): PaneTree {
-  const ids = allLeafIds(tree.root);
-  const idx = ids.indexOf(tree.activePaneId);
-  if (idx === -1) return tree;
+  const bounds = computeLeafBounds(tree.root, { x: 0, y: 0, w: 1, h: 1 });
+  const activeBounds = bounds.get(tree.activePaneId);
+  if (!activeBounds) return tree;
 
-  // Map to logical positions via document-order index
-  // "right"/"down" → next; "left"/"up" → previous in document order
-  let newIdx: number;
-  if (direction === "right" || direction === "down") {
-    newIdx = idx + 1;
-  } else {
-    newIdx = idx - 1;
+  let bestId: string | undefined;
+  let bestDistance = Infinity;
+
+  for (const [id, box] of bounds) {
+    if (id === tree.activePaneId) continue;
+
+    let inDirection: boolean;
+    let distance: number;
+
+    if (direction === "right") {
+      inDirection = box.x >= activeBounds.x + activeBounds.w - Number.EPSILON;
+      distance = box.x - (activeBounds.x + activeBounds.w);
+    } else if (direction === "left") {
+      inDirection = box.x + box.w <= activeBounds.x + Number.EPSILON;
+      distance = activeBounds.x - (box.x + box.w);
+    } else if (direction === "down") {
+      inDirection = box.y >= activeBounds.y + activeBounds.h - Number.EPSILON;
+      distance = box.y - (activeBounds.y + activeBounds.h);
+    } else {
+      inDirection = box.y + box.h <= activeBounds.y + Number.EPSILON;
+      distance = activeBounds.y - (box.y + box.h);
+    }
+
+    if (inDirection && distance < bestDistance) {
+      bestDistance = distance;
+      bestId = id;
+    }
   }
 
-  if (newIdx < 0 || newIdx >= ids.length) return tree;
-  return { ...tree, activePaneId: ids[newIdx]! };
+  if (bestId === undefined) return tree;
+  return { ...tree, activePaneId: bestId };
 }
 
 // ---------------------------------------------------------------------------
@@ -322,15 +378,33 @@ export function distributeSize(
   const safeTotal = Math.max(0, Math.trunc(total));
   const n = sizes.length;
   if (n === 0) return [];
+  // Insufficient-budget branch: total cannot honour all floors.
+  // First pane gets floor; second pane gets any remaining budget; rest get 0.
+  if (safeTotal < n * floor) {
+    const result: number[] = [];
+    let remaining = safeTotal;
+    for (let i = 0; i < n; i++) {
+      if (i === 0) {
+        result.push(floor);
+        remaining -= floor;
+      } else if (i === 1 && remaining > 0) {
+        result.push(remaining);
+        remaining = 0;
+      } else {
+        result.push(0);
+      }
+    }
+    return result;
+  }
   const normalised = normalise(sizes);
   // First pass: proportional allocation
   const raw = normalised.map((r) => Math.max(floor, Math.round(r * safeTotal)));
   // Adjust sum to match safeTotal
   let sum = raw.reduce((a, b) => a + b, 0);
-  // Trim from largest panes when over budget
+  // Trim from largest panes when over budget (no early-break: insufficient
+  // cases are handled by the branch above)
   while (sum > safeTotal) {
     const maxIdx = raw.reduce((best, v, i) => (v > raw[best]! ? i : best), 0);
-    if (raw[maxIdx]! <= floor) break;
     raw[maxIdx]!--;
     sum--;
   }
