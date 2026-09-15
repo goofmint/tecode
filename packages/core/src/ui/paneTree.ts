@@ -385,8 +385,9 @@ export function distributeSize(
     let remaining = safeTotal;
     for (let i = 0; i < n; i++) {
       if (i === 0) {
-        result.push(floor);
-        remaining -= floor;
+        const allocation = Math.min(floor, remaining);
+        result.push(allocation);
+        remaining -= allocation;
       } else if (i === 1 && remaining > 0) {
         result.push(remaining);
         remaining = 0;
