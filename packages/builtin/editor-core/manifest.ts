@@ -413,6 +413,16 @@ export default {
         title: "Exchange Point and Mark",
         category: "Editor",
       },
+      {
+        id: "editor.action.tabNextClearMark",
+        title: "Next Editor (Clear Mark)",
+        category: "Editor",
+      },
+      {
+        id: "editor.action.tabPreviousClearMark",
+        title: "Previous Editor (Clear Mark)",
+        category: "Editor",
+      },
     ],
     keybindings: [
       // Issue #163: each of these ten plain movement keys is bound TWICE —
@@ -517,6 +527,18 @@ export default {
       // and for why `escape` (not Emacs' own `ctrl+g`) clears the mark.
       { key: "ctrl+space", command: "editor.action.setMark", when: WHEN_EDITOR_TEXT_FOCUS },
       { key: "escape", command: "editor.action.clearMark", when: WHEN_MARK_ACTIVE },
+      // Issue #163: when the mark is active, tab-switching keys route through
+      // `tabNextClearMark`/`tabPreviousClearMark` so the OLD document's
+      // selections are collapsed (via `deactivateMark`) BEFORE the active URI
+      // changes. This prevents a stale region from reappearing on return.
+      { key: "ctrl+tab", command: "editor.action.tabNextClearMark", when: WHEN_MARK_ACTIVE },
+      { key: "ctrl+pagedown", command: "editor.action.tabNextClearMark", when: WHEN_MARK_ACTIVE },
+      {
+        key: "ctrl+shift+tab",
+        command: "editor.action.tabPreviousClearMark",
+        when: WHEN_MARK_ACTIVE,
+      },
+      { key: "ctrl+pageup", command: "editor.action.tabPreviousClearMark", when: WHEN_MARK_ACTIVE },
     ],
     configuration: {
       title: "Clipboard",

@@ -366,8 +366,28 @@ export function activate(ctx: ExtensionContext): void {
 
   ctx.subscriptions.push(api.commands.register("editor.action.clearMark", () => deactivateMark()));
 
+  // Issue #163: tab.next/tab.previous with active mark — collapse the OLD
+  // document's selections before the URI changes, then switch. Using
+  // `deactivateMark()` here is safe because the active document is still the
+  // OLD one (the switch hasn't happened yet), so collapsed selections land
+  // on the right document. The `onDidChange` handler's guard runs afterward
+  // but markActive is already false, so it is a no-op.
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.tabNextClearMark", async () => {
+      deactivateMark();
+      await api.commands.execute("tab.next");
+    }),
+  );
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.tabPreviousClearMark", async () => {
+      deactivateMark();
+      await api.commands.execute("tab.previous");
+    }),
+  );
+
   ctx.subscriptions.push(
     api.commands.register("editor.action.exchangePointAndMark", () => {
+      if (!markActive) return;
       const selections = api.editor.selections;
       if (selections.length === 0) return;
       // Emacs' C-x C-x: point and mark trade places, the region itself is

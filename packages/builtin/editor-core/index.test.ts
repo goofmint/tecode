@@ -1197,17 +1197,6 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
     expect(fixture.getSelections()).toEqual([]);
   });
 
-  test("every command activate() registers for the mark is declared in the manifest", () => {
-    const declared = new Set(manifest.contributes.commands.map((command) => command.id));
-    for (const id of [
-      "editor.action.setMark",
-      "editor.action.clearMark",
-      "editor.action.exchangePointAndMark",
-    ]) {
-      expect(declared.has(id)).toBe(true);
-    }
-  });
-
   test("the ten plain movement keys route to their ...Select twin while the mark is active", () => {
     // The mechanism the whole feature rests on: no movement command
     // changed, only which one each key resolves to. A key whose two
@@ -1245,5 +1234,81 @@ describe("editor-core activate() — mark/region (Issue #163)", () => {
       { key: "escape", command: "editor.action.closeFind", when: "findWidgetFocus" },
       { key: "escape", command: "editor.action.clearMark", when: "editorTextFocus && markActive" },
     ]);
+  });
+
+  test("exchangePointAndMark is a no-op when the mark is not active", async () => {
+    const { api, getSelections } = activateFixture(["abcdef"]);
+    // Build a non-collapsed selection via shift+arrow (no mark involved).
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.exchangePointAndMark");
+
+    expect(getSelections()).toEqual(before);
+  });
+
+  test("tabNextClearMark deactivates the mark, collapses selections, then calls tab.next", async () => {
+    const { api, getContextValue, getSelections } = activateFixture(["abcdef"]);
+    let tabNextCalled = false;
+    api.commands.register("tab.next", async () => {
+      tabNextCalled = true;
+    });
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.tabNextClearMark");
+
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 2)]);
+    expect(tabNextCalled).toBe(true);
+  });
+
+  test("tabPreviousClearMark deactivates the mark, collapses selections, then calls tab.previous", async () => {
+    const { api, getContextValue, getSelections } = activateFixture(["abcdef"]);
+    let tabPreviousCalled = false;
+    api.commands.register("tab.previous", async () => {
+      tabPreviousCalled = true;
+    });
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.tabPreviousClearMark");
+
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 1)]);
+    expect(tabPreviousCalled).toBe(true);
+  });
+
+  test("every command activate() registers for the mark is declared in the manifest", () => {
+    const declared = new Set(manifest.contributes.commands.map((command) => command.id));
+    for (const id of [
+      "editor.action.setMark",
+      "editor.action.clearMark",
+      "editor.action.exchangePointAndMark",
+      "editor.action.tabNextClearMark",
+      "editor.action.tabPreviousClearMark",
+    ]) {
+      expect(declared.has(id)).toBe(true);
+    }
+  });
+
+  test("ctrl+tab and related keys route to tabNextClearMark/tabPreviousClearMark when markActive", () => {
+    const bindings = manifest.contributes.keybindings;
+    const nextKeys = ["ctrl+tab", "ctrl+pagedown"];
+    const prevKeys = ["ctrl+shift+tab", "ctrl+pageup"];
+    for (const key of nextKeys) {
+      const entry = bindings.find(
+        (b) => b.key === key && b.when === "editorTextFocus && markActive",
+      );
+      expect(entry?.command).toBe("editor.action.tabNextClearMark");
+    }
+    for (const key of prevKeys) {
+      const entry = bindings.find(
+        (b) => b.key === key && b.when === "editorTextFocus && markActive",
+      );
+      expect(entry?.command).toBe("editor.action.tabPreviousClearMark");
+    }
   });
 });
