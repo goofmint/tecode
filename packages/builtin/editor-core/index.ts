@@ -101,6 +101,7 @@ import type {
 import { buildBracketEditBatch } from "./brackets";
 import { buildClipboardText, buildCutResult, buildPasteResult } from "./clipboard";
 import { buildToggleLineCommentResult } from "./comments";
+import { resolveGotoLinePosition, validateGotoLineInput } from "./gotoLine";
 import {
   buildBackspaceEdit,
   buildDeleteEdit,
@@ -254,6 +255,73 @@ export function activate(ctx: ExtensionContext): void {
   registerMovement("editor.action.cursorEndSelect", moveLineEnd, true);
   registerMovement("editor.action.cursorTopSelect", () => moveDocumentStart(), true);
   registerMovement("editor.action.cursorBottomSelect", (r) => moveDocumentEnd(r), true);
+
+  // Issue #162: goto-line — the one movement-adjacent command that isn't a
+  // `registerMovement` (this module's TSDoc's shape for those): it prompts
+  // via `showInputBox` first, so it needs its own async handler. Follows
+  // `save`'s guard style (return with no active editor) and explorer's
+  // `registerCreateCommands`/`registerRenameCommand` precedent (`showInputBox`
+  // + `validateInput`, then re-validate the resolved value defensively —
+  // `validateInput` only gates the input box UI, not a programmatic
+  // `commands.execute` call).
+  ctx.subscriptions.push(
+    api.commands.register("editor.action.gotoLine", async () => {
+      const editor = api.window.activeEditor;
+      if (!editor) return;
+      // Held across the `await` below, so the re-check after it can tell
+      // whether the user switched tabs while the input box was open — see
+      // this constant's use just after `showInputBox` resolves.
+      const document = editor.document;
+      const value = await api.window.showInputBox({
+        prompt: "Go to line",
+        validateInput: (v) => validateGotoLineInput(v, api.editor.lineCount),
+      });
+      // CodeRabbit review (PR #165, 2nd pass): only `undefined` means
+      // cancelled (Escape, or a superseded modal — `ModalService`'s own
+      // "cancel() always resolves undefined" contract). An empty string is
+      // NOT a cancellation — the real `ModalService.openInputBox` never
+      // actually resolves one itself (`accept()` only resolves once
+      // `validateInput` reports no error, and `validateGotoLineInput`
+      // already rejects `""`), but a bypassed/fake caller could still hand
+      // one to this handler, and that case must fall through to the same
+      // re-validation/`showMessage` path as any other invalid bypassed
+      // value below, not be silently swallowed here as if the user had
+      // pressed Escape.
+      if (value === undefined) return;
+      // CodeRabbit review (PR #165): `api.editor`/`api.editor.folds` always
+      // read whatever is CURRENTLY active, not the editor this handler
+      // started with. If the active document changed while `showInputBox`
+      // was awaited, a document that was active when the modal opened may
+      // no longer be active (or may have been edited, changing its own line
+      // count) — applying the old position could hand `setSelections` an
+      // out-of-range position on the wrong document. `api.window.
+      // activeEditor !== editor` cannot detect this: `activeEditor` returns
+      // a freshly-cloned wrapper on every read (`create.ts`'s TSDoc), so
+      // that comparison is always `true`. Comparing the ORIGINAL `editor.
+      // document` reference against the current `activeEditor?.document`
+      // is the stable check instead — re-reading `api.editor.lineCount`
+      // and re-validating/re-resolving against it only when they still
+      // match keeps a stale-tab jump a documented no-op rather than a
+      // wrong-document (or out-of-range) selection write.
+      if (api.window.activeEditor?.document !== document) return;
+      const currentLineCount = api.editor.lineCount;
+      const error = validateGotoLineInput(value, currentLineCount);
+      if (error) {
+        api.window.showMessage(error, "error");
+        return;
+      }
+      const position = resolveGotoLinePosition(value, currentLineCount);
+      // Issue #150: reveal the target line even when it sits inside a
+      // collapsed fold — unfold BEFORE writing the selection, matching
+      // `folds.unfold`'s own contract (it reads/updates the live fold
+      // mapping, which `setSelections`' reveal derivation reads next
+      // render).
+      api.editor.folds.unfold(position.line);
+      api.editor.setSelections([
+        { start: position, end: position, anchor: position, active: position },
+      ]);
+    }),
+  );
 
   /** Register an editing command (Req 11.1): build the multi-cursor edit
    * batch (`editing.ts`'s `buildEditBatch`), apply it through the active
