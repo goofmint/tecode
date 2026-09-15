@@ -24,6 +24,7 @@ import {
   createEditorSessionService,
   createExtensionHost,
   createFileSystem,
+  createFindFileService,
   createFindService,
   createFoldController,
   createFoldService,
@@ -44,6 +45,7 @@ import {
   createWindowMessageService,
   loadExtensions,
   loadFallbackKeybindings,
+  FIND_FILE_DEFAULT_KEYBINDINGS,
   MODAL_DEFAULT_KEYBINDINGS,
   PANEL_HEIGHT_DEFAULT_KEYBINDINGS,
   parseJsonc,
@@ -51,6 +53,7 @@ import {
   registerCoreConfiguration,
   registerExtensionsReloadCommand,
   registerKeybindingsCommands,
+  registerFindFileCommands,
   registerModalCommands,
   registerOpenFileCommand,
   registerPanelHeightCommands,
@@ -80,6 +83,7 @@ import {
   type EditorInputRouter,
   type EditorSessionService,
   type ExtensionHost,
+  type FindFileService,
   type FindService,
   type FoldController,
   type FoldService,
@@ -108,6 +112,7 @@ import {
   builtinThemeAssets,
 } from "@tecode/builtin";
 import { readFile as nodeReadFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join as joinPath, resolve as resolvePath } from "node:path";
 import {
   resolveConfigDirOverride,
@@ -492,6 +497,14 @@ export interface AssemblyRoot {
    * execute` and a keystroke typed into the widget both operate on the
    * exact same live state. */
   findService: FindService;
+  /** Issue #164's find-file minibuffer state (`ui/findFileService.ts`) —
+   * read by the rendered `Shell`'s `FindFileWidget` and written by
+   * {@link findFileCommands}' handlers. */
+  findFileService: FindFileService;
+  /** The `workbench.action.files.findFile` + `findFile.*` registrations
+   * (Issue #164, `ui/findFileCommand.ts`) — disposed alongside
+   * {@link openFileCommand}, same reasoning. */
+  findFileCommands: Disposable;
   /** The language registry (Task 2.8, Req 8.1-8.3, `languages/
    * languageRegistry.ts`): resolves a document's `languageId` from its
    * extension (`DocumentManagerDeps.resolveLanguageId`, wired below,
@@ -917,6 +930,7 @@ export function buildAssemblyRoot(
   // same reasoning.
   const keymap = createKeymapState(log, [
     ...MODAL_DEFAULT_KEYBINDINGS,
+    ...FIND_FILE_DEFAULT_KEYBINDINGS,
     ...TAB_DEFAULT_KEYBINDINGS,
     ...SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS,
     ...PANEL_HEIGHT_DEFAULT_KEYBINDINGS,
@@ -1215,6 +1229,21 @@ export function buildAssemblyRoot(
   // rendered `Shell`'s `FindWidget` share one live state, exactly like
   // `editorSession` itself is shared above.
   const findService = createFindService({ editorSession });
+  // Issue #164's find-file minibuffer: built here, alongside `findService`,
+  // for the same reason — it closes over the SAME `editorSession` every
+  // other active-editor-scoped service does (its initial path is the active
+  // document's own directory), and the rendered `Shell` reads its state
+  // directly. `executeCommand` is `commands.execute` narrowed to a
+  // function: the ONE command it ever runs is
+  // `workbench.action.files.openUri`, registered further down
+  // (`findFileService.ts`'s "Deliberately thin about opening files").
+  const findFileService = createFindFileService({
+    editorSession,
+    rootUri: pathToUri(workspaceRoot),
+    fs,
+    homeDir: homedir(),
+    executeCommand: (id, ...args) => commands.execute(id, ...args),
+  });
   // Issue #150: the fold controller joins `foldService` (which regions can
   // fold) to `editorSession` (which of them this tab has collapsed). Built
   // right after `findService` for the same reason that one is built here —
@@ -1294,6 +1323,15 @@ export function buildAssemblyRoot(
     editorSession,
     log,
   });
+
+  // `workbench.action.files.findFile` + the three widget-scoped
+  // `findFile.*` commands (Issue #164, `ui/findFileCommand.ts`'s TSDoc):
+  // another PRIVILEGED registration straight on `commands`, closing over
+  // `findFileService` directly — same privilege-boundary reasoning as
+  // `openFileCommand` above. Only the three WIDGET bindings are defaults
+  // (already fed into `keymap`'s `defaults` layer above); the command that
+  // OPENS the minibuffer deliberately ships without one.
+  const findFileCommands = registerFindFileCommands(commands, { findFileService });
 
   // The 4 `tab.*` commands (Task 3.5, Req 6.5, `ui/tabCommands.ts`'s
   // TSDoc): another PRIVILEGED registration straight on `commands`,
@@ -1421,6 +1459,7 @@ export function buildAssemblyRoot(
     panelHeightConfigSync,
     themeSelectCommand,
     openFileCommand,
+    findFileCommands,
     tabCommands,
     extensionsReloadCommand,
     keybindingsCommands,
@@ -1435,6 +1474,7 @@ export function buildAssemblyRoot(
     chordPendingIndicator,
     editorSession,
     findService,
+    findFileService,
     foldController,
     languageRegistry,
     highlightService,
@@ -1798,6 +1838,11 @@ export interface ShutdownRoot {
   showPanelCommand: Pick<Disposable, "dispose">;
   sidebarVisibilityCommand: Pick<Disposable, "dispose">;
   findService: Pick<Disposable, "dispose">;
+  /** Issue #164's find-file service/command registrations — disposed
+   * alongside {@link findService}, same "inert in-memory object, but its
+   * listeners/ids must go" reasoning. */
+  findFileService: Pick<Disposable, "dispose">;
+  findFileCommands: Pick<Disposable, "dispose">;
   foldController: Pick<Disposable, "dispose">;
   editorSession: Pick<Disposable, "dispose">;
   editorLangIdSync: Pick<Disposable, "dispose">;
@@ -1906,6 +1951,8 @@ export function createShutdown(root: ShutdownRoot, deps: ShutdownDeps = {}): () 
       root.chordPendingIndicator.dispose();
       root.chordMachine.dispose();
       root.findService.dispose();
+      root.findFileService.dispose();
+      root.findFileCommands.dispose();
       root.foldController.dispose();
       root.editorSession.dispose();
       root.editorLangIdSync.dispose();
@@ -2467,6 +2514,7 @@ export async function runTecode(
     config: root.config,
     editorSession: root.editorSession,
     findService: root.findService,
+    findFileService: root.findFileService,
     highlightService: root.highlightService,
     foldController: root.foldController,
     chordMachine: root.chordMachine,

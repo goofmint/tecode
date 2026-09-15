@@ -65,6 +65,9 @@ import { RegisteredView, Tabs, type TabItem } from "./components";
 import type { EditorSessionService } from "./editorSession";
 import { createInitialEditorState, type EditorState } from "./editorState";
 import { EditorView } from "./editorView";
+import { FIND_FILE_FOCUS_CONTEXT_KEY } from "./findFileCommand";
+import type { FindFileService, FindFileState } from "./findFileService";
+import { FindFileWidget, findFileWidgetHeight } from "./findFileWidget";
 import type { FindService } from "./findService";
 import type { HighlightService } from "../languages/highlightService";
 import type { FoldController } from "./foldController";
@@ -245,6 +248,37 @@ function useLayoutState(
   );
 
   return [state, update];
+}
+
+/** Seeds React state from `findFileService.getState()` and keeps it in sync
+ * with the service across every `onDidChange` (Issue #164) — the find-file
+ * minibuffer's state lives in the service, not in `EditorState`
+ * (`findFileService.ts`'s "One global state, not per-tab"), so `EditorArea`
+ * needs its own subscription to see it at all.
+ *
+ * Same subscribe-then-re-sync shape as {@link useLayoutState}/
+ * {@link useSlotViews} above, including the post-subscribe `setState` that
+ * closes the identical render-before-subscribe race those hooks document.
+ * `undefined` for a caller/test that wires no service (matching every other
+ * optional-dependency fallback in this module) — the widget then never
+ * renders, and no chrome row is reserved for it. */
+function useFindFileState(
+  findFileService: Pick<FindFileService, "getState" | "onDidChange"> | undefined,
+): FindFileState | undefined {
+  const [state, setState] = useState<FindFileState | undefined>(() => findFileService?.getState());
+
+  useEffect(() => {
+    if (!findFileService) {
+      setState(undefined);
+      return undefined;
+    }
+    const sub = findFileService.onDidChange(() => setState(findFileService.getState()));
+    // Closes the subscribe-after-render race — see this function's TSDoc.
+    setState(findFileService.getState());
+    return () => sub.dispose();
+  }, [findFileService]);
+
+  return state;
 }
 
 /* ------------------------------------------------------------------ */
@@ -698,6 +732,15 @@ export interface EditorAreaProps {
    * own TSDoc). Narrowed to the 3 actions `findWidget.tsx` actually calls.
    */
   findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
+  /**
+   * Backs the `FindFileWidget` sibling below the text plane (Issue #164) —
+   * omitted entirely (no `<FindFileWidget>` renders, and no chrome row is
+   * reserved for one) for a caller that never wires a `FindFileService`
+   * into `Shell`, matching `findService` above. Narrowed to the one action
+   * the widget drives plus the two reads `useFindFileState` subscribes
+   * with.
+   */
+  findFileService?: Pick<FindFileService, "setQuery" | "getState" | "onDidChange">;
   /** Threaded straight through to `EditorView` (Req 8.1, design.md §10) —
    * see `EditorViewProps.highlightService`'s TSDoc. Optional, matching
    * `findService`/`config` above: a caller/test that omits it gets
@@ -867,12 +910,21 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
   // so the chrome height calculation can never drift from what's actually
   // drawn.
   const findWidgetVisible = Boolean(find && isFindOpen && props.findService);
+  // The find-file minibuffer (Issue #164) — same discipline as
+  // `findWidgetVisible` above: ONE condition, and ONE height
+  // (`findFileWidget.tsx`'s own `findFileWidgetHeight`, which the widget
+  // itself also uses), shared by the chrome math and the JSX below so
+  // neither can drift from what is actually drawn.
+  const findFileState = useFindFileState(props.findFileService);
+  const isFindFileOpen = findFileState?.isOpen ?? false;
+  const findFileWidgetVisible = Boolean(findFileState && isFindFileOpen && props.findFileService);
 
   // Issue #92 — see this component's own TSDoc.
   const terminalHeight = useLiveTerminalDimensions()?.height;
   const chrome: EditorAreaChrome = {
     tabBar: tabs.length > 0 ? TAB_BAR_HEIGHT : 0,
     findWidget: findWidgetVisible ? FIND_WIDGET_HEIGHT : 0,
+    findFileWidget: findFileWidgetVisible && findFileState ? findFileWidgetHeight(findFileState) : 0,
     panel: props.panelVisible ? (props.panelHeight ?? 0) : 0,
     statusBar: STATUS_BAR_HEIGHT,
   };
@@ -887,6 +939,17 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
     }
     wasFindOpenRef.current = isFindOpen;
   }, [isFindOpen]);
+  // The same edge-triggered "return focus to the text on close" effect for
+  // the find-file minibuffer (Issue #164) — a separate ref/effect rather
+  // than a combined condition, so closing one of the two widgets while the
+  // other is open cannot steal focus from the one still open.
+  const wasFindFileOpenRef = useRef(false);
+  useEffect(() => {
+    if (wasFindFileOpenRef.current && !isFindFileOpen) {
+      textPlaneNodeRef.current?.focus();
+    }
+    wasFindFileOpenRef.current = isFindFileOpen;
+  }, [isFindFileOpen]);
 
   // Initial/re-focus of the text plane (Req 4.6, 6.7; Issue #82) — see this
   // component's own TSDoc above ("Initial/re-focus of the text plane" and
@@ -923,9 +986,11 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
       focusContext?.get<boolean>(QUICK_PICK_FOCUS_CONTEXT_KEY) ||
       focusContext?.get<boolean>(INPUT_BOX_FOCUS_CONTEXT_KEY) ||
       focusContext?.get<boolean>("findWidgetFocus") ||
+      focusContext?.get<boolean>(FIND_FILE_FOCUS_CONTEXT_KEY) ||
       focusContext?.get<boolean>("explorerFocus") ||
       focusContext?.get<boolean>("terminalFocus") ||
-      isFindOpen
+      isFindOpen ||
+      isFindFileOpen
     ) {
       return;
     }
@@ -938,7 +1003,7 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
     // rather than racing a second `.focus()` call on the same node.
     pendingFocusUriRef.current = undefined;
     textPlaneNodeRef.current?.focus();
-  }, [focusContext, isFindOpen]);
+  }, [focusContext, isFindOpen, isFindFileOpen]);
 
   useEffect(() => {
     const uri = props.activeDocument?.uri;
@@ -1037,6 +1102,9 @@ export function EditorArea(props: EditorAreaProps): ReactNode {
           </text>
         )}
       </box>
+      {findFileWidgetVisible && findFileState && props.findFileService ? (
+        <FindFileWidget state={findFileState} findFileService={props.findFileService} />
+      ) : null}
     </box>
   );
 }
@@ -1205,6 +1273,10 @@ export interface ShellProps {
    * sibling (Req 11.1, design.md §13) — see `EditorAreaProps.findService`'s
    * TSDoc. */
   findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
+  /** Threaded straight through to `EditorArea` for its `FindFileWidget`
+   * sibling (Issue #164) — see `EditorAreaProps.findFileService`'s
+   * TSDoc. */
+  findFileService?: Pick<FindFileService, "setQuery" | "getState" | "onDidChange">;
   /** Threaded straight through to `EditorArea` for `EditorView`'s syntax
    * highlighting (Req 8.1, design.md §10) — see
    * `EditorAreaProps.highlightService`'s TSDoc. */
@@ -1498,6 +1570,7 @@ export function Shell(props: ShellProps): ReactNode {
           activeEditorState={activeDocument ? getOrCreateEditorState(activeDocument.uri) : undefined}
           config={props.config}
           findService={props.findService}
+          findFileService={props.findFileService}
           highlightService={props.highlightService}
           foldController={props.foldController}
           panelVisible={layout.panelVisible}
