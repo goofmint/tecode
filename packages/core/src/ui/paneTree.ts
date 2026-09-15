@@ -204,9 +204,10 @@ export function closePane(tree: PaneTree, targetId: string): PaneTree {
   if (newRoot === null) return tree;
 
   const remainingIds = allLeafIds(newRoot);
+  const targetIndex = ids.indexOf(targetId);
   const newActiveId =
     tree.activePaneId === targetId
-      ? (remainingIds[0] ?? tree.activePaneId)
+      ? (remainingIds[targetIndex] ?? remainingIds[targetIndex - 1] ?? tree.activePaneId)
       : tree.activePaneId;
 
   return { root: newRoot, activePaneId: newActiveId };
@@ -280,30 +281,45 @@ export function focusDirection(
 
   let bestId: string | undefined;
   let bestDistance = Infinity;
+  let bestOrthogonal = Infinity;
 
   for (const [id, box] of bounds) {
     if (id === tree.activePaneId) continue;
 
     let inDirection: boolean;
     let distance: number;
+    let orthogonal: number;
+
+    const activeCX = activeBounds.x + activeBounds.w / 2;
+    const activeCY = activeBounds.y + activeBounds.h / 2;
+    const boxCX = box.x + box.w / 2;
+    const boxCY = box.y + box.h / 2;
 
     if (direction === "right") {
       inDirection = box.x >= activeBounds.x + activeBounds.w - Number.EPSILON;
       distance = box.x - (activeBounds.x + activeBounds.w);
+      orthogonal = Math.abs(boxCY - activeCY);
     } else if (direction === "left") {
       inDirection = box.x + box.w <= activeBounds.x + Number.EPSILON;
       distance = activeBounds.x - (box.x + box.w);
+      orthogonal = Math.abs(boxCY - activeCY);
     } else if (direction === "down") {
       inDirection = box.y >= activeBounds.y + activeBounds.h - Number.EPSILON;
       distance = box.y - (activeBounds.y + activeBounds.h);
+      orthogonal = Math.abs(boxCX - activeCX);
     } else {
       inDirection = box.y + box.h <= activeBounds.y + Number.EPSILON;
       distance = activeBounds.y - (box.y + box.h);
+      orthogonal = Math.abs(boxCX - activeCX);
     }
 
-    if (inDirection && distance < bestDistance) {
-      bestDistance = distance;
-      bestId = id;
+    if (inDirection) {
+      const sameDist = Math.abs(distance - bestDistance) < Number.EPSILON;
+      if (distance < bestDistance || (sameDist && orthogonal < bestOrthogonal)) {
+        bestDistance = distance;
+        bestOrthogonal = orthogonal;
+        bestId = id;
+      }
     }
   }
 
