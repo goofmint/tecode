@@ -272,10 +272,9 @@ export function activate(ctx: ExtensionContext): void {
       // whether the user switched tabs while the input box was open — see
       // this constant's use just after `showInputBox` resolves.
       const document = editor.document;
-      const lineCount = api.editor.lineCount;
       const value = await api.window.showInputBox({
         prompt: "Go to line",
-        validateInput: (v) => validateGotoLineInput(v, lineCount),
+        validateInput: (v) => validateGotoLineInput(v, api.editor.lineCount),
       });
       // CodeRabbit review (PR #165, 2nd pass): only `undefined` means
       // cancelled (Escape, or a superseded modal — `ModalService`'s own
@@ -292,10 +291,10 @@ export function activate(ctx: ExtensionContext): void {
       // CodeRabbit review (PR #165): `api.editor`/`api.editor.folds` always
       // read whatever is CURRENTLY active, not the editor this handler
       // started with. If the active document changed while `showInputBox`
-      // was awaited, the `lineCount` captured above belongs to a document
-      // that may no longer be active (or may have been edited, changing
-      // its own line count) — applying it as-is could hand `setSelections`
-      // an out-of-range position on the wrong document. `api.window.
+      // was awaited, a document that was active when the modal opened may
+      // no longer be active (or may have been edited, changing its own line
+      // count) — applying the old position could hand `setSelections` an
+      // out-of-range position on the wrong document. `api.window.
       // activeEditor !== editor` cannot detect this: `activeEditor` returns
       // a freshly-cloned wrapper on every read (`create.ts`'s TSDoc), so
       // that comparison is always `true`. Comparing the ORIGINAL `editor.
