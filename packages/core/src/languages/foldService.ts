@@ -33,13 +33,13 @@
  * anyway for a fraction of the saving.
  */
 
-import type { Disposable, DocumentChangeEvent, Event, FoldRange, TextEdit, Uri } from "@tecode/api";
+import type { Disposable, DocumentChangeEvent, Event, FoldRange, Uri } from "@tecode/api";
 import { createListenerSet } from "../util/listenerSet";
+import { applyIncrementalEdits, disposeParsedDocumentState } from "./treeEdits";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
 import { createLineBuffer } from "../buffer/lineBuffer";
-import { comparePositions } from "../editor/positionTransform";
-import type { HostError, HostLog, StatusSink } from "../host/errors";
+import { reportHostError, type HostError, type HostLog, type StatusSink } from "../host/errors";
 import type { AssetResolver } from "./assetResolver";
 import { PLAINTEXT_LANGUAGE_ID, type LanguageRegistry } from "./languageRegistry";
 import {
@@ -140,20 +140,7 @@ export function createFoldService(deps: FoldServiceDeps): FoldService {
   const changes = createListenerSet<void>();
   let disposed = false;
 
-  /** Guarded `log.append`/`sink.error` — a broken log/sink must never break
-   * the pipeline it is reporting on. */
-  function reportSafely(err: HostError): void {
-    try {
-      log.append("warning", err);
-    } catch {
-      // Swallowed — reporting a reporting failure has nowhere left to go.
-    }
-    try {
-      sink.error(err);
-    } catch {
-      // Swallowed — see above.
-    }
-  }
+  const reportSafely = (err: HostError): void => reportHostError(log, sink, err);
 
   function warnOnce(languageId: string, cause: unknown): void {
     if (warnedLanguages.has(languageId)) return;
@@ -253,23 +240,7 @@ export function createFoldService(deps: FoldServiceDeps): FoldService {
     // edit is folded into that first parse rather than lost.
     if (!assets || !state.tree) return;
 
-    const oldBuffer = createLineBuffer(state.lastText || "\n", "\n");
-    // Bottom-up (descending start position) — the same order
-    // `document.ts`'s `buffer.applyEdits` and `highlightService.ts`'s
-    // `handleChange` both use, and what makes every edit's pre-batch
-    // offsets valid to apply in sequence.
-    const sortedEdits = Array.from(event.edits).sort((a: TextEdit, b: TextEdit) =>
-      comparePositions(b.range.start, a.range.start),
-    );
-    for (const edit of sortedEdits) {
-      state.tree.edit({
-        startIndex: oldBuffer.offsetAt(edit.range.start),
-        oldEndIndex: oldBuffer.offsetAt(edit.range.end),
-        insertedText: edit.newText,
-        startPosition: { row: edit.range.start.line, column: edit.range.start.character },
-        oldEndPosition: { row: edit.range.end.line, column: edit.range.end.character },
-      });
-    }
+    applyIncrementalEdits(state.tree, state.lastText, event.edits);
 
     const oldTree = state.tree;
     const text = document.getText();
@@ -315,8 +286,7 @@ export function createFoldService(deps: FoldServiceDeps): FoldService {
   function detachDocument(uri: Uri): void {
     const state = states.get(uri);
     if (!state) return;
-    state.documentSub?.dispose();
-    state.tree?.dispose?.();
+    disposeParsedDocumentState(state);
     states.delete(uri);
   }
 
@@ -349,8 +319,7 @@ export function createFoldService(deps: FoldServiceDeps): FoldService {
     openSub.dispose();
     closeSub.dispose();
     for (const state of states.values()) {
-      state.documentSub?.dispose();
-      state.tree?.dispose?.();
+      disposeParsedDocumentState(state);
     }
     states.clear();
     changes.clear();

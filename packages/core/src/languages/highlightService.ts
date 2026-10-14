@@ -80,11 +80,11 @@
 
 import type { Disposable, DocumentChangeEvent, Event, TextEdit, Uri } from "@tecode/api";
 import { createListenerSet } from "../util/listenerSet";
+import { applyIncrementalEdits, disposeParsedDocumentState } from "./treeEdits";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
 import { createLineBuffer, type LineBuffer } from "../buffer/lineBuffer";
-import { comparePositions } from "../editor/positionTransform";
-import type { HostError, HostLog, StatusSink } from "../host/errors";
+import { reportHostError, type HostError, type HostLog, type StatusSink } from "../host/errors";
 import type { AssetResolver } from "./assetResolver";
 import { PLAINTEXT_LANGUAGE_ID, type LanguageRegistry } from "./languageRegistry";
 import {
@@ -261,21 +261,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
   const changes = createListenerSet<void>();
   let disposed = false;
 
-  /** Guarded `log.append`/`sink.error` (matches `documentManager.ts`'s
-   * `logSafely`/`notifySafely`) — a broken log/sink must never break the
-   * pipeline it's reporting on. */
-  function reportSafely(err: HostError): void {
-    try {
-      log.append("warning", err);
-    } catch {
-      // Swallowed — reporting a reporting failure has nowhere left to go.
-    }
-    try {
-      sink.error(err);
-    } catch {
-      // Swallowed — see above.
-    }
-  }
+  const reportSafely = (err: HostError): void => reportHostError(log, sink, err);
 
   /** Warn exactly once per language (this module's TSDoc's "Failure
    * degradation") — every load attempt for a language beyond the first
@@ -577,23 +563,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     // lost, just folded into that first parse.
     if (!assets || !state.tree) return;
 
-    const oldBuffer = createLineBuffer(state.lastText || "\n", "\n");
-    // Bottom-up (descending start position) — matches `document.ts`'s own
-    // `buffer.applyEdits` order, and is what makes every edit's pre-batch
-    // offsets valid to apply in sequence (this module's TSDoc's
-    // "Incremental edits").
-    const sortedEdits = Array.from(event.edits).sort((a: TextEdit, b: TextEdit) =>
-      comparePositions(b.range.start, a.range.start),
-    );
-    for (const edit of sortedEdits) {
-      state.tree.edit({
-        startIndex: oldBuffer.offsetAt(edit.range.start),
-        oldEndIndex: oldBuffer.offsetAt(edit.range.end),
-        insertedText: edit.newText,
-        startPosition: { row: edit.range.start.line, column: edit.range.start.character },
-        oldEndPosition: { row: edit.range.end.line, column: edit.range.end.character },
-      });
-    }
+    const { sortedEdits, oldBuffer } = applyIncrementalEdits(state.tree, state.lastText, event.edits);
 
     // Re-parse incrementally, then recompute spans for ONLY the dirty line
     // range when the backend supports it ({@link spliceLineSpans}), falling
@@ -656,11 +626,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
   function detachDocument(uri: Uri): void {
     const state = states.get(uri);
     if (!state) return;
-    state.documentSub?.dispose();
-    // Free this document's tree immediately rather than waiting on GC
-    // (this module's TSDoc / `parserBackend.ts`'s `ParserTree.dispose`
-    // TSDoc, Req 13.1 finding).
-    state.tree?.dispose?.();
+    disposeParsedDocumentState(state);
     states.delete(uri);
   }
 
@@ -688,9 +654,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     openSub.dispose();
     closeSub.dispose();
     for (const state of states.values()) {
-      state.documentSub?.dispose();
-      // Same "free now, don't wait on GC" reasoning as `detachDocument`.
-      state.tree?.dispose?.();
+      disposeParsedDocumentState(state);
     }
     states.clear();
     changes.clear();
