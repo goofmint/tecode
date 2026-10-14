@@ -78,7 +78,8 @@
  * no repeat warning, ever again for the life of this service instance.
  */
 
-import type { Disposable, DocumentChangeEvent, Event, Listener, TextEdit, Uri } from "@tecode/api";
+import type { Disposable, DocumentChangeEvent, Event, TextEdit, Uri } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
 import { createLineBuffer, type LineBuffer } from "../buffer/lineBuffer";
@@ -257,19 +258,8 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
   const states = new Map<Uri, DocState>();
   const languageAssets = new Map<string, Promise<LanguageAssets | undefined>>();
   const warnedLanguages = new Set<string>();
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>();
   let disposed = false;
-
-  function fireChange(): void {
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures — matches every other `onDidChange` in
-        // this codebase.
-      }
-    }
-  }
 
   /** Guarded `log.append`/`sink.error` (matches `documentManager.ts`'s
    * `logSafely`/`notifySafely`) — a broken log/sink must never break the
@@ -573,7 +563,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     state.tree = backend.parse(assets.language, text, state.tree);
     state.lastText = text;
     recomputeLineSpans(state, assets, text);
-    fireChange();
+    changes.emit(undefined);
   }
 
   function handleChange(uri: Uri, document: CoreDocument, event: DocumentChangeEvent): void {
@@ -632,7 +622,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
       // for a hypothetical backend/mock that reused the same object.
       if (oldTree !== state.tree) oldTree.dispose?.();
     }
-    fireChange();
+    changes.emit(undefined);
   }
 
   function attachDocument(document: CoreDocument): void {
@@ -692,18 +682,6 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     return state.lineSpans.get(line) ?? EMPTY_SPANS;
   }
 
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
-  }
-
   function dispose(): void {
     if (disposed) return;
     disposed = true;
@@ -715,7 +693,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
       state.tree?.dispose?.();
     }
     states.clear();
-    listeners.clear();
+    changes.clear();
   }
 
   function whenIdle(): Promise<void> {
@@ -725,5 +703,5 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     return Promise.all(Array.from(languageAssets.values())).then(() => undefined);
   }
 
-  return { getSpansForLine, onDidChange, whenIdle, dispose };
+  return { getSpansForLine, onDidChange: changes.on, whenIdle, dispose };
 }

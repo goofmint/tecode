@@ -10,6 +10,7 @@
  */
 
 export { describeError } from "./errors";
+export { createListenerSet, type ListenerSet } from "./listenerSet";
 export { fuzzyMatch, type FuzzyMatchResult } from "./fuzzyMatch";
 export { evaluateWhen, filterByWhen, type WhenContextGetter } from "./whenFilter";
 export {

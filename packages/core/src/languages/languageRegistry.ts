@@ -39,7 +39,8 @@
  */
 
 import { extname } from "node:path";
-import type { Disposable, Event, LanguageContribution, Listener, Uri } from "@tecode/api";
+import type { Disposable, Event, LanguageContribution, Uri } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 import type { PendingLanguageContribution } from "../host/registration";
 import { uriToPath } from "../buffer/uri";
 
@@ -129,21 +130,8 @@ export function createLanguageRegistry(): LanguageRegistry {
   // so `resolveLanguageId` (called on every document open, Req 8.3) is
   // always a single hash lookup.
   const extensionMap = new Map<string, string>();
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>();
   let disposed = false;
-
-  function fireChange(): void {
-    // Snapshot before iterating, isolate listener failures — matches every
-    // other `onDidChange` in this codebase.
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures (matches `findService.ts`/
-        // `themeRegistry.ts`'s own `fireChange`).
-      }
-    }
-  }
 
   function removeFromExtensionMap(languageId: string): void {
     for (const [ext, id] of Array.from(extensionMap.entries())) {
@@ -165,7 +153,7 @@ export function createLanguageRegistry(): LanguageRegistry {
     removeFromExtensionMap(contribution.id);
     entries.set(contribution.id, { contribution, baseDir });
     addToExtensionMap(contribution);
-    fireChange();
+    changes.emit(undefined);
 
     let entryDisposed = false;
     return {
@@ -179,7 +167,7 @@ export function createLanguageRegistry(): LanguageRegistry {
         if (entries.get(contribution.id)?.contribution !== contribution) return;
         entries.delete(contribution.id);
         removeFromExtensionMap(contribution.id);
-        fireChange();
+        changes.emit(undefined);
       },
     };
   }
@@ -227,22 +215,10 @@ export function createLanguageRegistry(): LanguageRegistry {
     return extensionMap.get(ext) ?? PLAINTEXT_LANGUAGE_ID;
   }
 
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
-  }
-
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    listeners.clear();
+    changes.clear();
   }
 
   return {
@@ -252,7 +228,7 @@ export function createLanguageRegistry(): LanguageRegistry {
     getBaseDir,
     list,
     resolveLanguageId,
-    onDidChange,
+    onDidChange: changes.on,
     dispose,
   };
 }

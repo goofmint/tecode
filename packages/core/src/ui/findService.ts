@@ -75,7 +75,8 @@
  *   qualify.
  */
 
-import type { Disposable, Event, Listener, Position, Range } from "@tecode/api";
+import type { Disposable, Event, Position, Range } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 import { buildReplaceAllEdits, buildReplaceEdit, computeMatches, type LineReader } from "../editor/find";
 import { comparePositions } from "../editor/positionTransform";
 import type { CoreDocument } from "../buffer/document";
@@ -173,23 +174,10 @@ function reanchorIndex(matches: readonly Range[], cursor: Position): number {
 /** Build an {@link FindService} (Req 11.1, design.md §13). */
 export function createFindService(deps: FindServiceDeps): FindService {
   const { editorSession } = deps;
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>();
   let disposed = false;
   let trackedDocument: CoreDocument | undefined;
   let documentSub: Disposable | undefined;
-
-  function fireChange(): void {
-    // Snapshot before iterating, isolate listener failures — matches every
-    // other `onDidChange` in this codebase (`editorSession.ts`,
-    // `document.ts`, `context.ts`).
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures.
-      }
-    }
-  }
 
   function reader(document: CoreDocument): LineReader {
     return { getLine: (line) => document.getLine(line), lineCount: document.lineCount };
@@ -204,7 +192,7 @@ export function createFindService(deps: FindServiceDeps): FindService {
   function writeFind(document: CoreDocument, find: FindState): void {
     const state = editorSession.getState(document.uri);
     editorSession.setState(document.uri, { ...state, find });
-    fireChange();
+    changes.emit(undefined);
   }
 
   /**
@@ -224,7 +212,7 @@ export function createFindService(deps: FindServiceDeps): FindService {
       ? reanchorIndex(matches, state.selections[0]?.active ?? { line: 0, character: 0 })
       : reclampIndex(find.activeMatchIndex, matches.length);
     editorSession.setState(document.uri, { ...state, find: { ...find, matches, activeMatchIndex } });
-    fireChange();
+    changes.emit(undefined);
   }
 
   /** Point the live-recompute subscription (this module's TSDoc) at
@@ -379,20 +367,8 @@ export function createFindService(deps: FindServiceDeps): FindService {
       ...state,
       selections: [{ start: match.start, end: match.end, anchor: match.start, active: match.end }],
     });
-    fireChange();
+    changes.emit(undefined);
     return true;
-  }
-
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
   }
 
   function dispose(): void {
@@ -401,7 +377,7 @@ export function createFindService(deps: FindServiceDeps): FindService {
     documentSub?.dispose();
     documentSub = undefined;
     sessionSub.dispose();
-    listeners.clear();
+    changes.clear();
   }
 
   return {
@@ -416,7 +392,7 @@ export function createFindService(deps: FindServiceDeps): FindService {
     replaceCurrent,
     replaceAll,
     jumpToActiveMatch,
-    onDidChange,
+    onDidChange: changes.on,
     dispose,
   };
 }

@@ -58,7 +58,8 @@
 
 import { readFile as nodeReadFile, writeFile as nodeWriteFile, mkdir as nodeMkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Disposable, Event, Listener } from "@tecode/api";
+import type { Event } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserLayoutStatePath } from "../host/paths";
 import { clampPanelHeight } from "./panelHeight";
@@ -269,7 +270,11 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
   // Payload is `void` — matches the minimal `onDidChange` convention this
   // codebase already uses (`themeService.ts`, `modalService.ts`,
   // `config/service.ts`, `keymap/context.ts`).
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>((cause) =>
+    logSafely("error", {
+      message: `LayoutStateService onDidChange listener threw: ${describeError(cause)}`,
+    }),
+  );
 
   function logSafely(level: "error" | "warning", err: HostError): void {
     try {
@@ -284,21 +289,6 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
       sink.error(err);
     } catch {
       // Swallowed — see logSafely.
-    }
-  }
-
-  function fireChange(): void {
-    // Snapshot before iterating, isolate each listener's failure — matches
-    // every other `onDidChange` in this codebase (`themeService.ts`,
-    // `modalService.ts`).
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch (cause) {
-        logSafely("error", {
-          message: `LayoutStateService onDidChange listener threw: ${describeError(cause)}`,
-        });
-      }
     }
   }
 
@@ -335,7 +325,7 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
       // them from the persisted values, whether or not it awaits again
       // before returning.
       //
-      // Recorded BEFORE `fireChange()` below, not after: a listener is
+      // Recorded BEFORE `changes.emit(undefined)` below, not after: a listener is
       // free to call `update()` again re-entrantly, and its (newer) merge
       // would otherwise land here first, only for THIS frame's older
       // `partial` to overwrite it on the way out — leaving `state` correct
@@ -349,7 +339,7 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
     // `panelCommands.ts`'s TSDoc calls out ("setting panelVisible: true when
     // it is already true is a harmless no-op merge") without giving this a
     // fancier equality check than the rest of this module bothers with.
-    if (hasChanged(prev, partial)) fireChange();
+    if (hasChanged(prev, partial)) changes.emit(undefined);
     if (pendingTimer !== undefined) {
       try {
         timer.cancel(pendingTimer);
@@ -372,18 +362,6 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
       });
       scheduleSave();
     }
-  }
-
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
   }
 
   async function flush(): Promise<void> {
@@ -440,7 +418,7 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
     update,
     ready: load(),
     flush,
-    onDidChange,
+    onDidChange: changes.on,
   };
 }
 

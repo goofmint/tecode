@@ -45,8 +45,9 @@
  * back to a caller.
  */
 
-import type { DirEntry, Disposable, Event, Listener, MessageKind, Position, Uri } from "@tecode/api";
+import type { DirEntry, Event, MessageKind, Position, Uri } from "@tecode/api";
 import {
+  createListenerSet,
   describeError,
   fuzzyMatch,
   walkFiles,
@@ -228,7 +229,7 @@ export interface SearchStore {
  * root exists.
  */
 export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDeps): SearchStore {
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>();
   const decoder = new TextDecoder();
   /** Full-text mode's collapsed files (this module's `getExpandedIds`) —
    * tracked as the INVERSE of expansion so a file found by a later search
@@ -248,29 +249,6 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
   let generation = 0;
   // See this module's TSDoc's "The file list is walked once and cached".
   let fileListPromise: Promise<WalkFilesResult> | undefined;
-
-  function fireChange(): void {
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures (`../explorer/store.ts`'s own
-        // `fireChange` precedent).
-      }
-    }
-  }
-
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let disposed = false;
-    return {
-      dispose() {
-        if (disposed) return;
-        disposed = true;
-        listeners.delete(listener);
-      },
-    };
-  }
 
   function isStale(startedAt: number): boolean {
     return generation !== startedAt;
@@ -309,7 +287,7 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
     fileResults = ranked.slice(0, maxResults).map((entry) => entry.file);
     truncated = walk.truncated || ranked.length > maxResults;
     loading = false;
-    fireChange();
+    changes.emit(undefined);
   }
 
   async function runTextSearch(startedAt: number): Promise<void> {
@@ -349,14 +327,14 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
       sinceFire += hits.length;
       if (sinceFire >= TEXT_SEARCH_FIRE_INTERVAL) {
         sinceFire = 0;
-        fireChange();
+        changes.emit(undefined);
       }
     }
 
     if (isStale(startedAt)) return;
     truncated = walk.truncated || capped || total >= maxResults;
     loading = false;
-    fireChange();
+    changes.emit(undefined);
   }
 
   /** Discard whatever is on screen and start the current query in the
@@ -372,12 +350,12 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
 
     if (!rootUri || query.length === 0) {
       loading = false;
-      fireChange();
+      changes.emit(undefined);
       return;
     }
 
     loading = true;
-    fireChange();
+    changes.emit(undefined);
     void (mode === "files" ? runFileSearch(startedAt) : runTextSearch(startedAt));
   }
 
@@ -390,7 +368,7 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
     truncated = false;
     loading = false;
     selectedId = undefined;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function setMode(value: SearchMode): void {
@@ -423,7 +401,7 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
   function setSelectedId(id: string | undefined): void {
     if (selectedId === id) return;
     selectedId = id;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function toggle(id: string, expanding: boolean): void {
@@ -431,7 +409,7 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
     if (!textResults.some((entry) => entry.uri === id)) return;
     if (expanding) collapsed.delete(id);
     else collapsed.add(id);
-    fireChange();
+    changes.emit(undefined);
   }
 
   function getNodes(): SearchTreeNode[] {
@@ -476,14 +454,14 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
       startSearch();
       return;
     }
-    fireChange();
+    changes.emit(undefined);
   }
 
   function setMaxResults(value: number): void {
     const clamped = clampMaxResults(value);
     if (maxResults === clamped) return;
     maxResults = clamped;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function refresh(): void {
@@ -514,6 +492,6 @@ export function createSearchStore(rootUri: Uri | undefined, deps: SearchStoreDep
     getMaxResults: () => maxResults,
     setMaxResults,
     refresh,
-    onDidChange,
+    onDidChange: changes.on,
   };
 }

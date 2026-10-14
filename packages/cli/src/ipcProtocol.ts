@@ -73,6 +73,30 @@ export function encodeIpcMessage(message: IpcOpenRequest | IpcResponse): string 
 }
 
 /**
+ * Decode one already-de-framed line into a plain property bag, or
+ * `undefined` when it is not a usable message of this protocol at all:
+ * malformed JSON, a non-object (or array) payload, or a `v` that is not
+ * {@link IPC_PROTOCOL_VERSION}. Never throws — both parsers below inherit
+ * that contract from here.
+ *
+ * Shared by {@link parseIpcRequest} and {@link parseIpcResponse}, which
+ * previously opened with a byte-identical copy of these nine lines (Qodana
+ * `DuplicatedCode`); each still applies its own type/field checks on top.
+ */
+function parseVersionedRecord(line: string): Record<string, unknown> | undefined {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  if (record["v"] !== IPC_PROTOCOL_VERSION) return undefined;
+  return record;
+}
+
+/**
  * Parse one already-de-framed line into an {@link IpcOpenRequest}, or
  * `undefined` when it is not one — malformed JSON, a non-object payload, a
  * wrong `v`, any `type` other than `"open"`, a missing/empty/relative
@@ -88,15 +112,8 @@ export function parseIpcRequest(
   line: string,
   isAbsolutePath: (path: string) => boolean = defaultIsAbsolute,
 ): IpcOpenRequest | undefined {
-  let payload: unknown;
-  try {
-    payload = JSON.parse(line);
-  } catch {
-    return undefined;
-  }
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
-  const record = payload as Record<string, unknown>;
-  if (record["v"] !== IPC_PROTOCOL_VERSION) return undefined;
+  const record = parseVersionedRecord(line);
+  if (!record) return undefined;
   if (record["type"] !== "open") return undefined;
   const path = record["path"];
   if (typeof path !== "string" || path.length === 0 || !isAbsolutePath(path)) return undefined;
@@ -114,15 +131,8 @@ export function parseIpcRequest(
  * answer", which it already handles by starting normally.
  */
 export function parseIpcResponse(line: string): IpcResponse | undefined {
-  let payload: unknown;
-  try {
-    payload = JSON.parse(line);
-  } catch {
-    return undefined;
-  }
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return undefined;
-  const record = payload as Record<string, unknown>;
-  if (record["v"] !== IPC_PROTOCOL_VERSION) return undefined;
+  const record = parseVersionedRecord(line);
+  if (!record) return undefined;
   const ok = record["ok"];
   if (typeof ok !== "boolean") return undefined;
   const error = record["error"];
