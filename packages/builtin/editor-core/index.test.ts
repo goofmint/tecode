@@ -16,17 +16,21 @@ import type {
   Document,
   Editor,
   ExtensionContext,
+  InputBoxOptions,
   LanguageContribution,
+  MessageKind,
   QuickPickItem,
   QuickPickOptions,
   FoldRange,
   Range,
   SaveOutcome,
   Selection,
+  StatusBarItem,
   Tecode,
   TextEdit,
 } from "@tecode/api";
 import { activate } from "./index";
+import manifest from "./manifest";
 
 function pos(line: number, character: number) {
   return { line, character };
@@ -74,8 +78,24 @@ function createFakeApi(initialLines: string[]) {
   // every test that never touches this.
   let quickPickResponse: QuickPickItem | undefined;
   const quickPickCalls: Array<{ items: QuickPickItem[]; options?: QuickPickOptions }> = [];
+  // Issue #162: `showInputBox`'s canned response for the NEXT call
+  // (`undefined`, the default, models Escape/cancel — matching every
+  // pre-#162 test, which never touches this) plus a record of every call's
+  // options, mirroring `quickPickResponse`/`quickPickCalls` just above.
+  let inputBoxResponse: string | undefined;
+  const inputBoxCalls: InputBoxOptions[] = [];
+  const showMessageCalls: Array<{ message: string; kind?: MessageKind }> = [];
   const languageContributions = new Map<string, LanguageContribution>();
   let clipboardBuffer = "";
+  // Issue #163: the mark feature's three new seams — the context-key store
+  // its `when` routing is published to, the status bar indicator, the
+  // transient messages, and `editor.onDidChange` (which it uses to notice
+  // a tab switch). `documentUri` is mutable purely so `switchDocument`
+  // below can model that switch.
+  let documentUri = "file:///fake.txt";
+  const contextValues = new Map<string, unknown>();
+  const statusBarItems = new Map<string, StatusBarItem>();
+  const editorListeners = new Set<() => void>();
 
   function applyEditsToLines(edits: TextEdit[]): void {
     // Apply in reverse document order so earlier edits' ranges stay valid
@@ -118,7 +138,9 @@ function createFakeApi(initialLines: string[]) {
   }
 
   const document: Document = {
-    uri: "file:///fake.txt",
+    get uri() {
+      return documentUri;
+    },
     languageId: "plaintext",
     version: 0,
     dirty: false,
@@ -208,13 +230,21 @@ function createFakeApi(initialLines: string[]) {
       get activeEditor() {
         return editor;
       },
-      showMessage: () => {},
+      showMessage: (message: string, kind?: MessageKind) => {
+        showMessageCalls.push({ message, kind });
+      },
       showQuickPick: async (items: QuickPickItem[], options?: QuickPickOptions) => {
         quickPickCalls.push({ items, options });
         return quickPickResponse;
       },
-      showInputBox: async () => undefined,
-      setStatusBarItem: () => ({ dispose() {} }),
+      showInputBox: async (options?: InputBoxOptions) => {
+        inputBoxCalls.push(options ?? {});
+        return inputBoxResponse;
+      },
+      setStatusBarItem: (item: StatusBarItem): Disposable => {
+        statusBarItems.set(item.id, item);
+        return { dispose: () => statusBarItems.delete(item.id) };
+      },
     },
     editor: {
       get selections() {
@@ -293,6 +323,12 @@ function createFakeApi(initialLines: string[]) {
         isLineVisible: (line: number) =>
           !collapsedFolds.some((r) => line > r.startLine && line <= r.endLine),
       },
+      // Issue #163: `editor-core` subscribes to this to drop the mark on a
+      // tab switch. `fireEditorDidChange` below is how a test drives it.
+      onDidChange: (listener: () => void) => {
+        editorListeners.add(listener);
+        return { dispose: () => editorListeners.delete(listener) };
+      },
     },
     ui: undefined as never,
     config: {
@@ -302,7 +338,11 @@ function createFakeApi(initialLines: string[]) {
         return { dispose: () => configListeners.delete(listener) };
       },
     },
-    context: undefined as never,
+    context: {
+      set: (key: string, value: unknown) => {
+        contextValues.set(key, value);
+      },
+    },
     languages: {
       register(contribution: LanguageContribution): Disposable {
         languageContributions.set(contribution.id, contribution);
@@ -343,6 +383,11 @@ function createFakeApi(initialLines: string[]) {
     setQuickPickResponse: (response: QuickPickItem | undefined) => {
       quickPickResponse = response;
     },
+    inputBoxCalls,
+    setInputBoxResponse: (response: string | undefined) => {
+      inputBoxResponse = response;
+    },
+    showMessageCalls,
     setConfig,
     getSelections: () => selections,
     languageContributions,
@@ -359,6 +404,26 @@ function createFakeApi(initialLines: string[]) {
       collapsedFolds = [];
     },
     getCollapsedFolds: (): readonly FoldRange[] => collapsedFolds,
+    /** Issue #163: what `tecode.context.set` has been told so far. */
+    getContextValue: (key: string) => contextValues.get(key),
+    getStatusBarItem: (id: string) => statusBarItems.get(id),
+    /** Issue #163: model a tab switch — a different document becomes
+     * active, then `editor.onDidChange` fires (exactly what the real
+     * `EditorNamespace` does, `@tecode/api`'s own TSDoc). */
+    switchDocument: (uri: string) => {
+      documentUri = uri;
+      for (const listener of editorListeners) listener();
+    },
+    /** Issue #163: `editor.onDidChange` firing for a plain caret move —
+     * the SAME event, with the active document unchanged. */
+    fireEditorDidChange: () => {
+      for (const listener of editorListeners) listener();
+    },
+    /** Seed the selections a test starts from, without going through a
+     * movement command first. */
+    setSelections: (next: Selection[]) => {
+      selections = [...next];
+    },
   };
 }
 
@@ -838,6 +903,8 @@ describe("editor-core activate() — clipboard copy/cut/paste (Issue #91)", () =
         get activeEditor() {
           return { document: { applyEdits: () => applyEditsCalls++, transaction: (fn: () => void) => fn() } };
         },
+        showMessage: () => {},
+        setStatusBarItem: () => ({ dispose() {} }),
       },
       editor: {
         get selections() {
@@ -848,7 +915,10 @@ describe("editor-core activate() — clipboard copy/cut/paste (Issue #91)", () =
           return 0;
         },
         setSelections: () => {},
+        // Issue #163: `activate` subscribes to this at registration time.
+        onDidChange: () => ({ dispose() {} }),
       },
+      context: { set: () => {} },
       config: { get: () => undefined, onDidChange: () => ({ dispose() {} }) },
       languages: { register: () => ({ dispose() {} }), getLanguageId: () => "plaintext", getLanguage: () => undefined },
       clipboard: {
@@ -988,5 +1058,472 @@ describe("editor-core activate() — code folding (Issue #150)", () => {
     await api.commands.execute("editor.action.cursorDown");
 
     expect(getSelections()[0]!.active).toEqual(pos(3, 0));
+  });
+});
+
+describe("editor-core activate() — mark/region (Issue #163)", () => {
+  const MARK_KEY = "markActive";
+  const MARK_ITEM = "editorCore.mark";
+
+  test("markActive starts unset, and setMark publishes it as the context key", async () => {
+    const { api, getContextValue } = activateFixture(["abc"]);
+    expect(getContextValue(MARK_KEY)).toBeUndefined();
+
+    await api.commands.execute("editor.action.setMark");
+
+    expect(getContextValue(MARK_KEY)).toBe(true);
+  });
+
+  test("setMark shows 'Mark set' and registers the status bar indicator", async () => {
+    const { api, showMessageCalls, getStatusBarItem } = activateFixture(["abc"]);
+    await api.commands.execute("editor.action.setMark");
+
+    expect(showMessageCalls).toEqual([{ message: "Mark set", kind: "info" }]);
+    expect(getStatusBarItem(MARK_ITEM)?.side).toBe("left");
+  });
+
+  test("setMark sets the mark AT the caret, discarding a leftover shift-select anchor", async () => {
+    const { api, getSelections } = activateFixture(["abcdef"]);
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    expect(getSelections()).toEqual([
+      { start: pos(0, 0), end: pos(0, 2), anchor: pos(0, 0), active: pos(0, 2) },
+    ]);
+
+    await api.commands.execute("editor.action.setMark");
+
+    expect(getSelections()).toEqual([cursorAt(0, 2)]);
+  });
+
+  test("pressing setMark twice toggles the mark back off and collapses the region", async () => {
+    const { api, getContextValue, getSelections, getStatusBarItem, showMessageCalls } =
+      activateFixture(["abcdef"]);
+    await api.commands.execute("editor.action.setMark");
+    // While marked, movement goes through the `...Select` commands
+    // `manifest.ts`'s `when` routing picks — the region grows.
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    expect(getSelections()).toEqual([
+      { start: pos(0, 0), end: pos(0, 2), anchor: pos(0, 0), active: pos(0, 2) },
+    ]);
+
+    await api.commands.execute("editor.action.setMark");
+
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getStatusBarItem(MARK_ITEM)).toBeUndefined();
+    // Point (`active`) never moves when the region is deactivated.
+    expect(getSelections()).toEqual([cursorAt(0, 2)]);
+    expect(showMessageCalls.at(-1)).toEqual({ message: "Mark deactivated", kind: "info" });
+  });
+
+  test("clearMark deactivates the mark and collapses onto the caret", async () => {
+    const { api, getContextValue, getSelections } = activateFixture(["abcdef"]);
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.clearMark");
+
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 1)]);
+  });
+
+  test("exchangePointAndMark swaps the two ends, keeping the region and the mark", async () => {
+    const { api, getContextValue, getSelections } = activateFixture(["abcdef"]);
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.exchangePointAndMark");
+
+    expect(getSelections()).toEqual([
+      { start: pos(0, 0), end: pos(0, 2), anchor: pos(0, 2), active: pos(0, 0) },
+    ]);
+    expect(getContextValue(MARK_KEY)).toBe(true);
+
+    // Swapping again restores the original orientation.
+    await api.commands.execute("editor.action.exchangePointAndMark");
+    expect(getSelections()).toEqual([
+      { start: pos(0, 0), end: pos(0, 2), anchor: pos(0, 0), active: pos(0, 2) },
+    ]);
+  });
+
+  test("copy over a region copies it, then deactivates the mark (Emacs' M-w)", async () => {
+    const { api, getClipboardBuffer, getContextValue, getSelections, lines } =
+      activateFixture(["abcdef"]);
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.clipboardCopy");
+
+    expect(getClipboardBuffer()).toBe("abc");
+    expect(lines[0]).toBe("abcdef"); // copy never touches the buffer
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 3)]);
+  });
+
+  test("copy with NO mark leaves the selection exactly as it found it", async () => {
+    const { api, getClipboardBuffer, getSelections } = activateFixture(["abcdef"]);
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.clipboardCopy");
+
+    expect(getClipboardBuffer()).toBe("ab");
+    expect(getSelections()).toEqual(before);
+  });
+
+  test("cut over a region deletes it and deactivates the mark (Emacs' C-w)", async () => {
+    const { api, getClipboardBuffer, getContextValue, lines } = activateFixture(["abcdef"]);
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.clipboardCut");
+
+    expect(getClipboardBuffer()).toBe("ab");
+    expect(lines[0]).toBe("cdef");
+    expect(getContextValue(MARK_KEY)).toBe(false);
+  });
+
+  test("switching tabs drops the mark; a plain caret-move notification does not", async () => {
+    const { api, getContextValue, fireEditorDidChange, switchDocument } = activateFixture(["abc"]);
+    await api.commands.execute("editor.action.setMark");
+
+    fireEditorDidChange(); // same document — a caret move, not a switch
+    expect(getContextValue(MARK_KEY)).toBe(true);
+
+    switchDocument("file:///other.txt");
+    expect(getContextValue(MARK_KEY)).toBe(false);
+  });
+
+  test("setMark/exchangePointAndMark are no-ops with no active editor (empty selections)", async () => {
+    const fixture = activateFixture(["abc"]);
+    fixture.setSelections([]);
+
+    await fixture.api.commands.execute("editor.action.setMark");
+    await fixture.api.commands.execute("editor.action.exchangePointAndMark");
+
+    expect(fixture.getContextValue(MARK_KEY)).toBeUndefined();
+    expect(fixture.getStatusBarItem(MARK_ITEM)).toBeUndefined();
+    expect(fixture.getSelections()).toEqual([]);
+  });
+
+  test("the ten plain movement keys route to their ...Select twin while the mark is active", () => {
+    // The mechanism the whole feature rests on: no movement command
+    // changed, only which one each key resolves to. A key whose two
+    // entries were not mutually exclusive would let both fire.
+    const pairs: Array<[string, string, string]> = [
+      ["left", "editor.action.cursorLeft", "editor.action.cursorLeftSelect"],
+      ["right", "editor.action.cursorRight", "editor.action.cursorRightSelect"],
+      ["up", "editor.action.cursorUp", "editor.action.cursorUpSelect"],
+      ["down", "editor.action.cursorDown", "editor.action.cursorDownSelect"],
+      ["ctrl+left", "editor.action.cursorWordLeft", "editor.action.cursorWordLeftSelect"],
+      ["ctrl+right", "editor.action.cursorWordRight", "editor.action.cursorWordRightSelect"],
+      ["home", "editor.action.cursorHome", "editor.action.cursorHomeSelect"],
+      ["end", "editor.action.cursorEnd", "editor.action.cursorEndSelect"],
+      ["ctrl+home", "editor.action.cursorTop", "editor.action.cursorTopSelect"],
+      ["ctrl+end", "editor.action.cursorBottom", "editor.action.cursorBottomSelect"],
+    ];
+    for (const [key, plain, extend] of pairs) {
+      const entries = manifest.contributes.keybindings.filter((binding) => binding.key === key);
+      expect(entries).toEqual([
+        { key, command: plain, when: "editorTextFocus && !markActive" },
+        { key, command: extend, when: "editorTextFocus && markActive" },
+      ]);
+    }
+  });
+
+  test("ctrl+space sets the mark, and escape clears it only while the buffer is focused", () => {
+    const bindings = manifest.contributes.keybindings;
+    expect(bindings.filter((binding) => binding.key === "ctrl+space")).toEqual([
+      { key: "ctrl+space", command: "editor.action.setMark", when: "editorTextFocus" },
+    ]);
+    // `editorTextFocus &&` matters: a bare `markActive` guard would outrank
+    // find's own `escape` binding (contributed earlier in this same table)
+    // whenever a mark happened to be active — see `manifest.ts`'s TSDoc.
+    expect(bindings.filter((binding) => binding.key === "escape")).toEqual([
+      { key: "escape", command: "editor.action.closeFind", when: "findWidgetFocus" },
+      { key: "escape", command: "editor.action.clearMark", when: "editorTextFocus && markActive" },
+    ]);
+  });
+
+  test("exchangePointAndMark is a no-op when the mark is not active", async () => {
+    const { api, getSelections } = activateFixture(["abcdef"]);
+    // Build a non-collapsed selection via shift+arrow (no mark involved).
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.exchangePointAndMark");
+
+    expect(getSelections()).toEqual(before);
+  });
+
+  test("tabNextClearMark deactivates the mark, collapses selections, then calls tab.next", async () => {
+    const { api, getContextValue, getSelections } = activateFixture(["abcdef"]);
+    let tabNextCalled = false;
+    api.commands.register("tab.next", async () => {
+      // Verify pre-navigation state: mark cleared and selections collapsed
+      // before the tab switch happens.
+      expect(getContextValue(MARK_KEY)).toBe(false);
+      const sels = getSelections();
+      expect(sels).toHaveLength(1);
+      expect(sels[0]!.anchor).toEqual(sels[0]!.active);
+      tabNextCalled = true;
+    });
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.tabNextClearMark");
+
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 2)]);
+    expect(tabNextCalled).toBe(true);
+  });
+
+  test("tabNextClearMark navigates to adjacent document in multi-document scenario", async () => {
+    const { api, getContextValue, getSelections, switchDocument } = activateFixture(["abcdef"]);
+    let navigatedToDoc = "";
+    api.commands.register("tab.next", async () => {
+      // Verify pre-navigation state inside the handler
+      expect(getContextValue(MARK_KEY)).toBe(false);
+      const sels = getSelections();
+      expect(sels[0]!.anchor).toEqual(sels[0]!.active);
+      // Simulate actual navigation to adjacent document
+      switchDocument("file:///other.txt");
+      navigatedToDoc = "file:///other.txt";
+    });
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.tabNextClearMark");
+
+    expect(navigatedToDoc).toBe("file:///other.txt");
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 1)]);
+  });
+
+  test("tabPreviousClearMark deactivates the mark, collapses selections, then calls tab.previous", async () => {
+    const { api, getContextValue, getSelections } = activateFixture(["abcdef"]);
+    let tabPreviousCalled = false;
+    api.commands.register("tab.previous", async () => {
+      // Verify pre-navigation state: mark cleared and selections collapsed
+      // before the tab switch happens.
+      expect(getContextValue(MARK_KEY)).toBe(false);
+      const sels = getSelections();
+      expect(sels).toHaveLength(1);
+      expect(sels[0]!.anchor).toEqual(sels[0]!.active);
+      tabPreviousCalled = true;
+    });
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.tabPreviousClearMark");
+
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 1)]);
+    expect(tabPreviousCalled).toBe(true);
+  });
+
+  test("tabPreviousClearMark navigates to adjacent document in multi-document scenario", async () => {
+    const { api, getContextValue, getSelections, switchDocument } = activateFixture(["abcdef"]);
+    let navigatedToDoc = "";
+    api.commands.register("tab.previous", async () => {
+      // Verify pre-navigation state inside the handler
+      expect(getContextValue(MARK_KEY)).toBe(false);
+      const sels = getSelections();
+      expect(sels[0]!.anchor).toEqual(sels[0]!.active);
+      // Simulate actual navigation to adjacent document
+      switchDocument("file:///other.txt");
+      navigatedToDoc = "file:///other.txt";
+    });
+    await api.commands.execute("editor.action.setMark");
+    await api.commands.execute("editor.action.cursorRightSelect");
+
+    await api.commands.execute("editor.action.tabPreviousClearMark");
+
+    expect(navigatedToDoc).toBe("file:///other.txt");
+    expect(getContextValue(MARK_KEY)).toBe(false);
+    expect(getSelections()).toEqual([cursorAt(0, 1)]);
+  });
+
+  test("every command activate() registers for the mark is declared in the manifest", () => {
+    const declared = new Set(manifest.contributes.commands.map((command) => command.id));
+    for (const id of [
+      "editor.action.setMark",
+      "editor.action.clearMark",
+      "editor.action.exchangePointAndMark",
+      "editor.action.tabNextClearMark",
+      "editor.action.tabPreviousClearMark",
+    ]) {
+      expect(declared.has(id)).toBe(true);
+    }
+  });
+
+  test("ctrl+tab and related keys route to tabNextClearMark/tabPreviousClearMark when markActive", () => {
+    const bindings = manifest.contributes.keybindings;
+    const nextKeys = ["ctrl+tab", "ctrl+pagedown"];
+    const prevKeys = ["ctrl+shift+tab", "ctrl+pageup"];
+    for (const key of nextKeys) {
+      const entry = bindings.find(
+        (b) => b.key === key && b.when === "editorTextFocus && markActive",
+      );
+      expect(entry?.command).toBe("editor.action.tabNextClearMark");
+    }
+    for (const key of prevKeys) {
+      const entry = bindings.find(
+        (b) => b.key === key && b.when === "editorTextFocus && markActive",
+      );
+      expect(entry?.command).toBe("editor.action.tabPreviousClearMark");
+    }
+  });
+});
+
+describe("editor-core activate() — editor.action.gotoLine (Issue #162)", () => {
+  function tenLineFixture() {
+    return activateFixture(["l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7", "l8", "l9"]);
+  }
+
+  test("moves the cursor to the requested 1-based line, at character 0", async () => {
+    const { api, getSelections, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse("3");
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual([cursorAt(2, 0)]);
+  });
+
+  test("prompts with validateInput wired to the current line count", async () => {
+    const { api, inputBoxCalls, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse("1");
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(inputBoxCalls).toHaveLength(1);
+    const validateInput = inputBoxCalls[0]!.validateInput!;
+    expect(validateInput("3")).toBeUndefined();
+    expect(validateInput("abc")).toBe("Enter a valid line number.");
+    expect(validateInput("999")).toBe("Line number must be between 1 and 10.");
+  });
+
+  test("Escape/cancel (undefined) is a no-op", async () => {
+    const { api, getSelections, setInputBoxResponse } = tenLineFixture();
+    setInputBoxResponse(undefined);
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+  });
+
+  test("a bypassed invalid value (direct commands.execute-style fake) shows an error and does not move the cursor", async () => {
+    const { api, getSelections, setInputBoxResponse, showMessageCalls } = tenLineFixture();
+    // Simulates a caller that bypasses the input box's own `validateInput`
+    // gate — the handler must re-validate the resolved value itself
+    // (explorer's "code review fix" precedent).
+    setInputBoxResponse("999");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls).toEqual([
+      { message: "Line number must be between 1 and 10.", kind: "error" },
+    ]);
+  });
+
+  test("a bypassed empty-string value (CodeRabbit review, PR #165 2nd pass) is NOT treated as cancel — it shows an error, same as any other invalid bypassed value", async () => {
+    const { api, getSelections, setInputBoxResponse, showMessageCalls } = tenLineFixture();
+    // The real `ModalService.openInputBox` never itself resolves `""` — it
+    // only resolves `undefined` (cancel) or a value `validateGotoLineInput`
+    // already accepted — but a bypassed/fake caller could still hand one to
+    // this handler. Only `undefined` means cancelled; `""` must fall
+    // through to the same re-validation/`showMessage` path as `"999"`
+    // above, not be silently swallowed as if Escape had been pressed.
+    setInputBoxResponse("");
+    const before = getSelections();
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls).toEqual([{ message: "Enter a line number.", kind: "error" }]);
+  });
+
+  test("does nothing without an active editor", async () => {
+    const fixture = tenLineFixture();
+    const { api, inputBoxCalls } = fixture;
+    Object.defineProperty(fixture.api.window, "activeEditor", { get: () => undefined });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(inputBoxCalls).toHaveLength(0);
+  });
+
+  test("does nothing if the active document changed while the input box was open (CodeRabbit review, PR #165)", async () => {
+    const { api, getSelections } = tenLineFixture();
+    const before = getSelections();
+    const originalEditor = api.window.activeEditor!;
+    // Flips to `true` from inside the (overridden) `showInputBox` below,
+    // simulating the user switching tabs while it was still open — the
+    // handler must re-read `api.window.activeEditor?.document` AFTER the
+    // `await` and compare it against the document it started with, not
+    // reuse the `editor`/`lineCount` it captured before awaiting.
+    let switchedTabs = false;
+    Object.defineProperty(api.window, "activeEditor", {
+      configurable: true,
+      get: () => (switchedTabs ? { document: {} as Document, selections: [] } : originalEditor),
+    });
+    Object.defineProperty(api.window, "showInputBox", {
+      configurable: true,
+      value: async () => {
+        switchedTabs = true;
+        return "3";
+      },
+    });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getSelections()).toEqual(before);
+  });
+
+  test("rejects a line value that exceeds the line count reduced during input (same-document case)", async () => {
+    const { api, getSelections, lines, showMessageCalls } = tenLineFixture();
+    const before = getSelections();
+    // Override showInputBox to simulate the same document being edited
+    // (lines deleted) while the modal is open. "8" is valid for 10 lines
+    // but not for 5. The handler re-reads api.editor.lineCount after
+    // awaiting and must reject the value.
+    Object.defineProperty(api.window, "showInputBox", {
+      configurable: true,
+      value: async () => {
+        lines.splice(5); // reduce from 10 to 5 lines
+        return "8";
+      },
+    });
+
+    await api.commands.execute("editor.action.gotoLine");
+
+    // Selections unchanged: "8" was rejected because lineCount is now 5
+    expect(getSelections()).toEqual(before);
+    expect(showMessageCalls.some((m) => m.kind === "error")).toBe(true);
+  });
+
+  test("unfolds the target line before revealing it (Issue #150)", async () => {
+    const { api, getSelections, getCollapsedFolds, setInputBoxResponse, setFoldRanges } =
+      tenLineFixture();
+    setFoldRanges([{ startLine: 2, endLine: 5 }]);
+    api.editor.setSelections([cursorAt(3, 0)]);
+    await api.commands.execute("editor.action.fold");
+    expect(getCollapsedFolds()).toEqual([{ startLine: 2, endLine: 5 }]);
+
+    setInputBoxResponse("4");
+    await api.commands.execute("editor.action.gotoLine");
+
+    expect(getCollapsedFolds()).toEqual([]);
+    expect(getSelections()).toEqual([cursorAt(3, 0)]);
   });
 });

@@ -135,8 +135,13 @@ test("the enumerated hazard set matches Fact 4's expected list exactly (a change
       "ctrl+shift+f -> search.focus",
       "ctrl+shift+k -> editor.action.deleteLine",
       "ctrl+shift+p -> workbench.action.showCommands",
+      // Issue #163: mark-region routes ctrl+tab/ctrl+shift+tab to its own
+      // clear-mark-then-navigate commands when `markActive`; ctrl+pagedown
+      // and ctrl+pageup are the unambiguous alternates that cover them.
+      "ctrl+shift+tab -> editor.action.tabPreviousClearMark",
       "ctrl+shift+tab -> tab.previous",
       "ctrl+shift+z -> editor.action.redo",
+      "ctrl+tab -> editor.action.tabNextClearMark",
       "ctrl+tab -> tab.next",
     ].sort(),
   );

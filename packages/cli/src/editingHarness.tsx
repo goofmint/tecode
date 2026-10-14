@@ -159,6 +159,8 @@ export async function buildEditingHarness(options: EditingHarnessOptions): Promi
       root.config.dispose();
       root.chordMachine.dispose();
       root.findService.dispose();
+      root.findFileService.dispose();
+      root.findFileCommands.dispose();
       root.editorSession.dispose();
       root.editorLangIdSync.dispose();
       root.themeConfigSync.dispose();
@@ -357,6 +359,7 @@ export type EditingShellDeps = Pick<
   | "config"
   | "editorSession"
   | "findService"
+  | "findFileService"
   | "highlightService"
   | "modalService"
 >;
@@ -393,6 +396,7 @@ export function renderEditingShell(
           config={deps.config}
           editorSession={deps.editorSession}
           findService={deps.findService}
+          findFileService={deps.findFileService}
           highlightService={deps.highlightService}
         />
         <ModalOverlay modalService={deps.modalService} />

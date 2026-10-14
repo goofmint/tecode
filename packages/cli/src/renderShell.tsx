@@ -24,6 +24,7 @@ import {
   type DocumentManager,
   type EditorInputRouter,
   type EditorSessionService,
+  type FindFileService,
   type FindService,
   type FoldController,
   type HighlightService,
@@ -91,6 +92,12 @@ export interface ShellRenderDeps {
    * gets no `FindWidget` regardless of `find?.isOpen` (`shell.tsx`'s
    * `EditorAreaProps.findService` TSDoc). */
   findService?: Pick<FindService, "setQuery" | "setReplaceQuery" | "toggleCaseSensitive">;
+  /** Backs the rendered `Shell`'s `FindFileWidget` sibling (Issue #164) —
+   * threaded straight through to `Shell`'s own `findFileService` prop.
+   * Optional on the same terms as `findService` above: a caller/test that
+   * omits it gets no find-file minibuffer at all (`shell.tsx`'s
+   * `EditorAreaProps.findFileService` TSDoc). */
+  findFileService?: Pick<FindFileService, "setQuery" | "getState" | "onDidChange">;
   /** The syntax-highlighting pipeline (Task 2.8, Req 8.1-8.3, design.md
    * §10) — threaded straight through to `Shell`'s own `highlightService`
    * prop, which threads it to `EditorArea`/`EditorView` in turn. Optional,
@@ -363,6 +370,7 @@ export const renderShellToTerminal: RenderShell = async (deps) => {
           onSidebarWidthCommit={deps.onSidebarWidthCommit}
           editorSession={deps.editorSession}
           findService={deps.findService}
+          findFileService={deps.findFileService}
           highlightService={deps.highlightService}
           foldController={deps.foldController}
           onEditorFocusHandleChange={deps.onEditorFocusHandleChange}

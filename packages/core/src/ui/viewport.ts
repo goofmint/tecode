@@ -121,6 +121,13 @@ export interface EditorAreaChrome {
   /** `FindWidget` (`findWidget.tsx`) — rendered when `find && isFindOpen
    * && findService`, `0` rows otherwise (Req 11.1). */
   findWidget: number;
+  /** `FindFileWidget` (`findFileWidget.tsx`) — the find-file minibuffer
+   * pinned below the text plane (Issue #164). Its height is not a constant:
+   * the prompt row plus the status row plus however many candidate rows the
+   * last Tab produced, all of which `findFileWidget.tsx`'s own
+   * `findFileWidgetHeight` computes from the same state the component
+   * renders. `0` rows while the minibuffer is closed. */
+  findFileWidget: number;
   /** `Shell`'s bottom `Panel` — `Panel` is `EditorArea`'s SIBLING, not its
    * descendant (design.md §8.1's component tree), but both sit in the same
    * flex column above `StatusBar`, so `Panel`'s height still eats into the
@@ -148,7 +155,8 @@ export interface EditorAreaChrome {
  * blank) window.
  */
 export function computeEditorViewportHeight(terminalHeight: number, chrome: EditorAreaChrome): number {
-  const consumed = chrome.tabBar + chrome.findWidget + chrome.panel + chrome.statusBar;
+  const consumed =
+    chrome.tabBar + chrome.findWidget + chrome.findFileWidget + chrome.panel + chrome.statusBar;
   const available = Math.trunc(terminalHeight) - Math.trunc(consumed);
   return Math.max(1, available);
 }

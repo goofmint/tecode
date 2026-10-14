@@ -76,3 +76,26 @@ export function isCollapsed(selection: Selection): boolean {
 export function collapsedSelection(position: Position): Selection {
   return { start: position, end: position, anchor: position, active: position };
 }
+
+/**
+ * Build the `Selection` spanning `anchor` (the fixed end — Emacs' *mark*)
+ * and `active` (the moving end — Emacs' *point*), deriving `start`/`end`
+ * from whichever comes first in the document. A backward selection
+ * (`active` before `anchor`) keeps its direction: `start` is `active`,
+ * `end` is `anchor`.
+ *
+ * Extracted from `movement.ts`'s `applyMovement` (whose extending branch
+ * was the only place this lived) so Issue #163's
+ * `editor.action.exchangePointAndMark` — which swaps the two ends and must
+ * re-derive `start`/`end` the exact same way — reuses one implementation
+ * rather than a second copy.
+ */
+export function selectionFromAnchorActive(anchor: Position, active: Position): Selection {
+  const forward = comparePositions(anchor, active) <= 0;
+  return {
+    start: forward ? anchor : active,
+    end: forward ? active : anchor,
+    anchor,
+    active,
+  };
+}

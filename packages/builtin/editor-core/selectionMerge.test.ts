@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Position, Selection } from "@tecode/api";
-import { collapsedSelection, mergeSelections } from "./selectionMerge";
+import { collapsedSelection, mergeSelections, selectionFromAnchorActive } from "./selectionMerge";
 
 function pos(line: number, character: number): Position {
   return { line, character };
@@ -83,5 +83,35 @@ describe("mergeSelections (Req 6.6, 11.1)", () => {
 
   test("an empty input returns an empty array", () => {
     expect(mergeSelections([])).toEqual([]);
+  });
+});
+
+describe("selectionFromAnchorActive (Issue #163)", () => {
+  test("anchor before active yields a forward selection", () => {
+    expect(selectionFromAnchorActive(pos(0, 2), pos(1, 4))).toEqual({
+      start: pos(0, 2),
+      end: pos(1, 4),
+      anchor: pos(0, 2),
+      active: pos(1, 4),
+    });
+  });
+
+  test("active before anchor keeps the backward direction, swapping start/end", () => {
+    expect(selectionFromAnchorActive(pos(1, 4), pos(0, 2))).toEqual({
+      start: pos(0, 2),
+      end: pos(1, 4),
+      anchor: pos(1, 4),
+      active: pos(0, 2),
+    });
+  });
+
+  test("anchor === active yields a collapsed selection", () => {
+    expect(selectionFromAnchorActive(pos(3, 1), pos(3, 1))).toEqual(cursorAt(3, 1));
+  });
+
+  test("swapping the two arguments twice round-trips (exchangePointAndMark)", () => {
+    const original = selectionFromAnchorActive(pos(0, 0), pos(0, 5));
+    const swapped = selectionFromAnchorActive(original.active, original.anchor);
+    expect(selectionFromAnchorActive(swapped.active, swapped.anchor)).toEqual(original);
   });
 });

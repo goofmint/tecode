@@ -137,9 +137,12 @@ test("buildAssemblyRoot wires every core service and registers the 'tecode' modu
     // (`ctrl+k [`, `ctrl+k ]` — `ui/sidebarWidthCommands.ts`'s
     // `SIDEBAR_WIDTH_DEFAULT_KEYBINDINGS`), and Issue #146 adds
     // `panelHeight`'s own 2 default keys (`ctrl+k up`, `ctrl+k down` —
-    // `ui/panelHeightCommands.ts`'s `PANEL_HEIGHT_DEFAULT_KEYBINDINGS`):
-    // 4 + 5 + 2 + 2 = 13 distinct keys.
-    expect(root.keymap.getTable().entries().size).toBe(13);
+    // `ui/panelHeightCommands.ts`'s `PANEL_HEIGHT_DEFAULT_KEYBINDINGS`), and
+    // Issue #164 adds `findFile`'s `return`/`escape`/`tab` (but `return` and
+    // `escape` already exist in the table from modal defaults, so only `tab`
+    // is a net-new stroke):
+    // 4 + 5 + 2 + 2 + 1 = 14 distinct keys.
+    expect(root.keymap.getTable().entries().size).toBe(14);
     const resolvedModalClose = root.keymap
       .getTable()
       .lookup("escape", (key) => key === "quickPickFocus" || key === "inputBoxFocus");
@@ -1553,7 +1556,7 @@ test("applyKittyKeyboardVerdict(false) never throws even when the loader itself 
 
   try {
     await expect(root.applyKittyKeyboardVerdict(false)).resolves.toBeUndefined();
-    expect(root.keymap.getTable().entries().size).toBe(13); // unchanged: modal + tab + sidebarWidth + panelHeight defaults only
+    expect(root.keymap.getTable().entries().size).toBe(14); // unchanged: modal + tab + sidebarWidth + panelHeight + findFile defaults only
     expect(root.log.entries().some((e) => e.level === "error")).toBe(true);
   } finally {
     root.config.dispose();
