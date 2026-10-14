@@ -84,11 +84,10 @@ export const SEARCH_CASE_SENSITIVE_DEFAULT = false;
 export const SEARCH_MAX_RESULTS_DEFAULT = 1000;
 
 /** The activity-bar glyph for this view (Issue #147's "アイコンを設定する").
- * Plain ASCII, deliberately not an emoji — `@tecode/core`'s `shell.tsx`'s
- * `SIDEBAR_COLLAPSE_GLYPH` TSDoc and Issue #121 give the reasoning (not
- * every terminal font renders one, and a wide glyph breaks the fixed
- * 4-column activity bar's monospace cell). */
-export const SEARCH_VIEW_ICON = "S";
+ * An emoji (Issue #171): a single 2-cell
+ * glyph, which `@tecode/core`'s `shell.tsx` `ActivityBar` pads to its fixed
+ * 4-column width (`formatActivityBarGlyph`). */
+export const SEARCH_VIEW_ICON = "🔎";
 
 export default {
   id: "tecode.search",

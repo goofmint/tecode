@@ -169,6 +169,7 @@ const BASE_COLORS: Record<UiColorKey, RGB> = {
   "activityBar.foreground": FG,
   "activityBar.inactiveForeground": MUTED,
   "activityBar.border": BORDER,
+  "activityBar.activeBackground": { r: 68, g: 68, b: 68 },
   "activityBarBadge.background": ACCENT,
   "activityBarBadge.foreground": WHITE,
   "sideBar.background": { r: 37, g: 37, b: 38 },

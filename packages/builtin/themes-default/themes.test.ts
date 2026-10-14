@@ -67,6 +67,7 @@ const UI_COLOR_KEYS: Record<UiColorKey, true> = {
   "activityBar.foreground": true,
   "activityBar.inactiveForeground": true,
   "activityBar.border": true,
+  "activityBar.activeBackground": true,
   "activityBarBadge.background": true,
   "activityBarBadge.foreground": true,
   "sideBar.background": true,

@@ -68,20 +68,23 @@ import { createDocumentManager } from "../buffer/documentManager";
 import { pathToUri } from "../buffer/uri";
 import { createEditorInputRouter } from "../editor/inputRouter";
 import { createHostLog } from "../host/errors";
+import { cellWidth } from "./cellWidth";
 import { Tree, TAB_WIDTH } from "./components";
 import { createEditorSessionService } from "./editorSession";
 import { createFindService } from "./findService";
 import { ContextFocusTracker } from "./focus";
 import { registerSidebarVisibilityCommand } from "./sidebarVisibilityCommands";
 import { createSlotRegistry } from "./slotRegistry";
-import { ACTIVITY_BAR_WIDTH, Shell, SIDEBAR_COLLAPSE_GLYPH, SIDEBAR_EXPAND_GLYPH } from "./shell";
-import { ThemeProvider } from "./theme";
+import { ACTIVITY_BAR_WIDTH, formatActivityBarGlyph, Shell, SIDEBAR_COLLAPSE_GLYPH, SIDEBAR_EXPAND_GLYPH } from "./shell";
+import { createBaseTheme } from "../api/stubs";
+import { ThemeProvider, toColorInput } from "./theme";
 
 import {
   createInMemoryFs,
   createRecordingSink,
   createShellHarness,
   findTabSelect,
+  flattenSpans,
 } from "./uiTestSupport";
 
 const noopComponent = () => undefined;
@@ -407,7 +410,7 @@ function activityBarToggle(activityBar: BoxRenderable): TextRenderable {
  * `mockMouse`). `x`/`y` are irrelevant here — unlike `Sidebar`'s
  * border-drag math, neither `ActivityBar` handler below reads the event's
  * coordinates. */
-function clickText(target: TextRenderable): void {
+function clickText(target: BoxRenderable | TextRenderable): void {
   target.processMouseEvent(
     new OpenTuiMouseEvent(target, {
       type: "down",
@@ -488,7 +491,7 @@ describe("Shell — ActivityBar sidebar-visibility toggle (Issue #135)", () => {
     );
     await act(async () => { await renderOnce(); });
 
-    const searchIcon = findActivityBarBox(renderer.root)!.getChildren()[0] as TextRenderable;
+    const searchIcon = findActivityBarBox(renderer.root)!.getChildren()[0] as BoxRenderable;
 
     // First click: selects "search" (not yet active) — activates the view
     // AND ensures the sidebar is visible, exactly like `selectSidebarView`'s
@@ -1333,3 +1336,111 @@ function findInputByPlaceholder(node: unknown, placeholder: string): { focus(): 
   }
   return undefined;
 }
+
+describe("Shell — ActivityBar emoji icons and active background (Issue #171)", () => {
+  async function renderBar(
+    register: (slotRegistry: ReturnType<typeof createShellHarness>["slotRegistry"]) => void,
+    activeView?: string,
+  ) {
+    const { slotRegistry, layoutState, context } = createShellHarness();
+    await layoutState.ready;
+    if (activeView) layoutState.update({ activeView });
+    register(slotRegistry);
+    const rendered = await testRender(
+      <ThemeProvider>
+        <ContextFocusTracker context={context}>
+          <Shell slotRegistry={slotRegistry} layoutState={layoutState} />
+        </ContextFocusTracker>
+      </ThemeProvider>,
+      { width: 60, height: 20 },
+    );
+    await act(async () => {
+      await rendered.renderOnce();
+    });
+    return { ...rendered, layoutState };
+  }
+
+  /** Background of every cell in `row`'s first {@link ACTIVITY_BAR_WIDTH} columns. */
+  function barRowBgs(spans: ReturnType<typeof flattenSpans>, row: number): string[] {
+    return spans
+      .filter((s) => s.row === row && s.col < ACTIVITY_BAR_WIDTH)
+      .map((s) => JSON.stringify(s.bg));
+  }
+
+  function registerEmojiPairs(slotRegistry: Parameters<Parameters<typeof renderBar>[0]>[0]): void {
+    slotRegistry.registerView("activityBar.item", "explorer", undefined, { title: "Explorer", icon: "📁" });
+    slotRegistry.registerView("sidebar.view", "explorer", () => <text>Explorer Panel</text>);
+    slotRegistry.registerView("activityBar.item", "search", undefined, { title: "Search", icon: "🔎" });
+    slotRegistry.registerView("sidebar.view", "search", () => <text>Search Panel</text>);
+  }
+
+  test("emoji icons render inside the 4-column bar without shifting the sidebar", async () => {
+    const { captureCharFrame } = await renderBar(registerEmojiPairs, "explorer");
+    const lines = captureCharFrame().split("\n");
+    expect(lines[0]!.startsWith(" 📁 ")).toBe(true);
+    expect(lines[1]!.startsWith(" 🔎 ")).toBe(true);
+    expect(lines[0]!.slice(2)).toContain("Explorer Panel");
+  });
+
+  test("an empty icon falls back to the title's first grapheme", async () => {
+    const { captureCharFrame } = await renderBar((slotRegistry) => {
+      slotRegistry.registerView("activityBar.item", "explorer", undefined, { title: "Explorer", icon: "" });
+      slotRegistry.registerView("sidebar.view", "explorer", () => <text>Explorer Panel</text>);
+    }, "explorer");
+    expect(captureCharFrame().split("\n")[0]!.startsWith(" E  ")).toBe(true);
+  });
+
+  test("the active item's row carries activityBar.activeBackground; inactive rows keep activityBar.background", async () => {
+    const theme = createBaseTheme();
+    const activeBg = JSON.stringify(toColorInput(theme.colors["activityBar.activeBackground"]));
+    const barBg = JSON.stringify(toColorInput(theme.colors["activityBar.background"]));
+    expect(activeBg).not.toBe(barBg);
+
+    const { captureSpans, renderOnce, layoutState } = await renderBar(registerEmojiPairs, "explorer");
+    let spans = flattenSpans(captureSpans());
+    expect(barRowBgs(spans, 0).length).toBeGreaterThan(0);
+    for (const bg of barRowBgs(spans, 0)) expect(bg).toBe(activeBg);
+    for (const bg of barRowBgs(spans, 1)) expect(bg).toBe(barBg);
+
+    // Selecting another item moves the highlight.
+    await act(async () => {
+      layoutState.update({ activeView: "search" });
+      await renderOnce();
+    });
+    await act(async () => {
+      await renderOnce();
+    });
+    spans = flattenSpans(captureSpans());
+    for (const bg of barRowBgs(spans, 0)) expect(bg).toBe(barBg);
+    for (const bg of barRowBgs(spans, 1)) expect(bg).toBe(activeBg);
+  });
+
+  test("a custom activityBar.item component also gets the active background", async () => {
+    const theme = createBaseTheme();
+    const activeBg = JSON.stringify(toColorInput(theme.colors["activityBar.activeBackground"]));
+    const { captureSpans } = await renderBar((slotRegistry) => {
+      slotRegistry.registerView("activityBar.item", "custom", () => <text>X</text>, { title: "Custom" });
+      slotRegistry.registerView("sidebar.view", "custom", () => <text>Custom Panel</text>);
+    }, "custom");
+    const bgs = barRowBgs(flattenSpans(captureSpans()), 0);
+    expect(bgs.length).toBeGreaterThan(0);
+    for (const bg of bgs) expect(bg).toBe(activeBg);
+  });
+});
+
+describe("formatActivityBarGlyph (Issue #171)", () => {
+  test("pads every glyph to exactly ACTIVITY_BAR_WIDTH cells", () => {
+    expect(formatActivityBarGlyph("E")).toBe(" E  ");
+    expect(formatActivityBarGlyph("📁")).toBe(" 📁 ");
+    expect(formatActivityBarGlyph("🔎")).toBe(" 🔎 ");
+    for (const glyph of ["E", "📁", "🔎", "🔤", "ab", "日"]) {
+      expect(cellWidth(formatActivityBarGlyph(glyph))).toBe(ACTIVITY_BAR_WIDTH);
+    }
+  });
+
+  test("a glyph wider than 2 cells is cut to its first grapheme cluster", () => {
+    expect(formatActivityBarGlyph("📁🔎")).toBe(" 📁 ");
+    expect(formatActivityBarGlyph("abc")).toBe(" a  ");
+    expect(cellWidth(formatActivityBarGlyph("📁🔎🔤"))).toBe(ACTIVITY_BAR_WIDTH);
+  });
+});
