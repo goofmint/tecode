@@ -39,9 +39,11 @@
  * itself re-triggers the same `onDidChange`).
  */
 
-import type { Disposable, Event, Listener, ResolvedTheme } from "@tecode/api";
+import type { Event, ResolvedTheme } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 import type { HostError, HostLog } from "../host/errors";
 import { BASE_THEME_ID, type ThemeRegistry } from "./themeRegistry";
+import { describeError } from "../util/errors";
 
 /** Dependencies for {@link createThemeService}. */
 export interface ThemeServiceDeps {
@@ -93,17 +95,6 @@ export interface ThemeService {
   dispose(): void;
 }
 
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
 /** Guarded `log.append` (matches every other module's `logSafely`). */
 function logSafely(log: HostLog | undefined, level: "error" | "warning", err: HostError): void {
   if (!log) return;
@@ -129,22 +120,12 @@ export function createThemeService(deps: ThemeServiceDeps): ThemeService {
   let activeTheme: ResolvedTheme = startEntry?.theme ?? { colors: {} as ResolvedTheme["colors"], tokens: {} };
 
   let stash: { id: string; theme: ResolvedTheme } | undefined;
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>((cause) =>
+    logSafely(log, "error", {
+      message: `ThemeService onDidChange listener threw: ${describeError(cause)}`,
+    }),
+  );
   let disposed = false;
-
-  function fireChange(): void {
-    // Snapshot before iterating, isolate listener failures — matches
-    // every other `onDidChange` in this codebase.
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch (cause) {
-        logSafely(log, "error", {
-          message: `ThemeService onDidChange listener threw: ${describeError(cause)}`,
-        });
-      }
-    }
-  }
 
   function get(): ResolvedTheme {
     return activeTheme;
@@ -167,7 +148,7 @@ export function createThemeService(deps: ThemeServiceDeps): ThemeService {
     }
     activeThemeId = entry.id;
     activeTheme = entry.theme;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function commitTheme(): void {
@@ -190,7 +171,7 @@ export function createThemeService(deps: ThemeServiceDeps): ThemeService {
     stash = undefined;
     activeThemeId = id;
     activeTheme = theme;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function setTheme(id: string): void {
@@ -205,25 +186,13 @@ export function createThemeService(deps: ThemeServiceDeps): ThemeService {
     if (activeThemeId === entry.id && activeTheme === entry.theme) return;
     activeThemeId = entry.id;
     activeTheme = entry.theme;
-    fireChange();
-  }
-
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
+    changes.emit(undefined);
   }
 
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    listeners.clear();
+    changes.clear();
   }
 
   return {
@@ -233,7 +202,7 @@ export function createThemeService(deps: ThemeServiceDeps): ThemeService {
     commitTheme,
     revertTheme,
     setTheme,
-    onDidChange,
+    onDidChange: changes.on,
     dispose,
   };
 }

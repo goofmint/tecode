@@ -41,7 +41,8 @@ import { readFile as nodeReadFile, writeFile as nodeWriteFile, mkdir as nodeMkdi
 import { dirname } from "node:path";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserSettingsPath } from "../host/paths";
-import { stripComments } from "../config/jsonc";
+import { findObjectOpenBrace, stripComments } from "../config/jsonc";
+import { describeError, errorCode } from "../util/errors";
 
 /** The narrow filesystem seam {@link createSidebarWidthSettingsWriter}
  * needs — injectable (matches `themeSettingsWriter.ts`'s
@@ -128,63 +129,12 @@ export interface SidebarWidthSettingsWriter {
   flush(): Promise<void>;
 }
 
-/** Render a caught `unknown` value as a message string (matches every
- * other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-/** Extract an errno-style `code` (matches `themeSettingsWriter.ts`'s/
- * `layoutState.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
-}
-
 // Matches `"workbench.sidebarWidth"` followed by any single JSON scalar
 // value — mirrors `themeSettingsWriter.ts`'s `COLOR_THEME_KEY_RE` exactly
 // (a pre-existing non-numeric value, e.g. a hand-edited `null`, is still
 // found and replaced rather than missed and duplicated).
 const SIDEBAR_WIDTH_KEY_RE =
   /"workbench\.sidebarWidth"\s*:\s*(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null)/;
-
-/**
- * Find the offset of the first `{` in `text` outside any comment/string
- * (identical logic to `themeSettingsWriter.ts`'s `findObjectOpenBrace` —
- * duplicated rather than imported since neither module depends on the
- * other and this is a handful of lines, matching this codebase's other
- * small-helper-duplication precedents, e.g. `describeError`/`errorCode`
- * above).
- */
-function findObjectOpenBrace(text: string): number {
-  const sanitized = stripComments(text);
-  let inString = false;
-  for (let i = 0; i < sanitized.length; i++) {
-    const ch = sanitized[i]!;
-    if (inString) {
-      if (ch === "\\") {
-        i++;
-        continue;
-      }
-      if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") return i;
-  }
-  return -1;
-}
 
 /**
  * Text-replace `"workbench.sidebarWidth"`'s value in `text` with `width`

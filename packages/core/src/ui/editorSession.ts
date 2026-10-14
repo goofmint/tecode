@@ -31,7 +31,8 @@
  * `undefined` when nothing is open.
  */
 
-import type { Disposable, Event, Listener, Selection, Uri } from "@tecode/api";
+import type { Event, Selection, Uri } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
 import { clampSelectionsToDocument, createInitialEditorState, type EditorState } from "./editorState";
@@ -112,23 +113,9 @@ export interface EditorSessionService {
 export function createEditorSessionService(deps: EditorSessionServiceDeps): EditorSessionService {
   const { documents } = deps;
   const states = new Map<Uri, EditorState>();
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>();
   let activeUri: Uri | undefined;
   let disposed = false;
-
-  function fireChange(): void {
-    // Snapshot before iterating, and isolate listener failures — matches
-    // every other `onDidChange` in this codebase (context.ts, document.ts,
-    // documentManager.ts).
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures: one throwing listener must not stop
-        // the remaining listeners or propagate out of this service.
-      }
-    }
-  }
 
   /** `shell.tsx`'s original effect, replicated exactly (this module's
    * TSDoc): keep the current active document if still open; otherwise fall
@@ -138,7 +125,7 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
     if (open.length === 0) {
       if (activeUri !== undefined) {
         activeUri = undefined;
-        fireChange();
+        changes.emit(undefined);
       }
       return;
     }
@@ -146,7 +133,7 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
     const next = open[0]!.uri;
     if (activeUri !== next) {
       activeUri = next;
-      fireChange();
+      changes.emit(undefined);
     }
   }
 
@@ -222,7 +209,7 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
   function setActiveDocumentUri(uri: Uri | undefined): void {
     if (activeUri === uri) return;
     activeUri = uri;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function getState(uri: Uri): EditorState {
@@ -236,19 +223,7 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
 
   function setState(uri: Uri, state: EditorState): void {
     states.set(uri, state);
-    fireChange();
-  }
-
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
+    changes.emit(undefined);
   }
 
   function dispose(): void {
@@ -257,7 +232,7 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
     openSub.dispose();
     closeSub.dispose();
     reloadSub.dispose();
-    listeners.clear();
+    changes.clear();
   }
 
   return {
@@ -266,7 +241,7 @@ export function createEditorSessionService(deps: EditorSessionServiceDeps): Edit
     setActiveDocumentUri,
     getState,
     setState,
-    onDidChange,
+    onDidChange: changes.on,
     dispose,
   };
 }

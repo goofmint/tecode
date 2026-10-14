@@ -460,3 +460,4 @@ export {
   type VtEmulator,
   type VtEmulatorDeps,
 } from "./terminal/index";
+export { describeError, errorCode } from "./util/errors";

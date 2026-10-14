@@ -54,6 +54,7 @@ import type { HostLog } from "../host/errors";
 import { getUserFallbackKeybindingsPath } from "../host/paths";
 import { parseJsonc } from "../config/jsonc";
 import bundledFallbackKeybindingsJson from "./keybindings.fallback.json";
+import { describeError, errorCode } from "../util/errors";
 
 /**
  * The binary's built-in `keybindings.fallback.json` (this module's
@@ -82,29 +83,6 @@ function createNodeFallbackKeybindingsFs(): FallbackKeybindingsFs {
   return {
     readFile: (path) => nodeReadFile(path, "utf8"),
   };
-}
-
-/** Extract an errno-style `code` (e.g. `"ENOENT"`) from a caught unknown
- * (matches `config/service.ts`'s own `errorCode`, duplicated per this
- * codebase's house style of small, non-shared per-module helpers). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `config/service.ts`'s/`bindingTable.ts`'s own
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Guarded `log.append` (matches `bindingTable.ts`'s own `logSafely`): an

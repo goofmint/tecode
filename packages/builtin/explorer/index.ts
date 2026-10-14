@@ -45,7 +45,7 @@
  */
 
 import type { ExtensionContext, QuickPickItem, Uri } from "@tecode/api";
-import { createBunGitRunner, createIgnoreChecker, joinChildUri } from "../shared";
+import { createBunGitRunner, createIgnoreChecker, describeError, joinChildUri } from "../shared";
 import { createExplorerViewComponent } from "./ExplorerView";
 import { rootFolderName } from "./rootTitle";
 import { createExplorerStore, type ExplorerStore } from "./store";
@@ -81,18 +81,6 @@ const OPEN_FILE_COMMAND_ID = "workbench.action.files.openUri";
  * tsx`'s `Sidebar` unmounts its content entirely while hidden) — `Tree`'s
  * own `focused` prop below drives that. */
 const FOCUS_SIDEBAR_VIEW_COMMAND_ID = `workbench.view.${EXPLORER_VIEW_ID}`;
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `fileSystem.ts`'s/`walkFiles.ts`'s callers' own
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
 
 /** Validates a new file/folder name (Req 11.2's "create... with input-box
  * prompts"): non-empty, no path separator, not `.`/`..`, and not already

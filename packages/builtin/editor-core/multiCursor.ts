@@ -16,51 +16,16 @@
  */
 
 import type { Position, Selection } from "@tecode/api";
-import { comparePositions } from "./positionTransform";
+import { readBuffer, toOffset } from "./bufferOffsets";
+import type { LineReader } from "./movement";
+import { isCollapsed } from "./selectionMerge";
 import { toGraphemes } from "./wordBoundary";
 
-/** The slice of `tecode.editor` this module needs — identical to
- * `movement.ts`'s own `LineReader`, duplicated locally so this module has
- * no dependency on `movement.ts` beyond what it actually uses (`getLine`/
- * `lineCount`; every caller in practice passes the same `tecode.editor`
- * object either way). */
-export interface LineReader {
-  getLine(line: number): string;
-  lineCount: number;
-}
-
-/** Whether `selection` is a collapsed cursor (no selected range). */
-function isCollapsed(selection: Selection): boolean {
-  return comparePositions(selection.start, selection.end) === 0;
-}
-
-/** Join every line of the document into one string with the offset each
- * line starts at (this module's own line↔offset mapping — `editor-core`
- * cannot import `@tecode/core`'s `LineBuffer.offsetAt`/`positionAt`, the
- * ESLint layering rule, and a full-buffer scan here is only paid on an
- * explicit ctrl+d press, never per keystroke). `lineStarts[i]` is line
- * `i`'s first character's offset into `text`; lines are joined with `"\n"`
- * regardless of the document's actual EOL — this module only ever compares
- * offsets it computed itself, so the join character need not match the
- * document's real line endings, only be self-consistent.
- */
-function readBuffer(reader: LineReader): { text: string; lineStarts: number[] } {
-  const lines: string[] = [];
-  const lineStarts: number[] = [];
-  let offset = 0;
-  for (let i = 0; i < reader.lineCount; i++) {
-    const line = reader.getLine(i);
-    lineStarts.push(offset);
-    lines.push(line);
-    offset += line.length + 1;
-  }
-  return { text: lines.join("\n"), lineStarts };
-}
-
-/** Convert `position` to an offset into {@link readBuffer}'s `text`. */
-function toOffset(position: Position, lineStarts: readonly number[]): number {
-  return lineStarts[position.line]! + position.character;
-}
+/** Re-exported so existing `import { ..., type LineReader } from
+ * "./multiCursor"` call sites keep resolving; the single declaration now
+ * lives in `movement.ts`, which every other module in this package already
+ * imports it from. */
+export type { LineReader };
 
 /** The inverse of {@link toOffset}: find the line whose start is the
  * greatest one `<= offset`, then the remaining character within it. */

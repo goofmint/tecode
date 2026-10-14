@@ -78,12 +78,13 @@
  * no repeat warning, ever again for the life of this service instance.
  */
 
-import type { Disposable, DocumentChangeEvent, Event, Listener, TextEdit, Uri } from "@tecode/api";
+import type { Disposable, DocumentChangeEvent, Event, TextEdit, Uri } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
+import { applyIncrementalEdits, disposeParsedDocumentState } from "./treeEdits";
 import type { CoreDocument } from "../buffer/document";
 import type { DocumentManager } from "../buffer/documentManager";
 import { createLineBuffer, type LineBuffer } from "../buffer/lineBuffer";
-import { comparePositions } from "../editor/positionTransform";
-import type { HostError, HostLog, StatusSink } from "../host/errors";
+import { reportHostError, type HostError, type HostLog, type StatusSink } from "../host/errors";
 import type { AssetResolver } from "./assetResolver";
 import { PLAINTEXT_LANGUAGE_ID, type LanguageRegistry } from "./languageRegistry";
 import {
@@ -93,6 +94,7 @@ import {
   type ParserQuery,
   type ParserTree,
 } from "./parserBackend";
+import { describeError } from "../util/errors";
 
 /** One highlighted span within a single document line — the shape
  * `EditorView`'s `buildLineRuns` merges into its selection/cursor/find
@@ -248,17 +250,6 @@ export interface HighlightService {
   dispose(): void;
 }
 
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
 /** Build a {@link HighlightService} (Req 8.1-8.3, design.md §10, §14). */
 export function createHighlightService(deps: HighlightServiceDeps): HighlightService {
   const { documents, languageRegistry, assetResolver, log, sink } = deps;
@@ -267,35 +258,10 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
   const states = new Map<Uri, DocState>();
   const languageAssets = new Map<string, Promise<LanguageAssets | undefined>>();
   const warnedLanguages = new Set<string>();
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>();
   let disposed = false;
 
-  function fireChange(): void {
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures — matches every other `onDidChange` in
-        // this codebase.
-      }
-    }
-  }
-
-  /** Guarded `log.append`/`sink.error` (matches `documentManager.ts`'s
-   * `logSafely`/`notifySafely`) — a broken log/sink must never break the
-   * pipeline it's reporting on. */
-  function reportSafely(err: HostError): void {
-    try {
-      log.append("warning", err);
-    } catch {
-      // Swallowed — reporting a reporting failure has nowhere left to go.
-    }
-    try {
-      sink.error(err);
-    } catch {
-      // Swallowed — see above.
-    }
-  }
+  const reportSafely = (err: HostError): void => reportHostError(log, sink, err);
 
   /** Warn exactly once per language (this module's TSDoc's "Failure
    * degradation") — every load attempt for a language beyond the first
@@ -583,7 +549,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     state.tree = backend.parse(assets.language, text, state.tree);
     state.lastText = text;
     recomputeLineSpans(state, assets, text);
-    fireChange();
+    changes.emit(undefined);
   }
 
   function handleChange(uri: Uri, document: CoreDocument, event: DocumentChangeEvent): void {
@@ -597,23 +563,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     // lost, just folded into that first parse.
     if (!assets || !state.tree) return;
 
-    const oldBuffer = createLineBuffer(state.lastText || "\n", "\n");
-    // Bottom-up (descending start position) — matches `document.ts`'s own
-    // `buffer.applyEdits` order, and is what makes every edit's pre-batch
-    // offsets valid to apply in sequence (this module's TSDoc's
-    // "Incremental edits").
-    const sortedEdits = Array.from(event.edits).sort((a: TextEdit, b: TextEdit) =>
-      comparePositions(b.range.start, a.range.start),
-    );
-    for (const edit of sortedEdits) {
-      state.tree.edit({
-        startIndex: oldBuffer.offsetAt(edit.range.start),
-        oldEndIndex: oldBuffer.offsetAt(edit.range.end),
-        insertedText: edit.newText,
-        startPosition: { row: edit.range.start.line, column: edit.range.start.character },
-        oldEndPosition: { row: edit.range.end.line, column: edit.range.end.character },
-      });
-    }
+    const { sortedEdits, oldBuffer } = applyIncrementalEdits(state.tree, state.lastText, event.edits);
 
     // Re-parse incrementally, then recompute spans for ONLY the dirty line
     // range when the backend supports it ({@link spliceLineSpans}), falling
@@ -642,7 +592,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
       // for a hypothetical backend/mock that reused the same object.
       if (oldTree !== state.tree) oldTree.dispose?.();
     }
-    fireChange();
+    changes.emit(undefined);
   }
 
   function attachDocument(document: CoreDocument): void {
@@ -676,11 +626,7 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
   function detachDocument(uri: Uri): void {
     const state = states.get(uri);
     if (!state) return;
-    state.documentSub?.dispose();
-    // Free this document's tree immediately rather than waiting on GC
-    // (this module's TSDoc / `parserBackend.ts`'s `ParserTree.dispose`
-    // TSDoc, Req 13.1 finding).
-    state.tree?.dispose?.();
+    disposeParsedDocumentState(state);
     states.delete(uri);
   }
 
@@ -702,30 +648,16 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     return state.lineSpans.get(line) ?? EMPTY_SPANS;
   }
 
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
-  }
-
   function dispose(): void {
     if (disposed) return;
     disposed = true;
     openSub.dispose();
     closeSub.dispose();
     for (const state of states.values()) {
-      state.documentSub?.dispose();
-      // Same "free now, don't wait on GC" reasoning as `detachDocument`.
-      state.tree?.dispose?.();
+      disposeParsedDocumentState(state);
     }
     states.clear();
-    listeners.clear();
+    changes.clear();
   }
 
   function whenIdle(): Promise<void> {
@@ -735,5 +667,5 @@ export function createHighlightService(deps: HighlightServiceDeps): HighlightSer
     return Promise.all(Array.from(languageAssets.values())).then(() => undefined);
   }
 
-  return { getSpansForLine, onDidChange, whenIdle, dispose };
+  return { getSpansForLine, onDidChange: changes.on, whenIdle, dispose };
 }

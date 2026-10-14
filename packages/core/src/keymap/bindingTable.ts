@@ -45,6 +45,7 @@ import type { KeybindingContribution } from "@tecode/api";
 import type { HostLog } from "../host/errors";
 import { normalizeKeySequence } from "./normalize";
 import { compileWhen, WhenParseError, type CompiledWhen, type WhenContextGetter } from "./when";
+import { describeError } from "../util/errors";
 
 /** The five binding layers, in ascending precedence order (design.md §6.2,
  * §6.5): defaults < fallback < extension < user < cli. `fallback` is the
@@ -173,18 +174,6 @@ export interface BindingTable {
    * since that command wants to show what's registered, not what's active
    * right now. */
   entries(): ReadonlyMap<string, ResolvedBinding[]>;
-}
-
-/** Render a caught `unknown` value as a message string, mirroring the
- * command registry's `describeError` (design.md §5) — a bad `when` clause
- * must be reported, never allowed to throw past this module. */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Guarded `log.append` — an injected log must not be able to break table

@@ -346,6 +346,46 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     dir = undefined;
   });
 
+  /**
+   * A temp workspace holding one file, an explorer fixture mounted over it,
+   * the root `readdir` settled, and that file selected through the REAL
+   * tree — the starting state most rename/delete tests below need, and
+   * which each previously set up with its own verbatim copy (Qodana
+   * `DuplicatedCode`).
+   *
+   * The 50ms sleep after `waitFor` is deliberate: `waitFor` only proves the
+   * directory has entries on DISK, while the store's own `readdir`
+   * continuation (and so the tree it renders) lands a tick later.
+   */
+  async function mountWithSelectedFile(name: string, content = "") {
+    dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+    const filePath = join(dir, name);
+    await nodeWriteFile(filePath, content);
+    const fixture = createFixture(pathToUri(dir));
+    await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
+    await new Promise((r) => setTimeout(r, 50));
+    await selectViaTree(fixture, pathToUri(filePath));
+    return { fixture, filePath, dir };
+  }
+
+  /** A temp workspace with one file, the explorer's registered view actually
+   * rendered, and `indentWidth` settled on the `Tree` props — the starting
+   * state every `explorer.indentWidth` test needs. */
+  async function mountRenderedViewWithIndentWidth() {
+    dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
+    await nodeWriteFile(join(dir, "a.ts"), "");
+    const fixture = createFixture(pathToUri(dir));
+    const Component = fixture.getRegisteredView() as unknown as (props: Record<string, unknown>) => ReactNode;
+    const { renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
+    await waitFor(async () => {
+      await act(async () => {
+        await renderOnce();
+      });
+      return fixture.getLastTreeProps()?.["indentWidth"] !== undefined;
+    });
+    return { fixture, renderOnce };
+  }
+
   test("registers the sidebar view under EXPLORER_VIEW_ID", async () => {
     dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
     const fixture = createFixture(pathToUri(dir));
@@ -563,13 +603,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("renames a real file on disk and updates the selection to the new uri", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      await nodeWriteFile(join(dir, "old.ts"), "content");
-      const fixture = createFixture(pathToUri(dir));
-      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
-      await new Promise((r) => setTimeout(r, 50));
-
-      await selectViaTree(fixture, pathToUri(join(dir, "old.ts")));
+      const { fixture, dir } = await mountWithSelectedFile("old.ts", "content");
       fixture.setNextInputValue("new.ts");
 
       await fixture.api.commands.execute(EXPLORER_RENAME_COMMAND_ID);
@@ -589,14 +623,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("a rename failure (the file vanished underneath) surfaces via showMessage error", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      const filePath = join(dir, "vanishing.ts");
-      await nodeWriteFile(filePath, "");
-      const fixture = createFixture(pathToUri(dir));
-      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
-      await new Promise((r) => setTimeout(r, 50));
-
-      await selectViaTree(fixture, pathToUri(filePath));
+      const { fixture, filePath } = await mountWithSelectedFile("vanishing.ts");
       await rm(filePath); // the store's cache is now stale — the real rename call must fail
       fixture.setNextInputValue("renamed.ts");
 
@@ -607,13 +634,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("validateInput rejects '.' and '..'", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      await nodeWriteFile(join(dir, "old.ts"), "content");
-      const fixture = createFixture(pathToUri(dir));
-      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
-      await new Promise((r) => setTimeout(r, 50));
-
-      await selectViaTree(fixture, pathToUri(join(dir, "old.ts")));
+      const { fixture } = await mountWithSelectedFile("old.ts", "content");
       fixture.setNextInputValue(undefined);
       await fixture.api.commands.execute(EXPLORER_RENAME_COMMAND_ID);
 
@@ -623,13 +644,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("a '..' name is rejected even when it bypasses validateInput, never escaping the parent directory", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      await nodeWriteFile(join(dir, "old.ts"), "content");
-      const fixture = createFixture(pathToUri(dir));
-      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
-      await new Promise((r) => setTimeout(r, 50));
-
-      await selectViaTree(fixture, pathToUri(join(dir, "old.ts")));
+      const { fixture, dir } = await mountWithSelectedFile("old.ts", "content");
       // The fake `showInputBox` returns whatever was queued regardless of
       // `validateInput` — the "bypasses the input box's own validation"
       // scenario the explicit re-check at the `joinChildUri` call site
@@ -656,14 +671,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("confirming deletes the real file on disk", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      const filePath = join(dir, "doomed.ts");
-      await nodeWriteFile(filePath, "");
-      const fixture = createFixture(pathToUri(dir));
-      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
-      await new Promise((r) => setTimeout(r, 50));
-
-      await selectViaTree(fixture, pathToUri(filePath));
+      const { fixture, dir } = await mountWithSelectedFile("doomed.ts");
       fixture.setNextPick({ label: "Delete", description: "confirm" });
 
       await fixture.api.commands.execute(EXPLORER_DELETE_COMMAND_ID);
@@ -674,14 +682,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("cancelling leaves the file untouched", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      const filePath = join(dir, "safe.ts");
-      await nodeWriteFile(filePath, "");
-      const fixture = createFixture(pathToUri(dir));
-      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
-      await new Promise((r) => setTimeout(r, 50));
-
-      await selectViaTree(fixture, pathToUri(filePath));
+      const { fixture, dir } = await mountWithSelectedFile("safe.ts");
       fixture.setNextPick({ label: "Cancel", description: "cancel" });
 
       await fixture.api.commands.execute(EXPLORER_DELETE_COMMAND_ID);
@@ -692,14 +693,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("a delete failure (already gone) surfaces via showMessage error", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      const filePath = join(dir, "already-gone.ts");
-      await nodeWriteFile(filePath, "");
-      const fixture = createFixture(pathToUri(dir));
-      await waitFor(async () => (await nodeReaddir(dir!)).length > 0);
-      await new Promise((r) => setTimeout(r, 50));
-
-      await selectViaTree(fixture, pathToUri(filePath));
+      const { fixture, filePath } = await mountWithSelectedFile("already-gone.ts");
       await rm(filePath); // stale cache, as above
       fixture.setNextPick({ label: "Delete", description: "confirm" });
 
@@ -763,18 +757,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
 
   describe("explorer.indentWidth (Issue #121)", () => {
     test("reads the config value (default 1) at activate() and live-reloads it, forwarded to Tree", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      await nodeWriteFile(join(dir, "a.ts"), "");
-      const fixture = createFixture(pathToUri(dir));
-
-      const Component = fixture.getRegisteredView() as unknown as (props: Record<string, unknown>) => ReactNode;
-      const { renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
-      await waitFor(async () => {
-        await act(async () => {
-          await renderOnce();
-        });
-        return fixture.getLastTreeProps()?.["indentWidth"] !== undefined;
-      });
+      const { fixture, renderOnce } = await mountRenderedViewWithIndentWidth();
       expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(1);
 
       act(() => fixture.setConfig(EXPLORER_INDENT_WIDTH_CONFIG_KEY, 4));
@@ -787,17 +770,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("increase/decrease commands change the effective indent width WITHOUT writing back to settings (no settings.json write)", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      await nodeWriteFile(join(dir, "a.ts"), "");
-      const fixture = createFixture(pathToUri(dir));
-      const Component = fixture.getRegisteredView() as unknown as (props: Record<string, unknown>) => ReactNode;
-      const { renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
-      await waitFor(async () => {
-        await act(async () => {
-          await renderOnce();
-        });
-        return fixture.getLastTreeProps()?.["indentWidth"] !== undefined;
-      });
+      const { fixture, renderOnce } = await mountRenderedViewWithIndentWidth();
       expect(fixture.getLastTreeProps()?.["indentWidth"]).toBe(1);
 
       await act(async () => {
@@ -828,17 +801,7 @@ describe("explorer activate() (Task 3.3, Req 11.2)", () => {
     });
 
     test("a live config change clears an active step-command override, even landing back on the same value", async () => {
-      dir = await mkdtemp(join(tmpdir(), "tecode-explorer-"));
-      await nodeWriteFile(join(dir, "a.ts"), "");
-      const fixture = createFixture(pathToUri(dir));
-      const Component = fixture.getRegisteredView() as unknown as (props: Record<string, unknown>) => ReactNode;
-      const { renderOnce } = await testRender(<Component />, { width: 30, height: 10 });
-      await waitFor(async () => {
-        await act(async () => {
-          await renderOnce();
-        });
-        return fixture.getLastTreeProps()?.["indentWidth"] !== undefined;
-      });
+      const { fixture, renderOnce } = await mountRenderedViewWithIndentWidth();
 
       await act(async () => {
         await fixture.api.commands.execute(EXPLORER_INCREASE_INDENT_WIDTH_COMMAND_ID);

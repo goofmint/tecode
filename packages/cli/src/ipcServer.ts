@@ -48,7 +48,13 @@ import { chmodSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Socket, UnixSocketListener } from "bun";
 import type { Disposable, Uri } from "@tecode/api";
-import { pathToUri, type CoreDocument, type DocumentManager, type HostLog } from "@tecode/core";
+import {
+  describeError,
+  pathToUri,
+  type CoreDocument,
+  type DocumentManager,
+  type HostLog,
+} from "@tecode/core";
 import {
   encodeIpcMessage,
   parseIpcRequest,
@@ -121,17 +127,6 @@ export interface IpcServer {
 interface ConnectionState {
   buffer: string;
   pending: Set<Disposable>;
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Guarded `log.append` — reporting a failure must never become a second

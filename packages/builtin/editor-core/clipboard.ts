@@ -13,42 +13,11 @@
  * {@link LineReader}, matching `movement.ts`/`multiCursor.ts`.
  */
 
-import type { Position, Selection, TextEdit } from "@tecode/api";
+import type { Selection, TextEdit } from "@tecode/api";
 import { buildEditBatch, buildInsertEdit, type EditBatch } from "./editing";
+import { readBuffer, toOffset } from "./bufferOffsets";
 import type { LineReader } from "./movement";
-import { comparePositions } from "./positionTransform";
-
-/** Whether `selection` is a plain collapsed cursor (no selected range) —
- * duplicated locally (`editing.ts`'s own private `isCollapsed`, `movement.
- * ts`'s `multiCursor.ts`'s own copies) rather than exported/shared, matching
- * this package's existing convention for this one-line check. */
-function isCollapsed(selection: Selection): boolean {
-  return comparePositions(selection.start, selection.end) === 0;
-}
-
-/** Join every line of the document into one string with the offset each
- * line starts at, and the inverse offset→position lookup — duplicated from
- * `multiCursor.ts`'s own private `readBuffer`/`toOffset` (not exported
- * there) rather than imported, for the same "no cross-module coupling
- * beyond what's actually shared" reasoning `multiCursor.ts`'s own TSDoc
- * gives for not depending on `movement.ts`. */
-function readBuffer(reader: LineReader): { text: string; lineStarts: number[] } {
-  const lines: string[] = [];
-  const lineStarts: number[] = [];
-  let offset = 0;
-  for (let i = 0; i < reader.lineCount; i++) {
-    const line = reader.getLine(i);
-    lineStarts.push(offset);
-    lines.push(line);
-    offset += line.length + 1;
-  }
-  return { text: lines.join("\n"), lineStarts };
-}
-
-/** Convert `position` to an offset into {@link readBuffer}'s `text`. */
-function toOffset(position: Position, lineStarts: readonly number[]): number {
-  return lineStarts[position.line]! + position.character;
-}
+import { isCollapsed } from "./selectionMerge";
 
 /**
  * The text `editor.action.clipboardCopy`/`clipboardCut` write to the

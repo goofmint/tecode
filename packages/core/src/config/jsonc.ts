@@ -11,6 +11,8 @@
  * failure through a `StatusSink` instead of crashing.
  */
 
+import { describeError } from "../util/errors";
+
 /** A successful parse: the decoded value. */
 export interface JsoncSuccess<T = unknown> {
   ok: true;
@@ -113,6 +115,43 @@ export function stripComments(text: string): string {
 }
 
 /**
+ * Find the offset of the first `{` in `text` that is outside any `//`/`/*`
+ * comment or string literal (JSONC allows leading comments, e.g.
+ * `// tip: use { }`, whose `{` must not be mistaken for the settings
+ * object's opening brace). Builds on {@link stripComments} — its
+ * comment-blanking preserves every other character's offset, including
+ * string contents — so this only has to additionally track string state
+ * itself. Returns `-1` if no such `{` exists.
+ *
+ * Lives here rather than in each settings writer because all three
+ * (`themeSettingsWriter.ts`, `sidebarWidthSettingsWriter.ts`,
+ * `panelHeightSettingsWriter.ts`) carried a byte-identical private copy
+ * (Qodana `DuplicatedCode`), and the comment/string tracking it pairs with
+ * is this module's own concern.
+ */
+export function findObjectOpenBrace(text: string): number {
+  const sanitized = stripComments(text);
+  let inString = false;
+  for (let i = 0; i < sanitized.length; i++) {
+    const ch = sanitized[i]!;
+    if (inString) {
+      if (ch === "\\") {
+        i++; // Skip the escaped character (notably `\"`).
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") return i;
+  }
+  return -1;
+}
+
+/**
  * Blank a trailing comma — one whose next non-whitespace character (outside
  * a string) is `}` or `]` — to a space, again preserving every other
  * character's offset. Must run *after* {@link stripComments} so a comma
@@ -166,17 +205,6 @@ function lineColAt(text: string, offset: number): { line: number; column: number
     }
   }
   return { line, column };
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches registry.ts's/documentManager.ts's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /**

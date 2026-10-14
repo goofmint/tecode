@@ -75,3 +75,28 @@ export function createNoopStatusSink(): StatusSink {
     },
   };
 }
+
+/**
+ * Report `err` to BOTH a {@link HostLog} and a {@link StatusSink}, with each
+ * call independently guarded: a broken log or sink must never break the
+ * pipeline it is reporting on, and a failure in one must not skip the other.
+ *
+ * `highlightService.ts` and `foldService.ts` each carried an identical
+ * private `reportSafely` doing exactly this (Qodana `DuplicatedCode`). Other
+ * modules still have their own single-destination `logSafely`/`notifySafely`
+ * helpers whose signatures genuinely differ (optional vs. required log,
+ * caller-chosen vs. fixed level, `HostError` vs. a bare message string);
+ * this covers only the two-destination, fixed-`"warning"` shape they shared.
+ */
+export function reportHostError(log: HostLog, sink: StatusSink, err: HostError): void {
+  try {
+    log.append("warning", err);
+  } catch {
+    // Swallowed — reporting a reporting failure has nowhere left to go.
+  }
+  try {
+    sink.error(err);
+  } catch {
+    // Swallowed — see above.
+  }
+}

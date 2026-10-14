@@ -48,8 +48,8 @@
  * first time).
  */
 
-import type { DirEntry, Disposable, Event, Listener, MessageKind, Uri } from "@tecode/api";
-import { joinChildUri, type IgnoreChecker } from "../shared";
+import type { DirEntry, Event, MessageKind, Uri } from "@tecode/api";
+import { createListenerSet, describeError, joinChildUri, type IgnoreChecker } from "../shared";
 
 /** The exact node shape `tecode.ui.Tree` expects (this module's TSDoc) —
  * duck-typed, not imported. */
@@ -120,17 +120,6 @@ const MIN_INDENT_WIDTH = 0;
 function clampIndentWidth(desired: number): number {
   const safeDesired = Number.isFinite(desired) ? Math.trunc(desired) : MIN_INDENT_WIDTH;
   return Math.max(MIN_INDENT_WIDTH, safeDesired);
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `fileSystem.ts`'s/`registry.ts`'s `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** The explorer's tree state (this module's TSDoc). */
@@ -245,11 +234,11 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
   const parentByUri = new Map<Uri, Uri>();
   const directoryUris = new Set<Uri>();
   const expanded = new Set<Uri>();
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>();
 
   // Per-directory reload generation counter (code review fix, Task 3.3, Req
   // 11.2): bumped at the START of every `reload(dirUri)` call, BEFORE the
-  // first `await`. A reload only commits state/`fireChange()` once every
+  // first `await`. A reload only commits state/`changes.emit(undefined)` once every
   // one of its `await`s resolves AND its captured generation is still the
   // latest recorded for that `dirUri` — a concurrent reload of the SAME
   // directory (a `fs.watch` event racing a `setShowHidden` reload, e.g.)
@@ -274,29 +263,6 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
   let indentWidthOverride: number | undefined;
 
   if (rootUri) relativeDirByUri.set(rootUri, "");
-
-  function fireChange(): void {
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures (matches `keymap/context.ts`'s
-        // `createContextService`'s own `set()`).
-      }
-    }
-  }
-
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let disposed = false;
-    return {
-      dispose() {
-        if (disposed) return;
-        disposed = true;
-        listeners.delete(listener);
-      },
-    };
-  }
 
   /**
    * Recursively purge `uri`'s own bookkeeping AND every cached descendant's
@@ -402,7 +368,7 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
     // module's TSDoc's "reset selection to the affected parent (or
     // root)").
     if (selectionPurged) selectedId = dirUri;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function buildNodes(dirUri: Uri): ExplorerTreeNode[] | undefined {
@@ -427,7 +393,7 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
     } else {
       expanded.delete(uri);
     }
-    fireChange();
+    changes.emit(undefined);
   }
 
   function setShowHidden(value: boolean): void {
@@ -436,14 +402,14 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
     // Reload everything already loaded (root + every expanded directory)
     // so the change is visible without a restart (this module's TSDoc).
     const loadedDirs = Array.from(childrenByDir.keys());
-    fireChange(); // reflect the flag itself immediately; reloads land as they resolve.
+    changes.emit(undefined); // reflect the flag itself immediately; reloads land as they resolve.
     for (const dirUri of loadedDirs) void reload(dirUri);
   }
 
   function setSelectedId(id: Uri | undefined): void {
     if (selectedId === id) return;
     selectedId = id;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function getIndentWidth(): number {
@@ -458,12 +424,12 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
     // `indentWidth` itself lands back at its previous value, an active
     // override still needs clearing and reporting.
     indentWidthOverride = undefined;
-    fireChange();
+    changes.emit(undefined);
   }
 
   function stepIndentWidth(delta: number): void {
     indentWidthOverride = clampIndentWidth(getIndentWidth() + delta);
-    fireChange();
+    changes.emit(undefined);
   }
 
   function resolveTargetDirectory(): Uri | undefined {
@@ -497,6 +463,6 @@ export function createExplorerStore(rootUri: Uri | undefined, deps: ExplorerStor
     toggle,
     reload,
     resolveTargetDirectory,
-    onDidChange,
+    onDidChange: changes.on,
   };
 }

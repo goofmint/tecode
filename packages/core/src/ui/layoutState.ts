@@ -58,11 +58,13 @@
 
 import { readFile as nodeReadFile, writeFile as nodeWriteFile, mkdir as nodeMkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { Disposable, Event, Listener } from "@tecode/api";
+import type { Event } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserLayoutStatePath } from "../host/paths";
 import { clampPanelHeight } from "./panelHeight";
 import { clampSidebarWidth } from "./sidebarWidth";
+import { describeError, errorCode } from "../util/errors";
 
 /** Persisted UI layout state (Req 6.4). */
 export interface LayoutState {
@@ -188,27 +190,6 @@ export interface LayoutStateService {
   onDidChange: Event<void>;
 }
 
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `config/service.ts`'s/`registry.ts`'s `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-/** Extract an errno-style `code` (matches `documentManager.ts`'s/
- * `config/service.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
-}
-
 /** True if any field `partial` sets differs (`!==`) from `prev`'s current
  * value for that field — the shallow check `update()` uses to skip firing
  * `onDidChange` for a no-op merge (this module's TSDoc on
@@ -289,7 +270,11 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
   // Payload is `void` — matches the minimal `onDidChange` convention this
   // codebase already uses (`themeService.ts`, `modalService.ts`,
   // `config/service.ts`, `keymap/context.ts`).
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>((cause) =>
+    logSafely("error", {
+      message: `LayoutStateService onDidChange listener threw: ${describeError(cause)}`,
+    }),
+  );
 
   function logSafely(level: "error" | "warning", err: HostError): void {
     try {
@@ -304,21 +289,6 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
       sink.error(err);
     } catch {
       // Swallowed — see logSafely.
-    }
-  }
-
-  function fireChange(): void {
-    // Snapshot before iterating, isolate each listener's failure — matches
-    // every other `onDidChange` in this codebase (`themeService.ts`,
-    // `modalService.ts`).
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch (cause) {
-        logSafely("error", {
-          message: `LayoutStateService onDidChange listener threw: ${describeError(cause)}`,
-        });
-      }
     }
   }
 
@@ -355,7 +325,7 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
       // them from the persisted values, whether or not it awaits again
       // before returning.
       //
-      // Recorded BEFORE `fireChange()` below, not after: a listener is
+      // Recorded BEFORE `changes.emit(undefined)` below, not after: a listener is
       // free to call `update()` again re-entrantly, and its (newer) merge
       // would otherwise land here first, only for THIS frame's older
       // `partial` to overwrite it on the way out — leaving `state` correct
@@ -369,7 +339,7 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
     // `panelCommands.ts`'s TSDoc calls out ("setting panelVisible: true when
     // it is already true is a harmless no-op merge") without giving this a
     // fancier equality check than the rest of this module bothers with.
-    if (hasChanged(prev, partial)) fireChange();
+    if (hasChanged(prev, partial)) changes.emit(undefined);
     if (pendingTimer !== undefined) {
       try {
         timer.cancel(pendingTimer);
@@ -392,18 +362,6 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
       });
       scheduleSave();
     }
-  }
-
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
   }
 
   async function flush(): Promise<void> {
@@ -460,7 +418,7 @@ export function createLayoutStateService(deps: LayoutStateServiceDeps): LayoutSt
     update,
     ready: load(),
     flush,
-    onDidChange,
+    onDidChange: changes.on,
   };
 }
 

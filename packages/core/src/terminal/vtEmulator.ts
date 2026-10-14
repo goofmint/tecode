@@ -41,6 +41,7 @@ import type { Disposable, Event, Listener, RGB } from "@tecode/api";
 import type { HostError, HostLog } from "../host/errors";
 import { buildXterm256Palette } from "../ui/colorQuantize";
 import { resolveAnsi16 } from "./ansiPalette";
+import { describeError } from "../util/errors";
 
 /** One cell's resolved color (Issue #98's "colours distinguishing
  * default / palette-index / RGB" acceptance bar) — a discriminated union
@@ -117,18 +118,6 @@ export interface VtEmulator {
   /** Tear down the underlying `@xterm/headless` `Terminal`. Idempotent —
    * a second call is always safe and never throws. */
   dispose(): void;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches `clipboard.ts`'s/`fileSystem.ts`'s
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /**

@@ -27,6 +27,7 @@ import type { DiscoveredExtension, DiscoveryFs, ExtensionSource } from "./discov
 import { discover } from "./discovery";
 import type { HostError, HostLog, StatusSink } from "./errors";
 import { checkApiVersionCompatibility, validateManifest } from "./validate";
+import { describeError } from "../util/errors";
 
 /** The narrow slice of {@link ConfigService} registration needs — "the
  * config schema registry" from Task 1.10, satisfied by `ConfigService`
@@ -83,18 +84,6 @@ export interface RegisterExtensionDeps {
    * problem). */
   configRegistrar?: ConfigRegistrar;
   log: HostLog;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches `discovery.ts`'s/`registry.ts`'s
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Guarded `log.append` (matches `discovery.ts`'s/`registry.ts`'s

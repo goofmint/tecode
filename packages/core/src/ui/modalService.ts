@@ -48,13 +48,12 @@
  */
 
 import type {
-  Disposable,
   Event,
   InputBoxOptions,
-  Listener,
   QuickPickItem,
   QuickPickOptions,
 } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 
 /** A read-only snapshot of what the modal overlay should currently render
  * (this module's TSDoc) — `modalOverlay.tsx`'s only way to read
@@ -191,27 +190,14 @@ function clampIndex(index: number, length: number): number {
  * "what modal is open" needs any other core service. */
 export function createModalService(): ModalService {
   let state: InternalState = { mode: null };
-  const listeners = new Set<Listener<void>>();
-
-  function fireChange(): void {
-    // Snapshot before iterating, isolate listener failures — matches every
-    // other `onDidChange` in this codebase (`findService.ts`,
-    // `slotRegistry.ts`, `context.ts`).
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures.
-      }
-    }
-  }
+  const changes = createListenerSet<void>();
 
   /** Resolve+clear whatever modal is currently open with `undefined`
    * (this module's TSDoc's "one modal at a time") — used both by
    * `cancel()` and by `openQuickPick`/`openInputBox` superseding a modal
    * that was already open. Does NOT fire `onDidChange` itself: `cancel()`
    * fires once after calling this; the open-supersedes-open path relies on
-   * the NEW open's own `fireChange()` immediately after, so callers never
+   * the NEW open's own `changes.emit(undefined)` immediately after, so callers never
    * observe the momentary `{ mode: null }` in between. */
   function resolveCurrentAsCancelled(): void {
     if (state.mode === "quickPick" || state.mode === "inputBox") {
@@ -257,7 +243,7 @@ export function createModalService(): ModalService {
         options,
         resolve,
       };
-      fireChange();
+      changes.emit(undefined);
     });
   }
 
@@ -274,7 +260,7 @@ export function createModalService(): ModalService {
         validationMessage = undefined;
       }
       state = { mode: "inputBox", value, validationMessage, options, resolve };
-      fireChange();
+      changes.emit(undefined);
     });
   }
 
@@ -282,7 +268,7 @@ export function createModalService(): ModalService {
     if (state.mode !== "quickPick") return;
     if (state.filterQuery === query) return;
     state = { ...state, filterQuery: query };
-    fireChange();
+    changes.emit(undefined);
   }
 
   function setInputValue(value: string): void {
@@ -294,7 +280,7 @@ export function createModalService(): ModalService {
       validationMessage = undefined;
     }
     state = { ...state, value, validationMessage };
-    fireChange();
+    changes.emit(undefined);
   }
 
   function selectNext(): void {
@@ -303,7 +289,7 @@ export function createModalService(): ModalService {
     if (filtered.length === 0) return;
     const current = clampIndex(state.activeIndex, filtered.length);
     state = { ...state, activeIndex: (current + 1) % filtered.length };
-    fireChange();
+    changes.emit(undefined);
   }
 
   function selectPrevious(): void {
@@ -312,7 +298,7 @@ export function createModalService(): ModalService {
     if (filtered.length === 0) return;
     const current = clampIndex(state.activeIndex, filtered.length);
     state = { ...state, activeIndex: (current - 1 + filtered.length) % filtered.length };
-    fireChange();
+    changes.emit(undefined);
   }
 
   function accept(): void {
@@ -323,7 +309,7 @@ export function createModalService(): ModalService {
       const resolve = state.resolve;
       state = { mode: null };
       resolve(picked);
-      fireChange();
+      changes.emit(undefined);
       return;
     }
     if (state.mode === "inputBox") {
@@ -334,31 +320,19 @@ export function createModalService(): ModalService {
       const value = state.value;
       state = { mode: null };
       resolve(value);
-      fireChange();
+      changes.emit(undefined);
     }
   }
 
   function cancel(): void {
     if (state.mode !== "quickPick" && state.mode !== "inputBox") return;
     resolveCurrentAsCancelled();
-    fireChange();
-  }
-
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
+    changes.emit(undefined);
   }
 
   function dispose(): void {
     cancel();
-    listeners.clear();
+    changes.clear();
   }
 
   return {
@@ -371,7 +345,7 @@ export function createModalService(): ModalService {
     selectPrevious,
     accept,
     cancel,
-    onDidChange,
+    onDidChange: changes.on,
     dispose,
   };
 }

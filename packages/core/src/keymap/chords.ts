@@ -39,6 +39,7 @@ import type { HostLog } from "../host/errors";
 import type { BindingTable } from "./bindingTable";
 import { normalizeKey } from "./normalize";
 import type { WhenContextGetter } from "./when";
+import { describeError } from "../util/errors";
 
 /** The chord timeout (design.md §6.3: "a 3-second timeout"), in
  * milliseconds. Exported so callers (tests, the status bar indicator) can
@@ -132,18 +133,6 @@ export interface ChordStateMachine {
    * touching the table or executing anything, and {@link reset} is a
    * no-op. */
   dispose(): void;
-}
-
-/** Render a caught `unknown` value as a message string, matching the
- * `describeError` helper duplicated across the command registry and
- * binding table (design.md §5, §14). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Canonical form of the Escape key, as {@link normalizeKey} would produce

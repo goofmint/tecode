@@ -20,6 +20,7 @@ import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { createSystemClock, type Clock } from "./clock";
 import { createLineBuffer } from "./lineBuffer";
 import { createUndoStack, type TypingCoalesceHint } from "./undoStack";
+import { describeError } from "../util/errors";
 
 /** Dependencies and initial state for {@link createDocument}. */
 export interface CreateDocumentOptions {
@@ -475,15 +476,4 @@ export function createDocument(options: CreateDocumentOptions): CoreDocument {
   };
 
   return document;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches registry.ts's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }

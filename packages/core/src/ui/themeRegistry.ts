@@ -45,12 +45,14 @@
 
 import { join } from "node:path";
 import { readFile as nodeReadFile } from "node:fs/promises";
-import type { Disposable, Event, Listener, ResolvedTheme, ThemeContribution } from "@tecode/api";
+import type { Disposable, Event, ResolvedTheme, ThemeContribution } from "@tecode/api";
+import { createListenerSet } from "../util/listenerSet";
 import type { PendingThemeContribution } from "../host/registration";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { createBaseTheme } from "../api/stubs";
 import { quantizeTheme } from "./colorQuantize";
 import { loadThemeFallbackForReadError, loadThemeFromJsonText } from "./themeLoader";
+import { describeError } from "../util/errors";
 
 /** The terminal color depths {@link ThemeRegistry} quantizes for (Req 7.4)
  * — the same union `packages/cli`'s `detectTerminalCapabilities` reports,
@@ -155,17 +157,6 @@ export interface ThemeRegistry {
   dispose(): void;
 }
 
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
 /** Guarded `log.append` (matches every other module's `logSafely`). */
 function logSafely(log: HostLog | undefined, level: "error" | "warning", err: HostError): void {
   if (!log) return;
@@ -186,7 +177,11 @@ export function createThemeRegistry(deps: ThemeRegistryDeps = {}): ThemeRegistry
   const shouldQuantize = colorDepth === "256" || colorDepth === "16";
 
   const entries = new Map<string, ThemeRegistryEntry>();
-  const listeners = new Set<Listener<void>>();
+  const changes = createListenerSet<void>((cause) =>
+    logSafely(log, "error", {
+      message: `ThemeRegistry onDidChange listener threw: ${describeError(cause)}`,
+    }),
+  );
   let disposed = false;
   // Per-id load generation (Req 7.1/7.4's "later registrations win"):
   // registering the same `id` twice starts two independent async loads: an
@@ -198,20 +193,6 @@ export function createThemeRegistry(deps: ThemeRegistryDeps = {}): ThemeRegistry
   // "a no-op if a later registration has already superseded it" discipline
   // this module's TSDoc already cites for `register`.
   const loadGenerations = new Map<string, number>();
-
-  function fireChange(): void {
-    // Snapshot before iterating, isolate listener failures — matches
-    // every other `onDidChange` in this codebase.
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch (cause) {
-        logSafely(log, "error", {
-          message: `ThemeRegistry onDidChange listener threw: ${describeError(cause)}`,
-        });
-      }
-    }
-  }
 
   function finalizeTheme(theme: ResolvedTheme): ResolvedTheme {
     return shouldQuantize ? quantizeTheme(theme) : theme;
@@ -225,7 +206,7 @@ export function createThemeRegistry(deps: ThemeRegistryDeps = {}): ThemeRegistry
     // queryable entry behind for get()/list() (this module's TSDoc:
     // dispose() only stops onDidChange from firing further, it does not
     // erase already-registered themes).
-    fireChange();
+    changes.emit(undefined);
   }
 
   // Seed the always-present built-in base theme synchronously (this
@@ -304,22 +285,10 @@ export function createThemeRegistry(deps: ThemeRegistryDeps = {}): ThemeRegistry
     return Array.from(entries.values(), ({ id, label }) => ({ id, label }));
   }
 
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let listenerDisposed = false;
-    return {
-      dispose() {
-        if (listenerDisposed) return;
-        listenerDisposed = true;
-        listeners.delete(listener);
-      },
-    };
-  }
-
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    listeners.clear();
+    changes.clear();
   }
 
   return {
@@ -327,7 +296,7 @@ export function createThemeRegistry(deps: ThemeRegistryDeps = {}): ThemeRegistry
     loadContributions,
     get,
     list,
-    onDidChange,
+    onDidChange: changes.on,
     dispose,
   };
 }

@@ -38,7 +38,8 @@ import {
 import { dirname } from "node:path";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserSettingsPath } from "../host/paths";
-import { stripComments } from "../config/jsonc";
+import { findObjectOpenBrace } from "../config/jsonc";
+import { describeError, errorCode } from "../util/errors";
 
 /** The narrow filesystem seam {@link createThemeSettingsWriter} needs —
  * injectable (matches `layoutState.ts`'s `LayoutStateFs`,
@@ -103,27 +104,6 @@ export interface ThemeSettingsWriter {
   write(themeId: string): Promise<void>;
 }
 
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-/** Extract an errno-style `code` (matches `config/service.ts`'s/
- * `layoutState.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
-}
-
 // Matches `"workbench.colorTheme"` followed by any single JSON scalar value
 // — a double-quoted string, a number, or `true`/`false`/`null` — so a
 // pre-existing key whose value is not a string (e.g. `null`, written by a
@@ -133,37 +113,6 @@ function errorCode(err: unknown): string | undefined {
 // TSDoc: byte-preserving in-place replace is the whole point).
 const COLOR_THEME_KEY_RE =
   /"workbench\.colorTheme"\s*:\s*(?:"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?|true|false|null)/;
-
-/**
- * Find the offset of the first `{` in `text` that is outside any `//`/`/*`
- * comment or string literal (JSONC allows leading comments, e.g.
- * `// tip: use { }`, whose `{` must not be mistaken for the settings
- * object's opening brace). Reuses `config/jsonc.ts`'s `stripComments` (its
- * comment-blanking preserves every other character's offset, including
- * string contents) so this only has to additionally track string state
- * itself. Returns `-1` if no such `{` exists.
- */
-function findObjectOpenBrace(text: string): number {
-  const sanitized = stripComments(text);
-  let inString = false;
-  for (let i = 0; i < sanitized.length; i++) {
-    const ch = sanitized[i]!;
-    if (inString) {
-      if (ch === "\\") {
-        i++; // Skip the escaped character (notably `\"`).
-        continue;
-      }
-      if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-      continue;
-    }
-    if (ch === "{") return i;
-  }
-  return -1;
-}
 
 /**
  * Text-replace `"workbench.colorTheme"`'s value in `text` with `themeId`

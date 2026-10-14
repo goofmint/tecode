@@ -10,7 +10,8 @@
  * import, `@tecode/api` types only.
  */
 
-import type { Disposable, Event, Listener, PtySession, PtySpawnOptions } from "@tecode/api";
+import type { Event, PtySession, PtySpawnOptions } from "@tecode/api";
+import { createListenerSet } from "../shared";
 
 /** Dependencies for {@link createTerminalStore}. */
 export interface TerminalStoreDeps {
@@ -91,18 +92,7 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
   let session: PtySession | undefined;
   let focusHandle: (() => void) | undefined;
   let focusPending = false;
-  const listeners = new Set<Listener<void>>();
-
-  function fireChange(): void {
-    for (const listener of Array.from(listeners)) {
-      try {
-        listener(undefined);
-      } catch {
-        // Isolate listener failures — matches `explorer/store.ts`'s own
-        // guarded dispatch.
-      }
-    }
-  }
+  const changes = createListenerSet<void>();
 
   function spawnOptions(): PtySpawnOptions {
     return {
@@ -129,7 +119,7 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
     newSession.onExit(() => {
       if (session === newSession) {
         session = undefined;
-        fireChange();
+        changes.emit(undefined);
       }
     });
   }
@@ -142,7 +132,7 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
     // never-throwing collaborators.
     session = deps.spawn(spawnOptions());
     attachExitHandling(session);
-    fireChange();
+    changes.emit(undefined);
     return session;
   }
 
@@ -153,7 +143,7 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
     session?.dispose();
     session = deps.spawn(spawnOptions());
     attachExitHandling(session);
-    fireChange();
+    changes.emit(undefined);
     return session;
   }
 
@@ -169,7 +159,7 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
     // — until some unrelated re-render happens to correct it. Safe to
     // fire here: the only subscriber (`TerminalView.tsx`) just calls
     // `forceRender()`, and nothing in that path re-enters this store.
-    fireChange();
+    changes.emit(undefined);
   }
 
   function requestFocus(): void {
@@ -188,24 +178,12 @@ export function createTerminalStore(deps: TerminalStoreDeps): TerminalStore {
     }
   }
 
-  function onDidChange(listener: Listener<void>): Disposable {
-    listeners.add(listener);
-    let disposed = false;
-    return {
-      dispose() {
-        if (disposed) return;
-        disposed = true;
-        listeners.delete(listener);
-      },
-    };
-  }
-
   return {
     getSession: () => session,
     ensureSession,
     respawn,
     dispose,
-    onDidChange,
+    onDidChange: changes.on,
     requestFocus,
     registerFocusHandle,
   };

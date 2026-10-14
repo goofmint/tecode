@@ -57,6 +57,7 @@
 import type { Disposable, Event, Listener, PtyExitEvent, PtySession, PtySpawnOptions, TerminalNamespace } from "@tecode/api";
 import type { HostError, HostLog } from "../host/errors";
 import { deliversSigwinch, supportsBunTerminal } from "./platform";
+import { describeError } from "../util/errors";
 
 /** The exit code an inert/degraded {@link PtySession} reports on {@link
  * PtySession.onExit} (Windows, a disposed service, or a real spawn
@@ -120,18 +121,6 @@ export interface TerminalService extends TerminalNamespace {
    * leak, not just an inert object. Idempotent.
    */
   dispose(): void;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches `clipboard.ts`'s/`fileSystem.ts`'s
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 function makeEvent<T>(listeners: Set<Listener<T>>): Event<T> {

@@ -9,6 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import { MouseEvent as OpenTuiMouseEvent, type BoxRenderable, type CapturedFrame } from "@opentui/core";
+import { createRecordingSink, flattenSpans } from "./uiTestSupport";
 import { testRender } from "@opentui/react/test-utils";
 import type { Disposable, LanguageContribution, ResolvedTheme, Selection } from "@tecode/api";
 import { createBaseTheme } from "../api/stubs";
@@ -26,10 +27,6 @@ import type { FocusableNode } from "./focus";
 import { ThemeProvider, toColorInput } from "./theme";
 import { createInitialEditorState, createInitialFindState, type EditorState, type FindState } from "./editorState";
 import { EditorView } from "./editorView";
-
-function createRecordingSink() {
-  return { error() {} };
-}
 
 function createTestDocument(text: string): CoreDocument {
   return createDocument({
@@ -68,22 +65,80 @@ function stateWithFind(
   return { ...stateWith(documentUri, selections), find: { ...createInitialFindState(), isOpen: true, ...find } };
 }
 
-/** All spans across every row of a captured frame, flattened with their row
- * index — convenient for "find the span covering column X on row Y"
- * assertions without hand-walking `frame.lines`. */
-function flatten(frame: CapturedFrame): Array<{ row: number; col: number; text: string; fg: unknown; bg: unknown }> {
-  const out: Array<{ row: number; col: number; text: string; fg: unknown; bg: unknown }> = [];
-  frame.lines.forEach((line, row) => {
-    let col = 0;
-    for (const span of line.spans) {
-      out.push({ row, col, text: span.text, fg: span.fg, bg: span.bg });
-      col += span.width;
-    }
+const baseTheme = createBaseTheme();
+
+/**
+ * Render `<EditorView>` and hand back its painted spans together with the
+ * two find-match background colors the highlighting tests compare against
+ * (Qodana `DuplicatedCode`: each test set this up with its own verbatim
+ * copy). The tests differ in what they assert about those colors, so this
+ * returns the raw ingredients rather than a verdict.
+ */
+async function renderFindMatchSpans(
+  document: CoreDocument,
+  state: EditorState,
+): Promise<{ spans: ReturnType<typeof flattenSpans>; activeBg: unknown; otherBg: unknown }> {
+  const { renderOnce, captureSpans } = await testRender(
+    <EditorView document={document} state={state} viewportHeight={3} />,
+    { width: 40, height: 4 },
+  );
+  await act(async () => {
+    await renderOnce();
   });
-  return out;
+  return {
+    spans: flattenSpans(captureSpans()),
+    activeBg: toColorInput(baseTheme.colors["editor.findMatchBackground"]),
+    otherBg: toColorInput(baseTheme.colors["editor.findMatchHighlightBackground"]),
+  };
 }
 
-const baseTheme = createBaseTheme();
+/** The spans carrying the DRAWN caret's inverted background — the stand-in
+ * `editorView.tsx` paints when the hardware cursor is not doing the job
+ * (Issue #136). */
+function paintedCaretSpans(frame: CapturedFrame): ReturnType<typeof flattenSpans> {
+  const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
+  return flattenSpans(frame).filter((s) => JSON.stringify(s.bg) === cursorBg);
+}
+
+/**
+ * Mount `<EditorView>` inside a real `<ContextFocusTracker>` over the
+ * two-line document `"abc\ndef"`, then actually focus its text plane — the
+ * starting state the hardware-cursor tests need, and which each previously
+ * built with its own verbatim copy.
+ */
+async function renderFocusedEditorView(selections: Selection[]) {
+  const { ContextFocusTracker } = await import("./focus");
+  const { createContextService } = await import("../keymap/context");
+  const context = createContextService();
+  const document = createTestDocument("abc\ndef");
+  const state = stateWith(document.uri, selections);
+
+  let capturedNode: { focus(): void } | undefined;
+  const rendered = await testRender(
+    <ContextFocusTracker context={context}>
+      <EditorView
+        document={document}
+        state={state}
+        viewportHeight={5}
+        onTextPlaneNode={(node) => {
+          capturedNode = node ?? undefined;
+        }}
+      />
+    </ContextFocusTracker>,
+    { width: 20, height: 6 },
+  );
+  await act(async () => {
+    await rendered.renderOnce();
+  });
+  act(() => {
+    capturedNode!.focus();
+  });
+  await act(async () => {
+    await rendered.renderOnce();
+  });
+  return { ...rendered, context, document, state };
+}
+
 
 describe("EditorView — basic rendering (Req 6.5)", () => {
   test("renders visible line text with a line-number gutter", async () => {
@@ -186,7 +241,7 @@ describe("EditorView — selection rendering (Req 6.6, design.md §8.3's selecti
       await renderOnce();
     });
 
-    const spans = flatten(captureSpans());
+    const spans = flattenSpans(captureSpans());
     const inactiveBg = toColorInput(baseTheme.colors["editor.inactiveSelectionBackground"]);
     const highlighted = spans.filter((s) => JSON.stringify(s.bg) === JSON.stringify(inactiveBg));
     // Exactly the selected "hello" text carries the highlight — " world"
@@ -209,17 +264,7 @@ describe("EditorView — find-match highlighting (Req 11.1, design.md §13)", ()
       activeMatchIndex: 1,
     });
 
-    const { renderOnce, captureSpans } = await testRender(
-      <EditorView document={document} state={state} viewportHeight={3} />,
-      { width: 40, height: 4 },
-    );
-    await act(async () => {
-      await renderOnce();
-    });
-
-    const spans = flatten(captureSpans());
-    const activeBg = toColorInput(baseTheme.colors["editor.findMatchBackground"]);
-    const otherBg = toColorInput(baseTheme.colors["editor.findMatchHighlightBackground"]);
+    const { spans, activeBg, otherBg } = await renderFindMatchSpans(document, state);
     const activeSpans = spans.filter((s) => JSON.stringify(s.bg) === JSON.stringify(activeBg));
     const otherSpans = spans.filter((s) => JSON.stringify(s.bg) === JSON.stringify(otherBg));
 
@@ -245,17 +290,7 @@ describe("EditorView — find-match highlighting (Req 11.1, design.md §13)", ()
       isOpen: false,
     });
 
-    const { renderOnce, captureSpans } = await testRender(
-      <EditorView document={document} state={state} viewportHeight={3} />,
-      { width: 40, height: 4 },
-    );
-    await act(async () => {
-      await renderOnce();
-    });
-
-    const spans = flatten(captureSpans());
-    const activeBg = toColorInput(baseTheme.colors["editor.findMatchBackground"]);
-    const otherBg = toColorInput(baseTheme.colors["editor.findMatchHighlightBackground"]);
+    const { spans, activeBg, otherBg } = await renderFindMatchSpans(document, state);
     expect(spans.some((s) => JSON.stringify(s.bg) === JSON.stringify(activeBg))).toBe(false);
     expect(spans.some((s) => JSON.stringify(s.bg) === JSON.stringify(otherBg))).toBe(false);
   });
@@ -298,7 +333,7 @@ describe("EditorView — multi-cursor rendering (Req 6.6, 11.1)", () => {
       await renderOnce();
     });
 
-    const spans = flatten(captureSpans());
+    const spans = flattenSpans(captureSpans());
     const cursorBg = toColorInput(baseTheme.colors["editorCursor.foreground"]);
     const cursorSpans = spans.filter((s) => JSON.stringify(s.bg) === JSON.stringify(cursorBg));
     // Exactly one cursor-colored cell per cursor (both are single-character
@@ -322,7 +357,7 @@ describe("EditorView — CJK/emoji lines (design.md §8.3's cell-width mapping)"
 
     expect(captureCharFrame()).toContain("古");
     const cursorBg = toColorInput(baseTheme.colors["editorCursor.foreground"]);
-    const spans = flatten(captureSpans());
+    const spans = flattenSpans(captureSpans());
     const cursorSpan = spans.find((s) => JSON.stringify(s.bg) === JSON.stringify(cursorBg));
     expect(cursorSpan?.text).toBe("b");
   });
@@ -469,35 +504,7 @@ describe("EditorView — editorTextFocus context key (Req 4.6)", () => {
 
 describe("EditorView — the hardware cursor owns the caret while focused (Issue #136)", () => {
   test("focused: the real cursor is visible and the drawn caret run is suppressed", async () => {
-    const { ContextFocusTracker } = await import("./focus");
-    const { createContextService } = await import("../keymap/context");
-    const context = createContextService();
-    const document = createTestDocument("abc\ndef");
-    const state = stateWith(document.uri, [cursorAt(0, 1)]);
-
-    let capturedNode: { focus(): void } | undefined;
-    const { renderOnce, renderer, captureSpans } = await testRender(
-      <ContextFocusTracker context={context}>
-        <EditorView
-          document={document}
-          state={state}
-          viewportHeight={5}
-          onTextPlaneNode={(node) => {
-            capturedNode = node ?? undefined;
-          }}
-        />
-      </ContextFocusTracker>,
-      { width: 20, height: 6 },
-    );
-    await act(async () => {
-      await renderOnce();
-    });
-    act(() => {
-      capturedNode!.focus();
-    });
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderer, captureSpans } = await renderFocusedEditorView([cursorAt(0, 1)]);
 
     // Issue #123 shipped with the real cursor positioned but HIDDEN, on
     // the theory that an IME would still follow it. It does not — the
@@ -508,8 +515,7 @@ describe("EditorView — the hardware cursor owns the caret while focused (Issue
     // ...and with the real cursor showing the caret, the inverted-
     // background run that used to stand in for it must be gone, or the
     // same cell carries two caret indicators.
-    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
-    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    const painted = paintedCaretSpans(captureSpans());
     expect(painted).toHaveLength(0);
   });
 
@@ -518,40 +524,11 @@ describe("EditorView — the hardware cursor owns the caret while focused (Issue
     // it at `selections[0]`, so suppressing every drawn caret while
     // focused would leave a multi-cursor edit's other carets with nothing
     // showing them at all.
-    const { ContextFocusTracker } = await import("./focus");
-    const { createContextService } = await import("../keymap/context");
-    const context = createContextService();
-    const document = createTestDocument("abc\ndef");
-    const state = stateWith(document.uri, [cursorAt(0, 1), cursorAt(1, 2)]);
-
-    let capturedNode: { focus(): void } | undefined;
-    const { renderOnce, renderer, captureSpans } = await testRender(
-      <ContextFocusTracker context={context}>
-        <EditorView
-          document={document}
-          state={state}
-          viewportHeight={5}
-          onTextPlaneNode={(node) => {
-            capturedNode = node ?? undefined;
-          }}
-        />
-      </ContextFocusTracker>,
-      { width: 20, height: 6 },
-    );
-    await act(async () => {
-      await renderOnce();
-    });
-    act(() => {
-      capturedNode!.focus();
-    });
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderer, captureSpans } = await renderFocusedEditorView([cursorAt(0, 1), cursorAt(1, 2)]);
 
     expect(renderer.getCursorState().visible).toBe(true);
 
-    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
-    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    const painted = paintedCaretSpans(captureSpans());
     // The secondary caret on line 1 keeps its run; the primary on line 0
     // does not, because the hardware cursor is already sitting there.
     expect(painted).toHaveLength(1);
@@ -575,8 +552,7 @@ describe("EditorView — the hardware cursor owns the caret while focused (Issue
     });
 
     expect(renderer.getCursorState().visible).toBe(false);
-    const cursorBg = JSON.stringify(toColorInput(baseTheme.colors["editorCursor.foreground"]));
-    const painted = flatten(captureSpans()).filter((s) => JSON.stringify(s.bg) === cursorBg);
+    const painted = paintedCaretSpans(captureSpans());
     expect(painted.length).toBeGreaterThan(0);
   });
 });
@@ -780,7 +756,7 @@ describe("EditorView — syntax highlighting (Req 8.1-8.3, design.md §10)", () 
       await renderOnce();
     });
 
-    const spans = flatten(captureSpans());
+    const spans = flattenSpans(captureSpans());
     const highlightFg = toColorInput({ r: 200, g: 10, b: 10 });
     // The text plane is never `.focus()`ed in this test, so the INACTIVE
     // selection background is what actually renders (Req 4.6,
@@ -845,7 +821,7 @@ describe("EditorView — syntax highlighting (Req 8.1-8.3, design.md §10)", () 
       await renderOnce();
     });
 
-    const fooRun = flatten(captureSpans()).find((s) => s.row === 0 && s.text === "foo");
+    const fooRun = flattenSpans(captureSpans()).find((s) => s.row === 0 && s.text === "foo");
     expect(fooRun).toBeDefined();
     expect(fooRun!.fg).toEqual(toColorInput({ r: 1, g: 2, b: 3 }));
   });
@@ -864,7 +840,7 @@ describe("EditorView — syntax highlighting (Req 8.1-8.3, design.md §10)", () 
       await renderOnce();
     });
 
-    const abcRun = flatten(captureSpans()).find((s) => s.row === 0 && s.text === "abc");
+    const abcRun = flattenSpans(captureSpans()).find((s) => s.row === 0 && s.text === "abc");
     expect(abcRun).toBeDefined();
     expect(abcRun!.fg).toEqual(toColorInput(baseTheme.colors["editor.foreground"]));
   });
@@ -1173,7 +1149,7 @@ describe("EditorView — dirty-row re-render with a REAL highlightService (Req 1
     });
 
     // Before the edit: line 2 ("let b = 2;") colors "b" as a variable.
-    const bBefore = flatten(captureSpans()).find((s) => s.row === 2 && s.text === "b");
+    const bBefore = flattenSpans(captureSpans()).find((s) => s.row === 2 && s.text === "b");
     expect(bBefore?.fg).toEqual(toColorInput({ r: 10, g: 20, b: 30 }));
 
     renderedLines.length = 0;
@@ -1198,7 +1174,7 @@ describe("EditorView — dirty-row re-render with a REAL highlightService (Req 1
     // below) does not prove its render body was skipped.
     expect([...new Set(renderedLines)].sort((a, b) => a - b)).toEqual([1, 2, 3, 4]);
 
-    const frame = flatten(captureSpans());
+    const frame = flattenSpans(captureSpans());
     const lineAfter = (row: number) => frame.filter((s) => s.row === row);
     // The entire text of lines 2-4 is now ONE "comment"-colored run each
     // (no more per-token "variable"/"number" splitting), and line 0 (above
@@ -1206,7 +1182,7 @@ describe("EditorView — dirty-row re-render with a REAL highlightService (Req 1
     expect(lineAfter(2).map((s) => s.text).join("").trimEnd()).toBe("let b = 2;");
     const bAfter = lineAfter(2).find((s) => s.text.includes("b"));
     expect(bAfter?.fg).toEqual(toColorInput({ r: 90, g: 90, b: 90 }));
-    const aStill = flatten(captureSpans()).find((s) => s.row === 0 && s.text.includes("a"));
+    const aStill = flattenSpans(captureSpans()).find((s) => s.row === 0 && s.text.includes("a"));
     expect(aStill?.fg).toEqual(toColorInput({ r: 10, g: 20, b: 30 }));
   });
 });

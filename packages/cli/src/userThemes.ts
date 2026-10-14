@@ -42,6 +42,7 @@
 import { readdir as nodeReaddir, readFile as nodeReadFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
+  describeError,
   getUserThemesDir,
   parseJsonc,
   type HostLog,
@@ -95,17 +96,6 @@ export interface ScanUserThemesDeps {
 export interface ScanUserThemesResult {
   pending: PendingThemeContribution[];
   extensionDirs: Record<string, string>;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** `true` for a Node `ENOENT` (`readdir`/`readFile` on a path that does
