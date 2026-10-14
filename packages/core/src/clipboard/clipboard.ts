@@ -27,18 +27,7 @@
 
 import type { ClipboardNamespace } from "@tecode/api";
 import type { HostError, HostLog } from "../host/errors";
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches `fileSystem.ts`'s/`documentManager.ts`'s
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
+import { describeError } from "../util/errors";
 
 /** Dependencies for {@link createClipboard}. Every field is optional —
  * `createClipboard()` with no arguments is a complete, working clipboard

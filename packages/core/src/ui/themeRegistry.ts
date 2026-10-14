@@ -51,6 +51,7 @@ import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { createBaseTheme } from "../api/stubs";
 import { quantizeTheme } from "./colorQuantize";
 import { loadThemeFallbackForReadError, loadThemeFromJsonText } from "./themeLoader";
+import { describeError } from "../util/errors";
 
 /** The terminal color depths {@link ThemeRegistry} quantizes for (Req 7.4)
  * — the same union `packages/cli`'s `detectTerminalCapabilities` reports,
@@ -153,17 +154,6 @@ export interface ThemeRegistry {
    * the narrow "stop reacting" contract `dispose()` has elsewhere in this
    * codebase for registries with no owned resources beyond listeners. */
   dispose(): void;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Guarded `log.append` (matches every other module's `logSafely`). */

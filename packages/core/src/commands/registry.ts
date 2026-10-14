@@ -23,6 +23,7 @@ import type {
   Disposable,
 } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
+import { describeError } from "../util/errors";
 
 /** Internal registry state for one registered command (design.md §5).
  * `handler` is absent for a lazy (manifest-declared, not-yet-activated)
@@ -155,18 +156,6 @@ export interface CommandRegistry {
   registerCore(id: string, handler: CommandHandler, meta?: CommandMeta): Disposable;
   execute(id: string, ...args: unknown[]): Promise<unknown>;
   list(): CommandDescriptor[];
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (e.g. a throwing `toString`, or an `Error` subclass whose
- * `message` getter throws). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /**

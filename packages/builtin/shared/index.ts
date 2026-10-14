@@ -9,6 +9,7 @@
  * `packages/builtin/**` file is already held to (`eslint.config.mjs`).
  */
 
+export { describeError } from "./errors";
 export { fuzzyMatch, type FuzzyMatchResult } from "./fuzzyMatch";
 export { evaluateWhen, filterByWhen, type WhenContextGetter } from "./whenFilter";
 export {

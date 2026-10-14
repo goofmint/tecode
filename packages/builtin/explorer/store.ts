@@ -49,7 +49,7 @@
  */
 
 import type { DirEntry, Disposable, Event, Listener, MessageKind, Uri } from "@tecode/api";
-import { joinChildUri, type IgnoreChecker } from "../shared";
+import { describeError, joinChildUri, type IgnoreChecker } from "../shared";
 
 /** The exact node shape `tecode.ui.Tree` expects (this module's TSDoc) —
  * duck-typed, not imported. */
@@ -120,17 +120,6 @@ const MIN_INDENT_WIDTH = 0;
 function clampIndentWidth(desired: number): number {
   const safeDesired = Number.isFinite(desired) ? Math.trunc(desired) : MIN_INDENT_WIDTH;
   return Math.max(MIN_INDENT_WIDTH, safeDesired);
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `fileSystem.ts`'s/`registry.ts`'s `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** The explorer's tree state (this module's TSDoc). */

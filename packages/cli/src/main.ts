@@ -99,6 +99,7 @@ import {
   type ThemeRegistry,
   type ThemeService,
   type WindowMessageService,
+  describeError,
 } from "@tecode/core";
 import {
   builtinLanguageGrammarAssets,
@@ -667,18 +668,6 @@ function reExecProcess(): void {
     stdio: ["inherit", "inherit", "inherit"],
   });
   process.exit(0);
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `@tecode/core`'s repeated `describeError` helper,
- * e.g. `keymap/bindingTable.ts`'s). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /**

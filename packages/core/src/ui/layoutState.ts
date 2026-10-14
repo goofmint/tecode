@@ -63,6 +63,7 @@ import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserLayoutStatePath } from "../host/paths";
 import { clampPanelHeight } from "./panelHeight";
 import { clampSidebarWidth } from "./sidebarWidth";
+import { describeError, errorCode } from "../util/errors";
 
 /** Persisted UI layout state (Req 6.4). */
 export interface LayoutState {
@@ -186,27 +187,6 @@ export interface LayoutStateService {
    * firing here too would just be a redundant, no-op-carrying notification
    * for every subscriber that already awaits `ready` on mount. */
   onDidChange: Event<void>;
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `config/service.ts`'s/`registry.ts`'s `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-/** Extract an errno-style `code` (matches `documentManager.ts`'s/
- * `config/service.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
 }
 
 /** True if any field `partial` sets differs (`!==`) from `prev`'s current

@@ -39,6 +39,7 @@ import { dirname } from "node:path";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserSettingsPath } from "../host/paths";
 import { stripComments } from "../config/jsonc";
+import { describeError, errorCode } from "../util/errors";
 
 /** The narrow filesystem seam {@link createThemeSettingsWriter} needs —
  * injectable (matches `layoutState.ts`'s `LayoutStateFs`,
@@ -101,27 +102,6 @@ export interface ThemeSettingsWriter {
    * codebase's "keep going, report, never crash the caller" boundary
    * discipline). */
   write(themeId: string): Promise<void>;
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-/** Extract an errno-style `code` (matches `config/service.ts`'s/
- * `layoutState.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
 }
 
 // Matches `"workbench.colorTheme"` followed by any single JSON scalar value

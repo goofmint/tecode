@@ -41,6 +41,7 @@ import type { CaptureName, ResolvedTheme, RGB, Style, UiColorKey } from "@tecode
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { createBaseTheme } from "../api/stubs";
 import { parseJsonc } from "../config/jsonc";
+import { describeError } from "../util/errors";
 
 /** One capture's style, as it appears in a theme JSON's `tokenColors`
  * (this module's TSDoc). All fields optional — a style with neither
@@ -98,18 +99,6 @@ function parseFontStyle(fontStyle: string | undefined): Pick<Style, "bold" | "it
     italic: words.has("italic") || undefined,
     underline: words.has("underline") || undefined,
   };
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `config/jsonc.ts`'s/`config/service.ts`'s
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Guarded `log.append` (matches every other module's `logSafely`). */

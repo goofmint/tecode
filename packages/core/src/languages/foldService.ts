@@ -48,6 +48,7 @@ import {
   type ParserQuery,
   type ParserTree,
 } from "./parserBackend";
+import { describeError } from "../util/errors";
 
 /** A shared, permanently-empty ranges array — what {@link FoldService.getFoldRanges}
  * returns for a bypassed/not-yet-parsed document. Its identity is
@@ -113,17 +114,6 @@ export interface FoldService {
    * the test/startup seam `HighlightService.whenIdle` provides. */
   whenIdle(): Promise<void>;
   dispose(): void;
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Whether `a` and `b` hold the same ranges in the same order — the guard

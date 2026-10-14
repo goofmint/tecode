@@ -95,6 +95,7 @@ import { getUserKeybindingsPath } from "../host/paths";
 import { pathToUri } from "../buffer/uri";
 import type { BindingLayer, BindingTable } from "../keymap/bindingTable";
 import { HIDDEN_FROM_LISTINGS_WHEN } from "./openFileCommand";
+import { describeError, errorCode } from "../util/errors";
 
 /** `keybindings.internal.ensureFile`'s command id (this module's TSDoc).
  * Exported so `keybindings-editor`'s tests/`index.ts` (which can only
@@ -224,27 +225,6 @@ export interface KeybindingsCommandsDeps {
   fs?: KeybindingsCommandsFs;
   log?: HostLog;
   sink?: StatusSink;
-}
-
-/** Render a caught `unknown` as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-/** Extract an errno-style `code` (matches `themeSettingsWriter.ts`'s/
- * `config/service.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
 }
 
 /** The pair of handlers this module registers, plus the resolved path

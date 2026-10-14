@@ -12,7 +12,7 @@
 
 import { stat as nodeStat } from "node:fs/promises";
 import { dirname, resolve as resolvePath } from "node:path";
-import type { HostLog } from "@tecode/core";
+import { describeError, errorCode, type HostLog } from "@tecode/core";
 
 /** Where {@link resolveStartupTarget} landed for one CLI invocation. */
 export interface StartupTarget {
@@ -41,33 +41,6 @@ function createNodeArgvFs(): ArgvResolutionFs {
       return { isDirectory: () => stats.isDirectory() };
     },
   };
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches `core`'s `describeError` convention). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-/** Extract an errno-style `code` (e.g. `"ENOENT"`) from a caught unknown,
- * or `undefined` when it carries none. Duplicated per-module rather than
- * imported (matches `@tecode/core`'s own convention of a private
- * `errorCode` in each module that needs one — e.g.
- * `buffer/documentManager.ts`'s, `config/service.ts`'s — instead of a
- * shared export; this module is `cli`, which may import `@tecode/core`,
- * but this helper is a two-line leaf with no state, so duplicating it
- * avoids a public export whose only purpose would be this one call). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
 }
 
 /**

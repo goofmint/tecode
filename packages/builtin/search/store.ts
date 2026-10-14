@@ -46,7 +46,14 @@
  */
 
 import type { DirEntry, Disposable, Event, Listener, MessageKind, Position, Uri } from "@tecode/api";
-import { fuzzyMatch, walkFiles, type IgnoreChecker, type WalkedFile, type WalkFilesResult } from "../shared";
+import {
+  describeError,
+  fuzzyMatch,
+  walkFiles,
+  type IgnoreChecker,
+  type WalkedFile,
+  type WalkFilesResult,
+} from "../shared";
 import { findLineMatches, looksBinary, type LineMatch } from "./lineMatch";
 
 /** Which kind of search the view is currently showing (Issue #147's
@@ -131,17 +138,6 @@ const MIN_MAX_RESULTS = 1;
 function clampMaxResults(desired: number): number {
   const safeDesired = Number.isFinite(desired) ? Math.trunc(desired) : MIN_MAX_RESULTS;
   return Math.max(MIN_MAX_RESULTS, safeDesired);
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `../explorer/store.ts`'s own `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** The tree-node id for one full-text hit (this module's TSDoc) — the

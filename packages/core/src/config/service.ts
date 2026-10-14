@@ -49,6 +49,7 @@ import {
   getWorkspaceSettingsPath,
 } from "../host/paths";
 import { parseJsonc } from "./jsonc";
+import { describeError, errorCode } from "../util/errors";
 
 /**
  * The narrow filesystem seam {@link createConfigService} needs: reading a
@@ -247,27 +248,6 @@ export interface ConfigService {
   ready: Promise<void>;
   /** Close every file watcher. Idempotent. */
   dispose(): void;
-}
-
-/** Extract an errno-style `code` (e.g. `"ENOENT"`) from a caught unknown
- * (matches `documentManager.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches `registry.ts`'s/`documentManager.ts`'s `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Structural equality over JSON-shaped values (objects/arrays/primitives)

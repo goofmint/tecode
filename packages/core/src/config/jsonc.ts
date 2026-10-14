@@ -11,6 +11,8 @@
  * failure through a `StatusSink` instead of crashing.
  */
 
+import { describeError } from "../util/errors";
+
 /** A successful parse: the decoded value. */
 export interface JsoncSuccess<T = unknown> {
   ok: true;
@@ -166,17 +168,6 @@ function lineColAt(text: string, offset: number): { line: number; column: number
     }
   }
   return { line, column };
-}
-
-/** Render a caught `unknown` as a message string without risking a second
- * throw (matches registry.ts's/documentManager.ts's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /**

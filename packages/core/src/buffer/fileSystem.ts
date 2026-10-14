@@ -33,6 +33,7 @@ import type {
 } from "@tecode/api";
 import type { HostError, HostLog } from "../host/errors";
 import { pathToUri, uriToPath } from "./uri";
+import { describeError } from "../util/errors";
 
 /** Dependencies for {@link createFileSystem}. Every field is optional —
  * `createFileSystem()` with no arguments is a complete, working
@@ -43,18 +44,6 @@ export interface FileSystemDeps {
    * (design.md §14). Omitted (the default) swallows these silently —
    * `FileSystem.watch` still never throws or crashes either way. */
   log?: HostLog;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches `documentManager.ts`'s/`registry.ts`'s
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Map a `node:fs` `Dirent`/`Stats`-shaped pair of directory/file/symlink

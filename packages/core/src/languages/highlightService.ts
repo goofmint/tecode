@@ -93,6 +93,7 @@ import {
   type ParserQuery,
   type ParserTree,
 } from "./parserBackend";
+import { describeError } from "../util/errors";
 
 /** One highlighted span within a single document line — the shape
  * `EditorView`'s `buildLineRuns` merges into its selection/cursor/find
@@ -246,17 +247,6 @@ export interface HighlightService {
   /** Unsubscribe from `documents` and every tracked document, and clear
    * all `onDidChange` listeners. Idempotent. */
   dispose(): void;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Build a {@link HighlightService} (Req 8.1-8.3, design.md §10, §14). */

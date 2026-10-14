@@ -42,6 +42,7 @@
 import type { Disposable, Event, Listener, ResolvedTheme } from "@tecode/api";
 import type { HostError, HostLog } from "../host/errors";
 import { BASE_THEME_ID, type ThemeRegistry } from "./themeRegistry";
+import { describeError } from "../util/errors";
 
 /** Dependencies for {@link createThemeService}. */
 export interface ThemeServiceDeps {
@@ -91,17 +92,6 @@ export interface ThemeService {
   onDidChange: Event<void>;
   /** Clear every listener. Idempotent. */
   dispose(): void;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Guarded `log.append` (matches every other module's `logSafely`). */

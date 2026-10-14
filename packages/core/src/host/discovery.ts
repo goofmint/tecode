@@ -30,6 +30,7 @@ import { pathToFileURL } from "node:url";
 import type { Manifest } from "@tecode/api";
 import type { HostError, HostLog } from "./errors";
 import { getUserExtensionsDir, getWorkspaceExtensionsDir } from "./paths";
+import { describeError, errorCode } from "../util/errors";
 
 /** Where a discovered extension came from (Req 2.1, design.md §4.1):
  * built-ins are compiled into the binary; `user`/`workspace` are scanned
@@ -108,28 +109,6 @@ export interface DiscoveryDeps {
   /** Structured log for scan failures, missing manifests, load failures,
    * and duplicate-ID shadowing (design.md §14). */
   log: HostLog;
-}
-
-/** Extract an errno-style `code` (e.g. `"ENOENT"`) from a caught unknown
- * (matches `documentManager.ts`'s/`service.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches `registry.ts`'s/`documentManager.ts`'s
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /** Guarded `log.append` — an injected log must not be able to break

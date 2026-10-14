@@ -68,6 +68,7 @@ import { BINARY_DETECTION_SAMPLE_BYTES, isBinaryContent } from "./binaryDetectio
 import type { Clock } from "./clock";
 import { createDocument, type CoreDocument } from "./document";
 import { pathToUri, uriToPath } from "./uri";
+import { describeError, errorCode } from "../util/errors";
 
 /** Files at or above this size (bytes) open read-only rather than being
  * loaded for editing (Req 5.5). 10 MB, binary. */
@@ -365,27 +366,6 @@ export interface DocumentManager {
    * alongside (not instead of) every other startup-owned disposable.
    */
   dispose(): void;
-}
-
-/** Extract an errno-style `code` (e.g. `"ENOENT"`, `"EEXIST"`) from a
- * caught unknown, or `undefined` when it carries none. */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches document.ts's/registry.ts's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /**

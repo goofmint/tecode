@@ -60,6 +60,7 @@ import type { CommandHandler, CommandMeta, Disposable, Uri } from "@tecode/api";
 import type { HostError, HostLog } from "../host/errors";
 import type { DocumentManager } from "../buffer/documentManager";
 import type { EditorSessionService } from "./editorSession";
+import { describeError } from "../util/errors";
 
 /** Dependencies for {@link createOpenFileCommandHandler}. Narrowed with
  * `Pick` (matches `ThemeSelectDeps`'s own narrowing style) to exactly the
@@ -78,17 +79,6 @@ function logSafely(log: HostLog | undefined, level: "error" | "warning", err: Ho
     log.append(level, err);
   } catch {
     // Swallowed: reporting a reporting failure has nowhere left to go.
-  }
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches every other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
   }
 }
 

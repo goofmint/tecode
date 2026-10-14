@@ -36,6 +36,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Disposable, ExtensionContext, Manifest, Tecode } from "@tecode/api";
 import type { HostError, HostLog, StatusSink } from "./errors";
+import { describeError } from "../util/errors";
 
 /**
  * One extension the runtime can activate — the shape {@link createExtensionHost}
@@ -185,18 +186,6 @@ interface ExtensionRuntime {
   state: ActivationState;
   ctx?: ExtensionContext;
   module?: ExtensionModule;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches `discovery.ts`'s/`registration.ts`'s/`registry.ts`'s
- * `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }
 
 /**

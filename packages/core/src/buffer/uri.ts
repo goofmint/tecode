@@ -8,6 +8,7 @@
 
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Uri } from "@tecode/api";
+import { describeError } from "../util/errors";
 
 /**
  * Convert a `file://...` {@link Uri} to an absolute filesystem path.
@@ -33,15 +34,4 @@ export function uriToPath(uri: Uri): string {
  */
 export function pathToUri(path: string): Uri {
   return pathToFileURL(path).href;
-}
-
-/** Render a caught `unknown` value as a message string without risking a
- * second throw (matches document.ts's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
 }

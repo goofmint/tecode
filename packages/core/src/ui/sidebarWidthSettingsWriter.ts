@@ -42,6 +42,7 @@ import { dirname } from "node:path";
 import type { HostError, HostLog, StatusSink } from "../host/errors";
 import { getUserSettingsPath } from "../host/paths";
 import { stripComments } from "../config/jsonc";
+import { describeError, errorCode } from "../util/errors";
 
 /** The narrow filesystem seam {@link createSidebarWidthSettingsWriter}
  * needs — injectable (matches `themeSettingsWriter.ts`'s
@@ -126,27 +127,6 @@ export interface SidebarWidthSettingsWriter {
    * settled — the shutdown path, matching `layoutState.ts`'s `flush()`.
    * Resolves immediately, without writing, if `write()` was never called. */
   flush(): Promise<void>;
-}
-
-/** Render a caught `unknown` value as a message string (matches every
- * other module's `describeError`). */
-function describeError(err: unknown): string {
-  try {
-    if (err instanceof Error) return err.message;
-    return String(err);
-  } catch {
-    return "Unknown error";
-  }
-}
-
-/** Extract an errno-style `code` (matches `themeSettingsWriter.ts`'s/
- * `layoutState.ts`'s `errorCode`). */
-function errorCode(err: unknown): string | undefined {
-  if (typeof err === "object" && err !== null && "code" in err) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "string") return code;
-  }
-  return undefined;
 }
 
 // Matches `"workbench.sidebarWidth"` followed by any single JSON scalar
