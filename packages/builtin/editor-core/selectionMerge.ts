@@ -60,6 +60,15 @@ export function mergeSelections(selections: readonly Selection[]): Selection[] {
   return merged;
 }
 
+/** Whether `selection` is a collapsed cursor (no selected range) — the
+ * read-side counterpart to {@link collapsedSelection}. Shared here rather
+ * than re-declared per module: `brackets.ts`, `clipboard.ts`, `editing.ts`
+ * and `multiCursor.ts` each carried an identical private copy (Qodana
+ * `DuplicatedCode`). */
+export function isCollapsed(selection: Selection): boolean {
+  return comparePositions(selection.start, selection.end) === 0;
+}
+
 /** Build a collapsed selection (cursor) at `position` — a tiny shared
  * helper (`movement.ts`/`editing.ts` both need it) kept here since it's
  * this module's own vocabulary (a `Selection` with `start === end ===

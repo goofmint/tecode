@@ -21,13 +21,8 @@
 import type { Position, Selection, TextEdit } from "@tecode/api";
 import { charToVisualColumn, normalizeTabSize, type LineReader } from "./movement";
 import { comparePositions, dropOverlapping, transformPosition } from "./positionTransform";
-import { collapsedSelection } from "./selectionMerge";
+import { collapsedSelection, isCollapsed } from "./selectionMerge";
 import { nextGraphemeEnd, previousGraphemeStart } from "./wordBoundary";
-
-/** Whether `selection` is a plain collapsed cursor (no selected range). */
-function isCollapsed(selection: Selection): boolean {
-  return comparePositions(selection.start, selection.end) === 0;
-}
 
 /**
  * Build the edit that inserts `text` at `selection` (Req 11.1's "insert

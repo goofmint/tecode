@@ -21,13 +21,8 @@
 
 import type { BracketPair, Selection, TextEdit } from "@tecode/api";
 import type { LineReader } from "./movement";
-import { collapsedSelection } from "./selectionMerge";
-import { comparePositions, dropOverlapping, transformPosition } from "./positionTransform";
-
-/** Whether `selection` is a collapsed cursor (no selected range). */
-function isCollapsed(selection: Selection): boolean {
-  return comparePositions(selection.start, selection.end) === 0;
-}
+import { collapsedSelection, isCollapsed } from "./selectionMerge";
+import { dropOverlapping, transformPosition } from "./positionTransform";
 
 /**
  * One selection's outcome for one typed bracket/quote character `ch`,
