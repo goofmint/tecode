@@ -378,7 +378,7 @@ export function ActivityBar(props: ActivityBarProps): ReactNode {
         // Issue #171: one common wrapper per item (custom component or
         // plain glyph) so both share the same width, the active-item
         // background and the click area.
-        const glyph = item?.icon ?? firstGrapheme(item?.title ?? pair.id);
+        const glyph = item?.icon || firstGrapheme(item?.title || pair.id);
         return (
           <box
             key={pair.id}

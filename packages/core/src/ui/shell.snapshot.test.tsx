@@ -1382,6 +1382,14 @@ describe("Shell — ActivityBar emoji icons and active background (Issue #171)",
     expect(lines[0]!.slice(2)).toContain("Explorer Panel");
   });
 
+  test("an empty icon falls back to the title's first grapheme", async () => {
+    const { captureCharFrame } = await renderBar((slotRegistry) => {
+      slotRegistry.registerView("activityBar.item", "explorer", undefined, { title: "Explorer", icon: "" });
+      slotRegistry.registerView("sidebar.view", "explorer", () => <text>Explorer Panel</text>);
+    }, "explorer");
+    expect(captureCharFrame().split("\n")[0]!.startsWith(" E  ")).toBe(true);
+  });
+
   test("the active item's row carries activityBar.activeBackground; inactive rows keep activityBar.background", async () => {
     const theme = createBaseTheme();
     const activeBg = JSON.stringify(toColorInput(theme.colors["activityBar.activeBackground"]));
