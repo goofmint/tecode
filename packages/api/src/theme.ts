@@ -5,7 +5,7 @@
 /**
  * The UI color keys a theme can supply, reusing VS Code's color IDs so
  * existing VS Code theme knowledge transfers directly (Req 7.2). This is
- * the ~40-key set called out in Req 7.2, realized here as 57 keys; the six keys
+ * the ~40-key set called out in Req 7.2, realized here as 58 keys; the six keys
  * named explicitly there (`editor.background`, `editor.foreground`,
  * `sideBar.background`, `statusBar.background`, `tab.activeBackground`,
  * `list.activeSelectionBackground`) are included below. A theme that omits
@@ -38,6 +38,7 @@ export type UiColorKey =
   | "activityBar.foreground"
   | "activityBar.inactiveForeground"
   | "activityBar.border"
+  | "activityBar.activeBackground"
   | "activityBarBadge.background"
   | "activityBarBadge.foreground"
   | "sideBar.background"

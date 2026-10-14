@@ -230,6 +230,13 @@ content, look at the built-in `explorer` extension's `ExplorerView.tsx`
 dependencies of its own package — exactly the kind of dependency
 [§3](#3-bundling-extensions-with-npm-dependencies) covers bundling for.
 
+The `icon` is what the activity bar shows for the view, and it can be an
+emoji (as in 🔤 above). Keep it to 2 terminal cells or fewer — one emoji is
+exactly 2 cells; anything wider shows only its first grapheme cluster, so
+the fixed 4-column bar never overflows. If you omit `icon`, the first
+character of `title` is shown instead. The currently active view's icon is
+highlighted with the theme color `activityBar.activeBackground`.
+
 **Runnable now**: the activity bar shows a 🔤 icon; clicking it opens the
 (empty) Word Count sidebar.
 

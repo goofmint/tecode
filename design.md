@@ -226,7 +226,7 @@ This ENOENT branch is unconditional: it does not itself check whether the path's
 
 ### 8.2 Slot registry
 
-`tecode.ui.registerView(slot, id, Component)` (*Req 6.3*) stores entries in a per-slot ordered map; shell regions subscribe and re-render on registration. `activityBar` registrations pair a bar icon with the sidebar view of the same id (*Req 6.2*); clicking (or `workbench.view.<id>` command) swaps the sidebar content, activating the owning extension lazily if needed. Status bar items carry `{ side: "left"|"right", priority: number }` and render sorted.
+`tecode.ui.registerView(slot, id, Component)` (*Req 6.3*) stores entries in a per-slot ordered map; shell regions subscribe and re-render on registration. `activityBar` registrations pair a bar icon with the sidebar view of the same id (*Req 6.2*); the icon is the manifest's `icon` (an emoji is fine; padded to the 4-column bar, wider than 2 cells is cut to its first grapheme), and the active item gets the `activityBar.activeBackground` background; clicking (or `workbench.view.<id>` command) swaps the sidebar content, activating the owning extension lazily if needed. Status bar items carry `{ side: "left"|"right", priority: number }` and render sorted.
 
 Layout state `{ sidebarVisible, sidebarWidth, panelVisible, panelHeight, activeView }` persists to `~/.config/tecode/state.json` on change (debounced) and on exit (*Req 6.4*).
 

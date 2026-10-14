@@ -61,6 +61,7 @@ import type { DocumentManager } from "../buffer/documentManager";
 import { uriToPath } from "../buffer/uri";
 import type { CommandRegistry } from "../commands/registry";
 import type { ConfigService } from "../config/service";
+import { cellWidth } from "./cellWidth";
 import { RegisteredView, Tabs, type TabItem } from "./components";
 import type { EditorSessionService } from "./editorSession";
 import { createInitialEditorState, type EditorState } from "./editorState";
@@ -309,10 +310,10 @@ export interface ActivityBarProps {
 
 /** The glyph {@link ActivityBar}'s dedicated toggle renders while the
  * sidebar is VISIBLE — clicking it collapses the sidebar (Issue #135).
- * A plain ASCII character, deliberately not an emoji (Issue #121 dropped
- * this codebase's last emoji icon; `explorer/manifest.ts`'s TSDoc explains
- * why: not every terminal font renders one, and a bare Unicode arrow has
- * the same width-in-a-monospace-cell risk). */
+ * A plain ASCII character, deliberately not an emoji: this toggle is not
+ * a manifest `icon` (so it does not go through
+ * {@link formatActivityBarGlyph}'s width padding), and a bare Unicode arrow
+ * has a width-in-a-monospace-cell risk. */
 export const SIDEBAR_COLLAPSE_GLYPH = "<";
 
 /** The glyph {@link ActivityBar}'s dedicated toggle renders while the
@@ -329,6 +330,33 @@ export const SIDEBAR_EXPAND_GLYPH = ">";
  * re-deriving the activity bar's width as a second literal in this same
  * file. */
 export const ACTIVITY_BAR_WIDTH = 4;
+
+/** The widest glyph (in terminal cells) {@link ActivityBar} shows for an
+ * item — a single emoji is 2 cells; anything wider is cut to its first
+ * grapheme cluster so the fixed {@link ACTIVITY_BAR_WIDTH}-column bar never
+ * overflows (Issue #171). */
+const ACTIVITY_BAR_MAX_GLYPH_WIDTH = 2;
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** The first grapheme cluster of `text` (so a surrogate pair or ZWJ emoji
+ * is never split), or `""` for empty input. */
+function firstGrapheme(text: string): string {
+  for (const segment of graphemeSegmenter.segment(text)) return segment.segment;
+  return "";
+}
+
+/** Pads `glyph` (an emoji or a plain character) with spaces to exactly
+ * {@link ACTIVITY_BAR_WIDTH} cells, centering a 2-cell glyph (`" 📁 "`) and
+ * leaving a 1-cell one at its historical position (`" E  "`). A glyph wider
+ * than {@link ACTIVITY_BAR_MAX_GLYPH_WIDTH} cells is reduced to its first
+ * grapheme cluster first (Issue #171). */
+export function formatActivityBarGlyph(glyph: string): string {
+  const shown = cellWidth(glyph) > ACTIVITY_BAR_MAX_GLYPH_WIDTH ? firstGrapheme(glyph) : glyph;
+  const free = Math.max(0, ACTIVITY_BAR_WIDTH - cellWidth(shown));
+  const left = Math.floor(free / 2);
+  return `${" ".repeat(left)}${shown}${" ".repeat(free - left)}`;
+}
 
 /** The activity bar (Req 6.1, 6.2): one icon per `activityBar.item` ↔
  * `sidebar.view` pair, highlighting the active one, plus a dedicated
@@ -347,26 +375,33 @@ export function ActivityBar(props: ActivityBarProps): ReactNode {
       {pairs.map((pair) => {
         const isActive = pair.id === props.activeView;
         const item = pair.activityItem;
-        if (item?.component) {
-          return (
-            <box key={pair.id} onMouseDown={() => props.onSelectView(pair.id)}>
-              <RegisteredView key={pair.id} component={item.component} viewProps={{ active: isActive }} />
-            </box>
-          );
-        }
-        const glyph = item?.icon ?? item?.title?.slice(0, 1) ?? pair.id.slice(0, 1);
+        // Issue #171: one common wrapper per item (custom component or
+        // plain glyph) so both share the same width, the active-item
+        // background and the click area.
+        const glyph = item?.icon ?? firstGrapheme(item?.title ?? pair.id);
         return (
-          <text
+          <box
             key={pair.id}
-            fg={toColorInput(
-              isActive
-                ? theme.colors["activityBar.foreground"]
-                : theme.colors["activityBar.inactiveForeground"],
-            )}
+            style={{ width: ACTIVITY_BAR_WIDTH, height: 1 }}
+            backgroundColor={
+              isActive ? toColorInput(theme.colors["activityBar.activeBackground"]) : undefined
+            }
             onMouseDown={() => props.onSelectView(pair.id)}
           >
-            {` ${glyph} `}
-          </text>
+            {item?.component ? (
+              <RegisteredView key={pair.id} component={item.component} viewProps={{ active: isActive }} />
+            ) : (
+              <text
+                fg={toColorInput(
+                  isActive
+                    ? theme.colors["activityBar.foreground"]
+                    : theme.colors["activityBar.inactiveForeground"],
+                )}
+              >
+                {formatActivityBarGlyph(glyph)}
+              </text>
+            )}
+          </box>
         );
       })}
       {/* Issue #135: a flex spacer pins the dedicated sidebar toggle below

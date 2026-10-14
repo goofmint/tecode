@@ -311,3 +311,9 @@ test("truncateToWidth: an ellipsis that cannot fit at all yields the empty strin
   expect(truncateToWidth("abc", 2, "..")).toBe("..");
 });
 
+
+test("cellWidth: the activity-bar emoji icons are 2 cells wide (Issue #171)", () => {
+  expect(cellWidth("📁")).toBe(2);
+  expect(cellWidth("🔎")).toBe(2);
+  expect(cellWidth("🔤")).toBe(2);
+});
