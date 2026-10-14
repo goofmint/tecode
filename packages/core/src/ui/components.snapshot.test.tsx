@@ -7,7 +7,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { act, useEffect, useState } from "react";
-import type { CapturedFrame, KeyEvent } from "@opentui/core";
+import type { KeyEvent } from "@opentui/core";
+import { flattenSpans } from "./uiTestSupport";
 import { testRender } from "@opentui/react/test-utils";
 import type { ComponentType } from "@tecode/api";
 import { createBaseTheme } from "../api/stubs";
@@ -24,24 +25,6 @@ import {
   type TabItem,
   type TreeNode,
 } from "./components";
-
-/** All spans across every row of a captured frame, flattened with their row
- * index (matches `editorView.snapshot.test.tsx`'s own local `flatten` helper) —
- * convenient for "find the span covering this tab's text" assertions
- * without hand-walking `frame.lines`. */
-function flattenSpans(
-  frame: CapturedFrame,
-): Array<{ row: number; col: number; text: string; fg: unknown; bg: unknown }> {
-  const out: Array<{ row: number; col: number; text: string; fg: unknown; bg: unknown }> = [];
-  frame.lines.forEach((line, row) => {
-    let col = 0;
-    for (const span of line.spans) {
-      out.push({ row, col, text: span.text, fg: span.fg, bg: span.bg });
-      col += span.width;
-    }
-  });
-  return out;
-}
 
 /** A minimal `KeyEvent`-shaped object for driving {@link Tree}'s `onKeyDown`
  * directly (this suite's "keyboard nav" tests) — only `name` matters to

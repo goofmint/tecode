@@ -60,59 +60,76 @@ import { describe, expect, test } from "bun:test";
 import { act } from "react";
 import {
   MouseEvent as OpenTuiMouseEvent,
-  TabSelectRenderable,
   type BoxRenderable,
   type TextRenderable,
 } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
-import { createCommandRegistry } from "../commands/registry";
-import { createDocumentManager, type DocumentManagerFs } from "../buffer/documentManager";
+import { createDocumentManager } from "../buffer/documentManager";
 import { pathToUri } from "../buffer/uri";
 import { createEditorInputRouter } from "../editor/inputRouter";
 import { createHostLog } from "../host/errors";
-import { createContextService } from "../keymap/context";
 import { Tree, TAB_WIDTH } from "./components";
 import { createEditorSessionService } from "./editorSession";
 import { createFindService } from "./findService";
 import { ContextFocusTracker } from "./focus";
-import { createLayoutStateService, type LayoutStateFs } from "./layoutState";
 import { registerSidebarVisibilityCommand } from "./sidebarVisibilityCommands";
 import { createSlotRegistry } from "./slotRegistry";
 import { ACTIVITY_BAR_WIDTH, Shell, SIDEBAR_COLLAPSE_GLYPH, SIDEBAR_EXPAND_GLYPH } from "./shell";
 import { ThemeProvider } from "./theme";
 
-function createRecordingSink() {
-  return { error() {} };
-}
-
-/** An in-memory {@link LayoutStateFs} that starts with no `state.json` (so
- * every test gets {@link DEFAULT_LAYOUT_STATE} deterministically, with no
- * real filesystem involved). */
-function createEmptyLayoutFs(): LayoutStateFs {
-  return {
-    async readFile() {
-      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    },
-    async mkdir() {},
-    async writeFile() {},
-  };
-}
-
-function createHarness() {
-  const log = createHostLog();
-  const sink = createRecordingSink();
-  const slotRegistry = createSlotRegistry({ log });
-  const layoutState = createLayoutStateService({ log, sink, path: "/state.json", fs: createEmptyLayoutFs() });
-  const context = createContextService();
-  const commands = createCommandRegistry({ log, sink });
-  return { slotRegistry, layoutState, context, commands };
-}
+import {
+  createInMemoryFs,
+  createRecordingSink,
+  createShellHarness,
+  findTabSelect,
+} from "./uiTestSupport";
 
 const noopComponent = () => undefined;
 
+/**
+ * Mount `<Shell>` with `"/workspace/a.ts"` and `"/workspace/b.ts"` both open
+ * and `a.ts` active — the starting state every tab-switching test below
+ * needs, and which each one previously set up with its own verbatim copy of
+ * these 27 lines (Qodana `DuplicatedCode`).
+ *
+ * The most recently opened document is NOT automatically active: the
+ * first-opened one stays active until the user switches, which is exactly
+ * the precondition these tests then act against.
+ */
+async function renderTwoOpenDocuments() {
+  const { slotRegistry, layoutState, context } = createShellHarness();
+  await layoutState.ready;
+  const documents = createDocumentManager({
+    log: createHostLog(),
+    sink: createRecordingSink(),
+    fs: createInMemoryFs({
+      "/workspace/a.ts": "FIRST_FILE_CONTENT",
+      "/workspace/b.ts": "SECOND_FILE_CONTENT",
+    }),
+  });
+
+  const rendered = await testRender(
+    <ThemeProvider>
+      <ContextFocusTracker context={context}>
+        <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
+      </ContextFocusTracker>
+    </ThemeProvider>,
+    { width: 60, height: 20 },
+  );
+  await act(async () => {
+    await documents.openDocument(pathToUri("/workspace/a.ts"));
+    await documents.openDocument(pathToUri("/workspace/b.ts"));
+  });
+  await act(async () => {
+    await rendered.renderOnce();
+  });
+  return { ...rendered, documents, slotRegistry, layoutState, context };
+}
+
+
 describe("Shell — empty shell renders every region (Req 6.1, design.md §16)", () => {
   test("renders ActivityBar/Sidebar/EditorArea/Panel/StatusBar with no registered views", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
 
     const { renderOnce, captureCharFrame } = await testRender(
@@ -137,7 +154,7 @@ describe("Shell — empty shell renders every region (Req 6.1, design.md §16)",
 
 describe("Shell — registering a view re-renders its region (Req 6.3, design.md §8.2)", () => {
   test("registering a sidebar.view + activityBar.item pair shows it once selected", async () => {
-    const { slotRegistry, layoutState, context, commands } = createHarness();
+    const { slotRegistry, layoutState, context, commands } = createShellHarness();
     await layoutState.ready;
 
     const { renderOnce, captureCharFrame } = await testRender(
@@ -184,7 +201,7 @@ describe("Shell — registering a view re-renders its region (Req 6.3, design.md
     // it up reactively — through the SAME `SlotRegistry.onDidChange`
     // subscription `useSidebarPairs` already holds, no separate channel,
     // no remounting the Shell or the view's own component.
-    const { slotRegistry, layoutState, context, commands } = createHarness();
+    const { slotRegistry, layoutState, context, commands } = createShellHarness();
     await layoutState.ready;
 
     const { renderOnce, captureCharFrame } = await testRender(
@@ -225,7 +242,7 @@ describe("Shell — registering a view re-renders its region (Req 6.3, design.md
   });
 
   test("registering a statusBar.item re-renders the StatusBar", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
 
     const { renderOnce, captureCharFrame } = await testRender(
@@ -253,7 +270,7 @@ describe("Shell — registering a view re-renders its region (Req 6.3, design.md
   });
 
   test("a lazy sidebar.view (pending manifest contribution) requests extension activation once selected", async () => {
-    const { layoutState, context, commands } = createHarness();
+    const { layoutState, context, commands } = createShellHarness();
     await layoutState.ready;
     const activated: string[] = [];
     const slotRegistry = createSlotRegistry({
@@ -287,7 +304,7 @@ describe("Shell — registering a view re-renders its region (Req 6.3, design.md
 
 describe("Shell — workbench.view.<id> command switches the sidebar (Req 6.2)", () => {
   test("executing the command activates the same-id sidebar view", async () => {
-    const { slotRegistry, layoutState, context, commands } = createHarness();
+    const { slotRegistry, layoutState, context, commands } = createShellHarness();
     await layoutState.ready;
     slotRegistry.registerView("activityBar.item", "search", noopComponent, { title: "Search" });
     slotRegistry.registerView("sidebar.view", "search", () => <text>Search Panel</text>);
@@ -365,7 +382,7 @@ function clickText(target: TextRenderable): void {
 
 describe("Shell — ActivityBar sidebar-visibility toggle (Issue #135)", () => {
   test("clicking the dedicated toggle glyph flips sidebarVisible, and the glyph itself updates", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     expect(layoutState.get().sidebarVisible).toBe(true); // DEFAULT_LAYOUT_STATE
 
@@ -408,7 +425,7 @@ describe("Shell — ActivityBar sidebar-visibility toggle (Issue #135)", () => {
   });
 
   test("re-clicking the already-active view's icon no longer collapses the sidebar (Issue #135 — old VS Code-style toggle-on-reclick behavior is retired)", async () => {
-    const { slotRegistry, layoutState, context, commands } = createHarness();
+    const { slotRegistry, layoutState, context, commands } = createShellHarness();
     await layoutState.ready;
     // No `component` (undefined) so `ActivityBar` renders this pair as a
     // plain `<text>` glyph (this module's own branch: `item?.component` is
@@ -457,7 +474,7 @@ describe("Shell — ActivityBar sidebar-visibility toggle (Issue #135)", () => {
   });
 
   test("workbench.action.toggleSidebarVisibility flips sidebarVisible from the command palette/a keybinding", async () => {
-    const { slotRegistry, layoutState, context, commands } = createHarness();
+    const { slotRegistry, layoutState, context, commands } = createShellHarness();
     await layoutState.ready;
     expect(layoutState.get().sidebarVisible).toBe(true);
 
@@ -491,7 +508,7 @@ describe("Shell — ActivityBar sidebar-visibility toggle (Issue #135)", () => {
 
 describe("Shell — Sidebar forwards its real content width to the registered view (Issue #104 Phase 3)", () => {
   test("a Tree-rendering sidebar view truncates a label wider than the sidebar, using Sidebar's own viewProps width", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     // sidebarWidth 15 — Sidebar's own `border={["right"]}` (1 column)
     // leaves a 14-column content width, which is what should reach `Tree`
@@ -533,7 +550,7 @@ describe("Shell — Sidebar forwards its real content width to the registered vi
 
 describe("Shell — Sidebar forwards its real content height to the registered view (Issue #125)", () => {
   test("a sidebar.view receives Sidebar's own computed viewProps.height, net of chrome", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     layoutState.update({ activeView: "explorer" });
 
@@ -567,7 +584,7 @@ describe("Shell — Sidebar forwards its real content height to the registered v
   });
 
   test("an open panel further reduces the sidebar's content height, exactly like EditorArea's own viewportHeight", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     layoutState.update({ activeView: "explorer", panelVisible: true, panelHeight: 8 });
 
@@ -597,7 +614,7 @@ describe("Shell — Sidebar forwards its real content height to the registered v
 
 describe("Shell — focus change updates context keys (Req 4.6, design.md §8.1)", () => {
   test("focusing a Shell region's root box sets its context key true, blurring sets it false", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
 
     const { renderOnce, renderer } = await testRender(
@@ -635,36 +652,9 @@ describe("Shell — focus change updates context keys (Req 4.6, design.md §8.1)
   });
 });
 
-/** An in-memory {@link DocumentManagerFs} — every named file's content is
- * fixed at construction, and every other operation (`save`'s write/rename,
- * `stat`'s mode) is a harmless no-op/stub; these tests only ever open
- * documents, never save them (matches `documentManager.test.ts`'s own
- * `DocumentManagerFs` fakes in spirit, scoped down to just what "open a
- * document into the Shell" needs). */
-function createInMemoryFs(files: Record<string, string>): DocumentManagerFs {
-  return {
-    async stat(path: string) {
-      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return { size: files[path]!.length, mode: 0o644, mtimeMs: 0 };
-    },
-    async readFile(path: string) {
-      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return files[path]!;
-    },
-    async readFileBytes(path: string) {
-      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return new TextEncoder().encode(files[path]!);
-    },
-    async writeFile() {},
-    async chmod() {},
-    async rename() {},
-    async unlink() {},
-  };
-}
-
 describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.md §8.1)", () => {
   test("opening a document renders it via EditorView, with a tab for its filename", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
@@ -708,7 +698,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     // terminal was. This is the test that would have caught it: a document
     // with 60 lines, rendered into a terminal comfortably taller than 20
     // rows, must show lines well past index 20.
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const bigFile = Array.from({ length: 60 }, (_, i) => `line${i}`).join("\n");
     const documents = createDocumentManager({
@@ -755,7 +745,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
   });
 
   test("the tab bar shows the dirty marker the instant a document is edited, and drops it once saved (Task 3.5, Req 6.5)", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
@@ -807,32 +797,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
   });
 
   test("closing the active document falls back to another open document", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
-    await layoutState.ready;
-    const documents = createDocumentManager({
-      log: createHostLog(),
-      sink: createRecordingSink(),
-      fs: createInMemoryFs({
-        "/workspace/a.ts": "FIRST_FILE_CONTENT",
-        "/workspace/b.ts": "SECOND_FILE_CONTENT",
-      }),
-    });
-
-    const { renderOnce, captureCharFrame } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 60, height: 20 },
-    );
-    await act(async () => {
-      await documents.openDocument(pathToUri("/workspace/a.ts"));
-      await documents.openDocument(pathToUri("/workspace/b.ts"));
-    });
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderOnce, captureCharFrame, documents } = await renderTwoOpenDocuments();
 
     // The most recently opened document is not necessarily active by
     // default (the first-opened document stays active until the user
@@ -855,32 +820,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     // actually drives the tab-selection path: `Tabs`' `<tab-select>`
     // (`components.tsx`) -> `EditorArea`'s `onSelectTab` ->
     // `Shell`'s `onSelectEditorTab`/`setActiveDocumentUri` (shell.tsx).
-    const { slotRegistry, layoutState, context } = createHarness();
-    await layoutState.ready;
-    const documents = createDocumentManager({
-      log: createHostLog(),
-      sink: createRecordingSink(),
-      fs: createInMemoryFs({
-        "/workspace/a.ts": "FIRST_FILE_CONTENT",
-        "/workspace/b.ts": "SECOND_FILE_CONTENT",
-      }),
-    });
-
-    const { renderOnce, renderer, captureCharFrame } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 60, height: 20 },
-    );
-    await act(async () => {
-      await documents.openDocument(pathToUri("/workspace/a.ts"));
-      await documents.openDocument(pathToUri("/workspace/b.ts"));
-    });
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderOnce, renderer, captureCharFrame } = await renderTwoOpenDocuments();
 
     // Both documents are open, but "a.ts" (opened first) is still active.
     expect(captureCharFrame()).toContain("FIRST_FILE_CONTENT");
@@ -915,32 +855,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     // `shell.sidebarResize.test.tsx`'s `processMouseEvent` idiom (see that
     // file's TSDoc for why: it exercises this module's own handler wiring
     // without re-proving OpenTUI's ANSI-parsing/hit-testing pipeline).
-    const { slotRegistry, layoutState, context } = createHarness();
-    await layoutState.ready;
-    const documents = createDocumentManager({
-      log: createHostLog(),
-      sink: createRecordingSink(),
-      fs: createInMemoryFs({
-        "/workspace/a.ts": "FIRST_FILE_CONTENT",
-        "/workspace/b.ts": "SECOND_FILE_CONTENT",
-      }),
-    });
-
-    const { renderOnce, renderer, captureCharFrame } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 60, height: 20 },
-    );
-    await act(async () => {
-      await documents.openDocument(pathToUri("/workspace/a.ts"));
-      await documents.openDocument(pathToUri("/workspace/b.ts"));
-    });
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderOnce, renderer, captureCharFrame } = await renderTwoOpenDocuments();
 
     expect(captureCharFrame()).toContain("FIRST_FILE_CONTENT");
 
@@ -979,32 +894,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     // `shell.sidebarResize.test.tsx`'s `processMouseEvent` idiom (see that
     // file's TSDoc for why: it exercises this module's own handler wiring
     // without re-proving OpenTUI's ANSI-parsing/hit-testing pipeline).
-    const { slotRegistry, layoutState, context } = createHarness();
-    await layoutState.ready;
-    const documents = createDocumentManager({
-      log: createHostLog(),
-      sink: createRecordingSink(),
-      fs: createInMemoryFs({
-        "/workspace/a.ts": "FIRST_FILE_CONTENT",
-        "/workspace/b.ts": "SECOND_FILE_CONTENT",
-      }),
-    });
-
-    const { renderOnce, renderer, captureCharFrame } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 60, height: 20 },
-    );
-    await act(async () => {
-      await documents.openDocument(pathToUri("/workspace/a.ts"));
-      await documents.openDocument(pathToUri("/workspace/b.ts"));
-    });
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderOnce, renderer, captureCharFrame } = await renderTwoOpenDocuments();
 
     expect(captureCharFrame()).toContain("FIRST_FILE_CONTENT");
 
@@ -1041,32 +931,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
     // The out-of-range half of `components.tsx`'s `onMouseDown` hit-test:
     // an `index` that resolves past `tabs.length` must be a no-op, not
     // throw or fall back to some other tab.
-    const { slotRegistry, layoutState, context } = createHarness();
-    await layoutState.ready;
-    const documents = createDocumentManager({
-      log: createHostLog(),
-      sink: createRecordingSink(),
-      fs: createInMemoryFs({
-        "/workspace/a.ts": "FIRST_FILE_CONTENT",
-        "/workspace/b.ts": "SECOND_FILE_CONTENT",
-      }),
-    });
-
-    const { renderOnce, renderer, captureCharFrame } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell slotRegistry={slotRegistry} layoutState={layoutState} documents={documents} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 60, height: 20 },
-    );
-    await act(async () => {
-      await documents.openDocument(pathToUri("/workspace/a.ts"));
-      await documents.openDocument(pathToUri("/workspace/b.ts"));
-    });
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderOnce, renderer, captureCharFrame } = await renderTwoOpenDocuments();
 
     expect(captureCharFrame()).toContain("FIRST_FILE_CONTENT");
 
@@ -1095,7 +960,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
   });
 
   test("no open documents keeps the 'No editor open.' placeholder", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({ log: createHostLog(), sink: createRecordingSink() });
 
@@ -1117,7 +982,7 @@ describe("Shell — EditorArea wired to a DocumentManager (Req 6.5, 6.6, design.
 
 describe("Shell — EditorArea's onTextPlaneNode stays stable across re-renders (CodeRabbit PR #59 Finding 5)", () => {
   test("editorTextFocus survives an editorSession.setState-driven re-render, and a subsequent routed key still edits the buffer", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
@@ -1205,7 +1070,7 @@ describe("Shell — EditorArea's onTextPlaneNode stays stable across re-renders 
 
 describe("Shell — FindWidget wiring (Req 11.1, design.md §13)", () => {
   test("opening find renders the widget and focuses it; closing hides it and returns focus to the text", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
@@ -1270,7 +1135,7 @@ describe("Shell — FindWidget wiring (Req 11.1, design.md §13)", () => {
   });
 
   test("closing find still returns focus to the text when the REPLACE input (not the query input) held focus (CodeRabbit PR #59 Finding 4)", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
@@ -1339,7 +1204,7 @@ describe("Shell — FindWidget wiring (Req 11.1, design.md §13)", () => {
   });
 
   test("typing while the find widget is focused updates the query, not the buffer", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
@@ -1404,7 +1269,7 @@ describe("Shell — layoutState.onDidChange keeps React in sync with external wr
     // `useState` from `ready`. This test drives exactly that shape: an
     // `update()` call from outside `Shell` entirely, asserted against the
     // real rendered frame rather than an internal prop.
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     slotRegistry.registerView(
       "panel.tab",
@@ -1466,21 +1331,6 @@ function findInputByPlaceholder(node: unknown, placeholder: string): { focus(): 
   }
   for (const child of candidate?.getChildren?.() ?? []) {
     const found = findInputByPlaceholder(child, placeholder);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-/** Depth-first search for the `<tab-select>` renderable `Tabs`
- * (`components.tsx`) mounts — used only by the tab-selection test above to
- * drive the real `TabSelectRenderable.moveRight`/`selectCurrent` methods
- * (the same pair `handleKeyPress`'s `move-right`/`select-current`
- * keybindings call), rather than reaching into `Shell`'s state directly. */
-function findTabSelect(node: unknown): TabSelectRenderable | undefined {
-  if (node instanceof TabSelectRenderable) return node;
-  const candidate = node as { getChildren?: () => unknown[] };
-  for (const child of candidate?.getChildren?.() ?? []) {
-    const found = findTabSelect(child);
     if (found) return found;
   }
   return undefined;

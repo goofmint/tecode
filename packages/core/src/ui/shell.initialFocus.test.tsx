@@ -38,21 +38,23 @@
 
 import { describe, expect, test } from "bun:test";
 import { act } from "react";
-import { TabSelectRenderable } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
-import { createDocumentManager, type DocumentManagerFs } from "../buffer/documentManager";
+import { createDocumentManager } from "../buffer/documentManager";
 import { pathToUri } from "../buffer/uri";
 import { createEditorInputRouter } from "../editor/inputRouter";
 import { createHostLog } from "../host/errors";
-import { createContextService } from "../keymap/context";
 import { createEditorSessionService } from "./editorSession";
 import { ContextFocusTracker } from "./focus";
-import { createLayoutStateService, type LayoutStateFs } from "./layoutState";
 import { createModalService } from "./modalService";
 import { ModalOverlay } from "./modalOverlay";
-import { createSlotRegistry } from "./slotRegistry";
 import { Shell } from "./shell";
 import { ThemeProvider } from "./theme";
+import {
+  createInMemoryFs,
+  createRecordingSink,
+  createShellHarness,
+  findTabSelect,
+} from "./uiTestSupport";
 
 /** A key event shaped exactly like `keyRouting.test.ts`'s/`shell.snapshot.
  * test.tsx`'s own literal `KeyEventLike` object for a plain printable
@@ -63,74 +65,51 @@ function printableKey(char: string) {
   return { name: char, sequence: char, ctrl: false, shift: false, option: false, meta: false };
 }
 
-/** A `HostLog` sink that discards everything (matches `shell.snapshot.
- * test.tsx`'s own identical helper) — these tests assert on focus/context
- * behavior, not on what gets logged. */
-function createRecordingSink() {
-  return { error() {} };
-}
+/**
+ * Mount `<Shell/>` AND `<ModalOverlay/>` as siblings inside the same
+ * `<ContextFocusTracker>` — exactly `renderShell.tsx`'s
+ * `renderShellToTerminal` composition (`modalOverlay.tsx`'s "Mount point"
+ * TSDoc), not a Shell-only tree. The palette tests below are about the REAL
+ * interaction between the two, and each previously built this whole tree
+ * with its own verbatim copy (Qodana `DuplicatedCode`).
+ *
+ * The workspace holds one unopened file, `"/workspace/hello.ts"` containing
+ * `"hello"`; opening it is each test's own first step.
+ */
+async function renderShellWithModalOverlay() {
+  const { slotRegistry, layoutState, context } = createShellHarness();
+  await layoutState.ready;
+  const documents = createDocumentManager({
+    log: createHostLog(),
+    sink: createRecordingSink(),
+    fs: createInMemoryFs({ "/workspace/hello.ts": "hello" }),
+  });
+  const editorSession = createEditorSessionService({ documents });
+  const modalService = createModalService();
 
-/** An in-memory {@link LayoutStateFs} that starts with no `state.json`
- * (matches `shell.snapshot.test.tsx`'s own identical helper). */
-function createEmptyLayoutFs(): LayoutStateFs {
-  return {
-    async readFile() {
-      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    },
-    async mkdir() {},
-    async writeFile() {},
-  };
-}
-
-/** The `slotRegistry`/`layoutState`/`context` trio every test below
- * mounts `<Shell>` against (matches `shell.snapshot.test.tsx`'s own
- * identical helper) — `documents`/`editorSession`/`modalService` are each
- * test's own concern, built separately per scenario. */
-function createHarness() {
-  const log = createHostLog();
-  const sink = createRecordingSink();
-  const slotRegistry = createSlotRegistry({ log });
-  const layoutState = createLayoutStateService({ log, sink, path: "/state.json", fs: createEmptyLayoutFs() });
-  const context = createContextService();
-  return { slotRegistry, layoutState, context };
-}
-
-function createInMemoryFs(files: Record<string, string>): DocumentManagerFs {
-  return {
-    async stat(path: string) {
-      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return { size: files[path]!.length, mode: 0o644, mtimeMs: 0 };
-    },
-    async readFile(path: string) {
-      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return files[path]!;
-    },
-    async readFileBytes(path: string) {
-      if (!(path in files)) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return new TextEncoder().encode(files[path]!);
-    },
-    async writeFile() {},
-    async chmod() {},
-    async rename() {},
-    async unlink() {},
-  };
-}
-
-/** Depth-first search for the rendered `<tab-select>` renderable (matches
- * `shell.snapshot.test.tsx`'s own identical helper of the same name). */
-function findTabSelect(node: unknown): TabSelectRenderable | undefined {
-  if (node instanceof TabSelectRenderable) return node;
-  const candidate = node as { getChildren?: () => unknown[] };
-  for (const child of candidate?.getChildren?.() ?? []) {
-    const found = findTabSelect(child);
-    if (found) return found;
-  }
-  return undefined;
+  const rendered = await testRender(
+    <ThemeProvider>
+      <ContextFocusTracker context={context}>
+        <Shell
+          slotRegistry={slotRegistry}
+          layoutState={layoutState}
+          documents={documents}
+          editorSession={editorSession}
+        />
+        <ModalOverlay modalService={modalService} />
+      </ContextFocusTracker>
+    </ThemeProvider>,
+    { width: 80, height: 20 },
+  );
+  await act(async () => {
+    await rendered.renderOnce();
+  });
+  return { ...rendered, context, documents, editorSession, modalService, slotRegistry, layoutState };
 }
 
 describe("Shell — initial editor focus (Req 4.6, 6.7, design.md §8.1; Issue #82)", () => {
   test("mounting with a document already open focuses the text plane with no manual assist, so a printable key inserts into the document", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
@@ -172,7 +151,7 @@ describe("Shell — initial editor focus (Req 4.6, 6.7, design.md §8.1; Issue #
   });
 
   test("opening the first document after an empty-workspace startup focuses its text plane with no manual assist", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     // The file exists on the (fake) filesystem from the start, but nothing
     // opens it yet — an "empty workspace at launch" startup, exactly this
@@ -222,38 +201,7 @@ describe("Shell — initial editor focus (Req 4.6, 6.7, design.md §8.1; Issue #
   });
 
   test("does not steal focus from an open command palette when a document opens while it's showing", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
-    await layoutState.ready;
-    const documents = createDocumentManager({
-      log: createHostLog(),
-      sink: createRecordingSink(),
-      fs: createInMemoryFs({ "/workspace/hello.ts": "hello" }),
-    });
-    const editorSession = createEditorSessionService({ documents });
-    const modalService = createModalService();
-
-    // Mounts `<Shell/>` AND `<ModalOverlay/>` as siblings inside the same
-    // `<ContextFocusTracker>` — exactly `renderShell.tsx`'s
-    // `renderShellToTerminal` composition (`modalOverlay.tsx`'s "Mount
-    // point" TSDoc), not a Shell-only tree — this test's whole point is the
-    // REAL interaction between the two.
-    const { renderOnce } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell
-            slotRegistry={slotRegistry}
-            layoutState={layoutState}
-            documents={documents}
-            editorSession={editorSession}
-          />
-          <ModalOverlay modalService={modalService} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 80, height: 20 },
-    );
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderOnce, context, documents, editorSession, modalService } = await renderShellWithModalOverlay();
     expect(context.get<boolean>("editorTextFocus")).toBeFalsy();
 
     // Open the real command palette — `ModalOverlay`'s own `QuickPickBody`
@@ -301,33 +249,7 @@ describe("Shell — initial editor focus (Req 4.6, 6.7, design.md §8.1; Issue #
     // whatever held it before the palette opened (`modalOverlay.tsx`'s
     // `previousFocusRef`) — nothing did, here — so it cannot be what
     // re-focuses the text plane; only `EditorArea`'s own retry can.
-    const { slotRegistry, layoutState, context } = createHarness();
-    await layoutState.ready;
-    const documents = createDocumentManager({
-      log: createHostLog(),
-      sink: createRecordingSink(),
-      fs: createInMemoryFs({ "/workspace/hello.ts": "hello" }),
-    });
-    const editorSession = createEditorSessionService({ documents });
-    const modalService = createModalService();
-
-    const { renderOnce } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell
-            slotRegistry={slotRegistry}
-            layoutState={layoutState}
-            documents={documents}
-            editorSession={editorSession}
-          />
-          <ModalOverlay modalService={modalService} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 80, height: 20 },
-    );
-    await act(async () => {
-      await renderOnce();
-    });
+    const { renderOnce, context, documents, editorSession, modalService } = await renderShellWithModalOverlay();
 
     act(() => {
       void modalService.openQuickPick([{ label: "Test Command" }]);
@@ -368,7 +290,7 @@ describe("Shell — initial editor focus (Req 4.6, 6.7, design.md §8.1; Issue #
   });
 
   test("switching tabs re-focuses the newly active tab's text plane, with no manual assist", async () => {
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
@@ -437,7 +359,7 @@ describe("Shell — initial editor focus (Req 4.6, 6.7, design.md §8.1; Issue #
     // this component's own React subtree" situation `EditorArea`'s own
     // TSDoc describes for `explorerFocus`/`findWidgetFocus` — the guard
     // itself does not care WHERE the key came from, only what it reads.
-    const { slotRegistry, layoutState, context } = createHarness();
+    const { slotRegistry, layoutState, context } = createShellHarness();
     await layoutState.ready;
     const documents = createDocumentManager({
       log: createHostLog(),
