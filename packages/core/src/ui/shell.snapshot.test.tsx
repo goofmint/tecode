@@ -127,6 +127,45 @@ async function renderTwoOpenDocuments() {
 }
 
 
+/**
+ * Register an `activityBar.item`/`sidebar.view` pair whose view records the
+ * `height` prop `Sidebar` hands it, mount the Shell in a 60x20 terminal, and
+ * return that recorded height — what both Issue #125 tests observe, each
+ * previously with its own verbatim copy of this setup (Qodana
+ * `DuplicatedCode`). `layoutUpdate` is applied before the render, so a test
+ * can vary the surrounding chrome (an open panel, say).
+ *
+ * Neither registration carries a `title` in its own `meta` (matching the
+ * `width` integration test's fixture), so `Sidebar`'s title row is `0`.
+ */
+async function captureSidebarViewHeight(
+  layoutUpdate: Parameters<ReturnType<typeof createShellHarness>["layoutState"]["update"]>[0],
+): Promise<number | undefined> {
+  const { slotRegistry, layoutState, context } = createShellHarness();
+  await layoutState.ready;
+  layoutState.update(layoutUpdate);
+
+  let capturedHeight: number | undefined;
+  slotRegistry.registerView("activityBar.item", "explorer", noopComponent, { title: "Explorer" });
+  slotRegistry.registerView("sidebar.view", "explorer", (rawProps: Record<string, unknown>) => {
+    capturedHeight = typeof rawProps["height"] === "number" ? rawProps["height"] : undefined;
+    return <text>content</text>;
+  });
+
+  const { renderOnce } = await testRender(
+    <ThemeProvider>
+      <ContextFocusTracker context={context}>
+        <Shell slotRegistry={slotRegistry} layoutState={layoutState} />
+      </ContextFocusTracker>
+    </ThemeProvider>,
+    { width: 60, height: 20 },
+  );
+  await act(async () => {
+    await renderOnce();
+  });
+  return capturedHeight;
+}
+
 describe("Shell — empty shell renders every region (Req 6.1, design.md §16)", () => {
   test("renders ActivityBar/Sidebar/EditorArea/Panel/StatusBar with no registered views", async () => {
     const { slotRegistry, layoutState, context } = createShellHarness();
@@ -550,29 +589,7 @@ describe("Shell — Sidebar forwards its real content width to the registered vi
 
 describe("Shell — Sidebar forwards its real content height to the registered view (Issue #125)", () => {
   test("a sidebar.view receives Sidebar's own computed viewProps.height, net of chrome", async () => {
-    const { slotRegistry, layoutState, context } = createShellHarness();
-    await layoutState.ready;
-    layoutState.update({ activeView: "explorer" });
-
-    let capturedHeight: number | undefined;
-    slotRegistry.registerView("activityBar.item", "explorer", noopComponent, { title: "Explorer" });
-    // No `title` in this registration's own `meta` (matches the `width`
-    // integration test's own fixture above) — `Sidebar`'s title row is
-    // therefore `0`.
-    slotRegistry.registerView("sidebar.view", "explorer", (rawProps: Record<string, unknown>) => {
-      capturedHeight = typeof rawProps["height"] === "number" ? rawProps["height"] : undefined;
-      return <text>content</text>;
-    });
-
-    const { renderOnce } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell slotRegistry={slotRegistry} layoutState={layoutState} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 60, height: 20 },
-    );
-    await act(async () => { await renderOnce(); });
+    const capturedHeight = await captureSidebarViewHeight({ activeView: "explorer" });
 
     // No title row, panel starts hidden (`DEFAULT_LAYOUT_STATE.panelVisible`
     // is `false`) — only the always-on 1-row status bar is subtracted from
@@ -584,26 +601,7 @@ describe("Shell — Sidebar forwards its real content height to the registered v
   });
 
   test("an open panel further reduces the sidebar's content height, exactly like EditorArea's own viewportHeight", async () => {
-    const { slotRegistry, layoutState, context } = createShellHarness();
-    await layoutState.ready;
-    layoutState.update({ activeView: "explorer", panelVisible: true, panelHeight: 8 });
-
-    let capturedHeight: number | undefined;
-    slotRegistry.registerView("activityBar.item", "explorer", noopComponent, { title: "Explorer" });
-    slotRegistry.registerView("sidebar.view", "explorer", (rawProps: Record<string, unknown>) => {
-      capturedHeight = typeof rawProps["height"] === "number" ? rawProps["height"] : undefined;
-      return <text>content</text>;
-    });
-
-    const { renderOnce } = await testRender(
-      <ThemeProvider>
-        <ContextFocusTracker context={context}>
-          <Shell slotRegistry={slotRegistry} layoutState={layoutState} />
-        </ContextFocusTracker>
-      </ThemeProvider>,
-      { width: 60, height: 20 },
-    );
-    await act(async () => { await renderOnce(); });
+    const capturedHeight = await captureSidebarViewHeight({ activeView: "explorer", panelVisible: true, panelHeight: 8 });
 
     // statusBar (1) + panel (8) = 9 rows subtracted from the 20-row
     // terminal, the same `Panel` sibling that also eats into `EditorArea`'s
